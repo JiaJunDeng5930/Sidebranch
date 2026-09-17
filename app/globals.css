@@ -1,0 +1,361 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:is(.dark *));
+:root {
+  --background: #f5f5f2;
+  --foreground: #222724;
+  --card: #fff;
+  --card-foreground: #222724;
+  --popover: #fff;
+  --popover-foreground: #222724;
+  --primary: #174c38;
+  --primary-foreground: #fff;
+  --secondary: #e9ece7;
+  --secondary-foreground: #222724;
+  --muted: #e9ece7;
+  --muted-foreground: #626c64;
+  --accent: #e3eadf;
+  --accent-foreground: #174c38;
+  --destructive: #a83432;
+  --border: #d5dbd4;
+  --input: #c5cdc5;
+  --ring: #174c38;
+  --radius: 0.2rem;
+  --sidebar: #edf0eb;
+  --sidebar-foreground: #222724;
+  --sidebar-border: #d5dbd4;
+  --sidebar-ring: #174c38;
+  --sidebar-primary: #174c38;
+  --sidebar-primary-foreground: #fff;
+  --sidebar-accent: #dbe5da;
+  --sidebar-accent-foreground: #174c38;
+}
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-lg: var(--radius);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button,
+input,
+textarea {
+  font: inherit;
+}
+button,
+a,
+input,
+textarea {
+  outline-offset: 4px;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+::selection {
+  background: #d4eaa6;
+  color: #153b2b;
+}
+.landing {
+  min-height: 100vh;
+  background: #123d30;
+  color: #f0f2de;
+  padding: 0 5.5vw;
+}
+.masthead {
+  height: 106px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #7e9a7e55;
+  gap: 24px;
+}
+.wordmark {
+  font-family: Georgia, serif;
+  font-size: 32px;
+  letter-spacing: -1.5px;
+  line-height: 1;
+}
+.wordmark span {
+  font-family: Arial, sans-serif;
+  display: block;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 4px;
+  margin-top: 9px;
+}
+.edition,
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 2px;
+}
+.text-link {
+  font-size: 14px;
+}
+.introduction {
+  padding: 78px 0 50px;
+  max-width: 630px;
+  position: relative;
+}
+.eyebrow {
+  color: #bbc9a3;
+  margin-bottom: 28px;
+}
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+.introduction h1 {
+  font-family: Georgia, "Songti SC", serif;
+  font-size: clamp(46px, 5.3vw, 82px);
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: -2px;
+  margin-bottom: 30px;
+}
+.introduction h1 em {
+  font-style: normal;
+  color: #d7e5a4;
+}
+.intro-copy {
+  font-size: 17px;
+  line-height: 1.95;
+  max-width: 440px;
+  color: #d5dfca;
+}
+.enter-link {
+  display: flex;
+  width: 260px;
+  justify-content: space-between;
+  border-bottom: 1px solid #cadbb5;
+  padding: 16px 0;
+  margin-top: 22px;
+  font-size: 16px;
+}
+.specimen {
+  display: flex;
+  position: absolute;
+  top: 238px;
+  right: 5.5vw;
+  width: 45vw;
+  max-width: 700px;
+  align-items: flex-start;
+}
+.specimen-page {
+  background: #f5f4e9;
+  color: #2f372c;
+  width: calc((100% - 65px) / 2);
+  padding: 28px 22px 18px;
+  box-shadow: 0 15px 45px #001b1b33;
+  min-height: 355px;
+}
+.specimen-page.second {
+  margin-top: 85px;
+}
+.paper-meta {
+  font-size: 12px;
+  color: #66705f;
+  border-bottom: 1px solid #b6c4ac;
+  padding-bottom: 20px;
+  margin-bottom: 28px;
+}
+.specimen h2 {
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 25px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+.specimen p {
+  font-size: 14px;
+  line-height: 1.95;
+}
+.specimen mark {
+  background: #dde6bc;
+  padding: 3px 0;
+}
+.paper-foot {
+  font-size: 12px;
+  color: #718167;
+  border-top: 1px solid #c2cab7;
+  margin-top: 30px;
+  padding-top: 14px;
+}
+.specimen-connection {
+  width: 65px;
+  flex: none;
+  color: #d7e5a4;
+  margin-top: 75px;
+  height: 250px;
+}
+.landing-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid #7e9a7e55;
+  margin-top: 50px;
+  padding: 24px 0;
+  color: #b9c9ab;
+  font-size: 12px;
+  gap: 20px;
+}
+.landing-footer p {
+  margin: 0;
+}
+.landing-footer > span {
+  font-size: 25px;
+  font-family: Georgia, serif;
+}
+@media (min-width: 1600px) {
+  .introduction {
+    padding-bottom: 120px;
+  }
+}
+@media (max-width: 1100px) {
+  .specimen {
+    position: static;
+    width: 100%;
+    max-width: 780px;
+    margin: 10px auto 65px;
+  }
+  .introduction {
+    max-width: none;
+  }
+  .introduction h1 {
+    font-size: 64px;
+  }
+  .specimen-page {
+    padding: 28px;
+    width: calc((100% - 85px) / 2);
+  }
+  .specimen-connection {
+    width: 85px;
+  }
+  .edition {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .landing {
+    padding: 0 6vw;
+  }
+  .masthead {
+    height: 88px;
+  }
+  .wordmark {
+    font-size: 28px;
+  }
+  .introduction {
+    padding-top: 52px;
+  }
+  .introduction h1 {
+    font-size: 44px;
+    letter-spacing: -1px;
+  }
+  .intro-copy {
+    font-size: 16px;
+  }
+  .specimen-page {
+    padding: 20px 14px;
+    min-height: 310px;
+    width: calc((100% - 30px) / 2);
+  }
+  .specimen h2 {
+    font-size: 19px;
+  }
+  .specimen p {
+    font-size: 14px;
+  }
+  .specimen-connection {
+    width: 30px;
+  }
+  .paper-meta {
+    padding-bottom: 12px;
+    margin-bottom: 20px;
+  }
+  .paper-foot {
+    font-size: 12px;
+  }
+  .landing-footer {
+    align-items: flex-start;
+  }
+  .landing-footer p {
+    max-width: 180px;
+    line-height: 1.8;
+  }
+  .landing-footer a {
+    white-space: nowrap;
+  }
+}
+.auth-page {
+  min-height: 100vh;
+  background: #123d30;
+  color: #edf2dc;
+  padding: 60px max(24px, 8vw);
+}
+.auth-panel {
+  max-width: 520px;
+  margin: 100px auto;
+}
+.auth-panel h1 {
+  font-family: Georgia, "Songti SC", serif;
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.auth-panel p {
+  line-height: 1.9;
+}
+.auth-account {
+  border-top: 1px solid #64816f;
+  padding-top: 20px;
+}
+.auth-panel button {
+  padding: 12px 22px;
+  border: 1px solid #c9daa5;
+  background: #d7e5a4;
+  color: #123d30;
+  margin-right: 14px;
+}
+.auth-panel .quiet {
+  background: none;
+  color: #d7e5a4;
+}
