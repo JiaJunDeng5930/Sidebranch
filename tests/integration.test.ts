@@ -1,7 +1,7 @@
-import {renderedTextOffsets} from '../lib/domain/text-offsets';
+import { renderedTextOffsets } from "../lib/domain/text-offsets";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { handleMcp, APP_RESOURCE_URI } from "../lib/server/mcp-server";
 import { DocumentStore } from "../lib/server/document-store";
@@ -37,9 +37,13 @@ let env: RuntimeEnv, store: DocumentStore;
 before(async () => {
   const DB = await mf.getD1Database("DB"),
     BUCKET = await mf.getR2Bucket("BUCKET");
-  const sql = await readFile("drizzle/0000_curvy_human_torch.sql", "utf8");
-  for (const statement of sql.split("--> statement-breakpoint"))
-    if (statement.trim()) await DB.prepare(statement).run();
+  for (const file of (await readdir("drizzle"))
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    const sql = await readFile(`drizzle/${file}`, "utf8");
+    for (const statement of sql.split("--> statement-breakpoint"))
+      if (statement.trim()) await DB.prepare(statement).run();
+  }
   env = {
     DB,
     BUCKET,
@@ -362,7 +366,7 @@ test("path traversal and SQL wildcard search do not broaden access", async () =>
     0,
   );
   assert.equal(
-    (await store.execute("ls", { prefix: "%' OR 1=1 --" })).documents.length,
+    (await store.execute("ls", { prefix: "/%' OR 1=1 --" })).documents.length,
     0,
   );
 });
@@ -416,4 +420,12 @@ test("MCP Streamable HTTP exposes tools, renders an App resource and executes do
   );
 });
 
-test('Markdown rendered offsets account for entities, escapes and inline code',()=>{assert.deepEqual(renderedTextOffsets('A &amp; B','A & B'),[0,1,2,7,8,9]);assert.deepEqual(renderedTextOffsets('`code`','code'),[1,2,3,4,5]);assert.deepEqual(renderedTextOffsets('a\\*b','a*b'),[0,1,3,4]);assert.equal(renderedTextOffsets('mismatch','different'),null)});
+test("Markdown rendered offsets account for entities, escapes and inline code", () => {
+  assert.deepEqual(
+    renderedTextOffsets("A &amp; B", "A & B"),
+    [0, 1, 2, 7, 8, 9],
+  );
+  assert.deepEqual(renderedTextOffsets("`code`", "code"), [1, 2, 3, 4, 5]);
+  assert.deepEqual(renderedTextOffsets("a\\*b", "a*b"), [0, 1, 3, 4]);
+  assert.equal(renderedTextOffsets("mismatch", "different"), null);
+});

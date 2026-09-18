@@ -1,21 +1,44 @@
 import { extractText, getDocumentProxy } from "unpdf";
-import { AssetId, Content, DomainError } from "../domain/model";
+import { AssetId, Content, DomainError, Instant } from "../domain/model";
+import type { AssetEntity } from "../domain/entities";
+import type { ContentText } from "../domain/model";
 import type { ParsedInput } from "../domain/commands";
 import type { DocumentStore } from "./document-store";
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+function decodeBase64(value: string): Uint8Array {
+  // atob() accepts a few non-base64 characters in some runtimes.  Validate
+  // the transport representation first so malformed uploads cannot turn into
+  // an empty or truncated asset.
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    ) &&
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}|[A-Za-z0-9+/]{3})$/.test(value)
+  )
+    throw new DomainError("INVALID_BASE64", "The file is not valid base64.");
+  const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
+  try {
+    return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+  } catch {
+    throw new DomainError("INVALID_BASE64", "The file is not valid base64.");
+  }
+}
+
 export async function importFile(
   store: DocumentStore,
   input: ParsedInput<"import_file">,
 ) {
   let bytes: Uint8Array;
   try {
-    bytes = Uint8Array.from(atob(input.base64), (c) => c.charCodeAt(0));
-  } catch {
+    bytes = decodeBase64(input.base64);
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
     throw new DomainError("INVALID_BASE64", "The file is not valid base64.");
   }
   if (bytes.length > MAX_UPLOAD_BYTES)
     throw new DomainError("TOO_LARGE", "文件上限为 10 MiB。", 413);
-  let content: string;
+  let extracted: string;
   if (input.mime === "application/pdf") {
     if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-")
       throw new DomainError("INVALID_PDF", "文件内容不是 PDF。");
@@ -25,7 +48,7 @@ export async function importFile(
         if (pdf.numPages > 300)
           throw new DomainError("PDF_TOO_LONG", "PDF 最多支持 300 页。");
         const result = await extractText(pdf, { mergePages: false });
-        content = result.text
+        extracted = result.text
           .map((page, i) => `# 第 ${i + 1} 页\n\n${page}`)
           .join("\n\n");
         if (!result.text.some((p) => p.trim()))
@@ -45,7 +68,7 @@ export async function importFile(
     }
   } else {
     try {
-      content = new TextDecoder("utf-8", { fatal: true })
+      extracted = new TextDecoder("utf-8", { fatal: true })
         .decode(bytes)
         .replace(/^\uFEFF/, "");
     } catch {
@@ -55,42 +78,54 @@ export async function importFile(
       );
     }
   }
-  content = Content.parse(content!);
+  const content: ContentText = Content.parse(extracted!);
   const assetId = AssetId.parse(crypto.randomUUID()),
     key = `originals/${assetId}`;
   const name = input.path.split("/").pop()!;
+  const title = input.title ?? name.replace(/\.[^.]+$/, "");
   await store.env.BUCKET.put(key, bytes, {
     httpMetadata: { contentType: input.mime },
   });
+  let committed = false;
   try {
-    await store.env.DB.prepare(
-      "INSERT INTO assets(id,key,name,mime,bytes,created_at) VALUES(?,?,?,?,?,?)",
-    )
-      .bind(
-        assetId,
-        key,
-        name,
-        input.mime,
-        bytes.length,
-        new Date().toISOString(),
-      )
-      .run();
-    return await store.write(
+    const asset: AssetEntity = {
+      id: assetId,
+      key,
+      name,
+      mime: input.mime,
+      bytes: bytes.length,
+      createdAt: Instant.parse(new Date().toISOString()),
+    };
+    const documentId = await store.persistImported(
       {
         path: input.path,
-        title: input.title ?? name.replace(/\.[^.]+$/, ""),
+        title,
         content,
         format: input.mime === "text/plain" ? "text" : "markdown",
       },
-      assetId,
+      asset,
     );
+    // From this point on the D1 batch has committed.  A response/read failure
+    // must leave both the database rows and the original bytes recoverable.
+    committed = true;
+    return await store.read({ documentId });
   } catch (error) {
-    await store.env.DB.prepare(
-      "DELETE FROM assets WHERE id=? AND NOT EXISTS(SELECT 1 FROM documents WHERE asset_id=?)",
-    )
-      .bind(assetId, assetId)
-      .run();
-    await store.env.BUCKET.delete(key);
+    if (!committed) {
+      // Compensate only after a successful read proves that the unique asset
+      // row is absent.  If the read itself fails, preserve the object because
+      // the commit status is uncertain.
+      try {
+        const row = await store.env.DB.prepare(
+          "SELECT id FROM assets WHERE id=?",
+        )
+          .bind(assetId)
+          .first<{ id: string }>();
+        if (!row) await store.env.BUCKET.delete(key);
+      } catch {
+        // An uncertain database read is deliberately not followed by object
+        // deletion; an operator can reconcile the orphan safely.
+      }
+    }
     throw error;
   }
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+
 export const DocumentId = z.string().uuid().brand<"DocumentId">();
 export const RevisionId = z.string().uuid().brand<"RevisionId">();
 export const AnchorId = z.string().uuid().brand<"AnchorId">();
@@ -11,35 +12,69 @@ export type AnchorId = z.infer<typeof AnchorId>;
 export type ConnectionId = z.infer<typeof ConnectionId>;
 export type QuestionId = z.infer<typeof QuestionId>;
 export type AssetId = z.infer<typeof AssetId>;
+
+export const PositiveInt = z.number().int().positive().brand<"PositiveInt">();
+export type PositiveInt = z.infer<typeof PositiveInt>;
+export const Instant = z.string().datetime({ offset: true }).brand<"Instant">();
+export type Instant = z.infer<typeof Instant>;
+
 export const Format = z.enum(["markdown", "text"]);
+export const DocumentFormat = Format;
+export type DocumentFormat = z.infer<typeof DocumentFormat>;
 export const Content = z
   .string()
   .max(400_000)
   .refine(
     (s) => new TextEncoder().encode(s).length <= 1_000_000,
     "Document text exceeds 1 MB",
-  );
+  )
+  .brand<"ContentText">();
+export type ContentText = z.infer<typeof Content>;
+
+const validPathPrefix = (p: string) =>
+  p.startsWith("/") &&
+  !p.includes("//") &&
+  !/[\x00-\x1f\\]/.test(p) &&
+  p.split("/").every((s) => s !== "." && s !== "..");
 export const Path = z
   .string()
   .min(2)
   .max(500)
   .refine(
-    (p) =>
-      p.startsWith("/") &&
-      !p.endsWith("/") &&
-      !p.includes("//") &&
-      !/[\x00-\x1f\\]/.test(p) &&
-      p.split("/").every((s) => s !== "." && s !== ".."),
+    (p) => !p.endsWith("/") && validPathPrefix(p),
     "Use an absolute path without . or .. segments",
   )
   .brand<"DocumentPath">();
 export type DocumentPath = z.infer<typeof Path>;
-export const Locator = z
-  .object({ documentId: DocumentId.optional(), path: Path.optional() })
+export const PathPrefix = z
+  .string()
+  .min(1)
+  .max(500)
   .refine(
-    (a) => Boolean(a.documentId) !== Boolean(a.path),
-    "Specify exactly one of documentId or path",
-  );
+    validPathPrefix,
+    "Use an absolute path prefix without . or .. segments",
+  )
+  .brand<"DocumentPathPrefix">();
+export type DocumentPathPrefix = z.infer<typeof PathPrefix>;
+
+const ByDocumentId = z
+  .object({ documentId: DocumentId, path: z.never().optional() })
+  .strict();
+const ByPath = z
+  .object({ path: Path, documentId: z.never().optional() })
+  .strict();
+export const Locator = z.union([ByDocumentId, ByPath]);
+export type RequiredLocator = z.infer<typeof Locator>;
+export const OptionalOpenLocator = z.union([
+  ByDocumentId,
+  ByPath,
+  z
+    .object({ documentId: z.never().optional(), path: z.never().optional() })
+    .strict(),
+]);
+export type OptionalOpenLocator = z.infer<typeof OptionalOpenLocator>;
+export type OptionalLocator = z.infer<typeof OptionalOpenLocator>;
+
 export const AnchorInput = z
   .object({
     revisionId: RevisionId,
@@ -49,6 +84,9 @@ export const AnchorInput = z
   })
   .strict();
 export type AnchorInput = z.infer<typeof AnchorInput>;
+type ValidatedAnchorBrand = { readonly __validatedAnchor: unique symbol };
+export type ValidatedAnchorInput = AnchorInput & ValidatedAnchorBrand;
+
 export interface DocumentSummary {
   id: DocumentId;
   path: DocumentPath;
@@ -61,24 +99,30 @@ export interface DocumentSummary {
   assetId: AssetId | null;
   archived: boolean;
 }
+
+/** Flat response projection kept for the existing renderer/MCP wire. */
 export interface DocumentRevision extends DocumentSummary {
   content: string;
   parentId: RevisionId | null;
   isCurrent: boolean;
 }
+
 export interface Anchor extends AnchorInput {
   id: AnchorId;
   documentId: DocumentId;
 }
+
+export type ConnectionRelation =
+  "reference" | "explanation" | "question" | "contrast" | "continuation";
 export interface Connection {
   id: ConnectionId;
   from: Anchor;
   to: Anchor;
-  relation:
-    "reference" | "explanation" | "question" | "contrast" | "continuation";
+  relation: ConnectionRelation;
   label: string;
   createdAt: string;
 }
+
 export interface Question {
   id: QuestionId;
   anchor: Anchor;
@@ -86,12 +130,18 @@ export interface Question {
   createdAt: string;
   answers: DocumentId[];
 }
+
 export interface ReadingView {
   document: DocumentRevision;
   connections: Connection[];
   questions: Question[];
-  documents: DocumentSummary[];
+  connectionsNextCursor: string | null;
+  questionsNextCursor: string | null;
 }
+
+export type OpenDocumentResult =
+  { status: "empty" } | { status: "ready"; view: ReadingView };
+
 export class DomainError extends Error {
   constructor(
     public code: string,
@@ -102,8 +152,19 @@ export class DomainError extends Error {
     this.name = "DomainError";
   }
 }
+
+function assertOffset(offset: number): void {
+  if (!Number.isSafeInteger(offset) || offset < 0)
+    throw new DomainError(
+      "INVALID_OFFSET",
+      "Text offsets must be safe non-negative integers.",
+    );
+}
+
 export function validateAnchor(content: string, input: AnchorInput): void {
   const { start, end, quote } = input;
+  assertOffset(start);
+  assertOffset(end);
   if (
     start >= end ||
     end > content.length ||
@@ -125,6 +186,16 @@ export function validateAnchor(content: string, input: AnchorInput): void {
         "A selection cannot split a Unicode surrogate pair.",
       );
 }
+
+/** The only constructor for the internal validated-anchor boundary. */
+export function validateAnchorInput(
+  content: string,
+  input: AnchorInput,
+): ValidatedAnchorInput {
+  validateAnchor(content, input);
+  return input as ValidatedAnchorInput;
+}
+
 export function applyEdit(
   content: string,
   start: number,
@@ -132,6 +203,8 @@ export function applyEdit(
   expected: string,
   replacement: string,
 ): string {
+  assertOffset(start);
+  assertOffset(end);
   if (
     start > end ||
     end > content.length ||

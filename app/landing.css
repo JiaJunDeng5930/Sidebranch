@@ -1,0 +1,353 @@
+.xanadu-intro {
+  --ink: #171c23;
+  --paper: #f1ede4;
+  --dim: #9a9da4;
+  --thread: #d39e6d;
+  min-height: 100svh;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 0 clamp(24px, 5vw, 88px);
+  overflow: hidden;
+}
+.intro-masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  height: 118px;
+  border-bottom: 1px solid #eef0f02b;
+}
+.intro-wordmark {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 51px;
+  letter-spacing: -3px;
+  line-height: 0.85;
+}
+.intro-wordmark span {
+  display: block;
+  font-family: Arial, sans-serif;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 5px;
+  margin: 13px 0 0 4px;
+}
+.intro-index {
+  margin-left: auto;
+  margin-right: 7vw;
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 2px;
+}
+.intro-signin {
+  font-size: 13px;
+  white-space: nowrap;
+  border-bottom: 1px solid #a7a8a9;
+  padding: 8px 0;
+  display: flex;
+  gap: 26px;
+}
+.intro-signin:hover {
+  color: var(--thread);
+}
+.intro-reading {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.83fr) minmax(500px, 1.17fr);
+  align-items: center;
+  gap: 4vw;
+  min-height: 660px;
+  padding: 60px 0 70px;
+}
+.intro-kicker {
+  font-size: 12px;
+  letter-spacing: 3px;
+  color: #b5b8bd;
+  margin-bottom: 35px;
+}
+.intro-statement h1 {
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: clamp(44px, 4.1vw, 76px);
+  font-weight: 400;
+  letter-spacing: -1.5px;
+  line-height: 1.35;
+  margin-bottom: 32px;
+}
+.intro-statement h1 span {
+  color: var(--thread);
+}
+.intro-description {
+  font-size: 15px;
+  line-height: 2;
+  color: #b9bdc3;
+  max-width: 325px;
+}
+.intro-number {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  color: #888e97;
+  font-size: 10px;
+  margin-top: 46px;
+  white-space: nowrap;
+}
+.intro-number i {
+  height: 1px;
+  width: 36px;
+  background: #8a6b54;
+}
+.intro-space {
+  position: relative;
+  isolation: isolate;
+  height: 490px;
+  margin: 0;
+  perspective: 1300px;
+}
+.intro-paper {
+  position: absolute;
+  width: 45%;
+  padding: 25px 23px 20px;
+  color: #2d2d2b;
+  background: var(--paper);
+  box-shadow:
+    1px 0 0 #77736c,
+    0 18px 40px #0004;
+}
+.intro-source {
+  z-index: 3;
+  top: 34px;
+  left: 0;
+  min-height: 385px;
+}
+.intro-companion {
+  z-index: 2;
+  top: 113px;
+  right: 0;
+  min-height: 346px;
+  transform: rotateY(-8deg);
+  transform-origin: left center;
+  background: #e5e2da;
+}
+.intro-paper-heading {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #74736f;
+  letter-spacing: 1px;
+  border-bottom: 1px solid #b9b7b1;
+  padding-bottom: 15px;
+  margin-bottom: 26px;
+}
+.intro-paper h2 {
+  font-family: Georgia, "Songti SC", "STSong", serif;
+  font-size: 27px;
+  font-weight: 400;
+  line-height: 1.45;
+  margin-bottom: 22px;
+}
+.intro-paper p {
+  font-size: 12px;
+  line-height: 2.1;
+  margin-bottom: 15px;
+}
+.intro-paper mark {
+  background: #d1b49270;
+  color: inherit;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.intro-paper-rule {
+  height: 1px;
+  background: #bcb8ae;
+  margin-top: 24px;
+  margin-bottom: 12px;
+}
+.intro-paper small {
+  color: #77766f;
+  font-size: 9px;
+  letter-spacing: 2px;
+}
+.intro-beam {
+  position: absolute;
+  z-index: 1;
+  width: 33%;
+  left: 39%;
+  height: 340px;
+  top: 71px;
+  color: var(--thread);
+  overflow: visible;
+}
+.intro-beam path:first-child {
+  fill: #d6a97826;
+  stroke: none;
+}
+.intro-beam path + path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 0.7;
+  opacity: 0.7;
+}
+.intro-depth-sheet {
+  position: absolute;
+  z-index: -1;
+  top: -5px;
+  left: 49%;
+  width: 35%;
+  height: 310px;
+  border: 1px solid #b6b4ab44;
+  background: #a09d9330;
+  transform: translateZ(-170px) rotateY(-24deg) rotateZ(4deg);
+  padding: 24px;
+  color: #b3b2ac99;
+}
+.intro-depth-sheet span {
+  font-size: 10px;
+}
+.intro-depth-sheet i {
+  display: block;
+  height: 1px;
+  margin-top: 28px;
+  background: #e4dfd72b;
+}
+.intro-space figcaption {
+  position: absolute;
+  left: 0;
+  bottom: -18px;
+  color: #898f97;
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+.intro-colophon {
+  border-top: 1px solid #eef0f02b;
+  padding: 26px 0 32px;
+  display: grid;
+  grid-template-columns: 1fr 0.8fr auto;
+  gap: 7vw;
+  align-items: start;
+  font-size: 11px;
+  color: #969ca6;
+  line-height: 1.9;
+}
+.intro-colophon p {
+  margin: 0;
+  max-width: 360px;
+}
+.intro-colophon a {
+  text-underline-offset: 4px;
+  text-decoration: underline;
+  text-decoration-color: #676d76;
+}
+.intro-colophon > a {
+  white-space: nowrap;
+}
+@media (min-width: 1650px) {
+  .intro-reading {
+    min-height: 760px;
+  }
+  .intro-space {
+    max-width: 760px;
+  }
+  .intro-paper p {
+    font-size: 14px;
+  }
+  .intro-paper {
+    padding: 28px;
+  }
+}
+@media (max-width: 1080px) {
+  .intro-reading {
+    gap: 30px;
+    grid-template-columns: minmax(250px, 0.8fr) minmax(400px, 1.2fr);
+  }
+  .intro-statement h1 {
+    font-size: 44px;
+  }
+  .intro-paper {
+    padding: 20px 16px;
+  }
+  .intro-paper h2 {
+    font-size: 23px;
+  }
+  .intro-index {
+    display: none;
+  }
+  .intro-colophon {
+    gap: 35px;
+  }
+}
+@media (max-width: 780px) {
+  .intro-masthead {
+    height: 100px;
+  }
+  .intro-wordmark {
+    font-size: 43px;
+  }
+  .intro-reading {
+    grid-template-columns: 1fr;
+    padding-top: 44px;
+    gap: 36px;
+  }
+  .intro-statement h1 {
+    font-size: clamp(43px, 8vw, 64px);
+    margin-bottom: 24px;
+  }
+  .intro-kicker {
+    margin-bottom: 20px;
+  }
+  .intro-description {
+    max-width: 480px;
+  }
+  .intro-number {
+    margin-top: 24px;
+  }
+  .intro-space {
+    max-width: 610px;
+    width: 100%;
+    margin: 0 auto;
+    height: 470px;
+  }
+  .intro-colophon {
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+  }
+  .intro-colophon > a {
+    grid-column: 1/-1;
+  }
+}
+@media (max-width: 430px) {
+  .xanadu-intro {
+    padding: 0 22px;
+  }
+  .intro-signin {
+    font-size: 11px;
+    gap: 15px;
+  }
+  .intro-paper {
+    padding: 16px 12px;
+    width: 46%;
+  }
+  .intro-paper-heading {
+    font-size: 8px;
+    letter-spacing: 0;
+    margin-bottom: 19px;
+    gap: 8px;
+  }
+  .intro-paper h2 {
+    font-size: 21px;
+  }
+  .intro-paper p {
+    font-size: 11px;
+  }
+  .intro-source {
+    min-height: 379px;
+  }
+  .intro-companion {
+    top: 105px;
+    min-height: 347px;
+  }
+  .intro-space figcaption {
+    font-size: 9px;
+    letter-spacing: 1px;
+  }
+  .intro-colophon {
+    grid-template-columns: 1fr;
+  }
+}

@@ -22,16 +22,20 @@ export const assets = sqliteTable("assets", {
   bytes: integer("bytes").notNull(),
   createdAt: text("created_at").notNull(),
 });
-export const documents = sqliteTable("documents", {
-  id: text("id").primaryKey().$type<DocumentId>(),
-  path: text("path").notNull().unique().$type<DocumentPath>(),
-  title: text("title").notNull(),
-  assetId: text("asset_id")
-    .references(() => assets.id)
-    .$type<AssetId>(),
-  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
-  createdAt: text("created_at").notNull(),
-});
+export const documents = sqliteTable(
+  "documents",
+  {
+    id: text("id").primaryKey().$type<DocumentId>(),
+    path: text("path").notNull().unique().$type<DocumentPath>(),
+    title: text("title").notNull(),
+    assetId: text("asset_id")
+      .references(() => assets.id)
+      .$type<AssetId>(),
+    archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("documents_archived_path").on(t.archived, t.path, t.id)],
+);
 export const revisions = sqliteTable(
   "revisions",
   {
@@ -49,43 +53,62 @@ export const revisions = sqliteTable(
   (t) => [
     uniqueIndex("revision_sequence").on(t.documentId, t.sequence),
     index("revision_document").on(t.documentId),
+    index("revision_document_created").on(t.documentId, t.createdAt, t.id),
   ],
 );
-export const anchors = sqliteTable("anchors", {
-  id: text("id").primaryKey().$type<AnchorId>(),
-  revisionId: text("revision_id")
-    .notNull()
-    .references(() => revisions.id)
-    .$type<RevisionId>(),
-  start: integer("start").notNull(),
-  end: integer("end").notNull(),
-  quote: text("quote").notNull(),
-});
-export const connections = sqliteTable("connections", {
-  id: text("id").primaryKey().$type<ConnectionId>(),
-  fromId: text("from_id")
-    .notNull()
-    .references(() => anchors.id)
-    .$type<AnchorId>(),
-  toId: text("to_id")
-    .notNull()
-    .references(() => anchors.id)
-    .$type<AnchorId>(),
-  relation: text("relation", {
-    enum: ["reference", "explanation", "question", "contrast", "continuation"],
-  }).notNull(),
-  label: text("label").notNull(),
-  createdAt: text("created_at").notNull(),
-});
-export const questions = sqliteTable("questions", {
-  id: text("id").primaryKey().$type<QuestionId>(),
-  anchorId: text("anchor_id")
-    .notNull()
-    .references(() => anchors.id)
-    .$type<AnchorId>(),
-  body: text("body").notNull(),
-  createdAt: text("created_at").notNull(),
-});
+export const anchors = sqliteTable(
+  "anchors",
+  {
+    id: text("id").primaryKey().$type<AnchorId>(),
+    revisionId: text("revision_id")
+      .notNull()
+      .references(() => revisions.id)
+      .$type<RevisionId>(),
+    start: integer("start").notNull(),
+    end: integer("end").notNull(),
+    quote: text("quote").notNull(),
+  },
+  (t) => [index("anchors_revision").on(t.revisionId)],
+);
+export const connections = sqliteTable(
+  "connections",
+  {
+    id: text("id").primaryKey().$type<ConnectionId>(),
+    fromId: text("from_id")
+      .notNull()
+      .references(() => anchors.id)
+      .$type<AnchorId>(),
+    toId: text("to_id")
+      .notNull()
+      .references(() => anchors.id)
+      .$type<AnchorId>(),
+    relation: text("relation", {
+      enum: ["reference", "explanation", "question", "contrast", "continuation"],
+    }).notNull(),
+    label: text("label").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("connections_from_created").on(t.fromId, t.createdAt, t.id),
+    index("connections_to_created").on(t.toId, t.createdAt, t.id),
+  ],
+);
+export const questions = sqliteTable(
+  "questions",
+  {
+    id: text("id").primaryKey().$type<QuestionId>(),
+    anchorId: text("anchor_id")
+      .notNull()
+      .references(() => anchors.id)
+      .$type<AnchorId>(),
+    body: text("body").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("questions_anchor_created").on(t.anchorId, t.createdAt, t.id),
+    index("questions_created").on(t.createdAt, t.id),
+  ],
+);
 export const answers = sqliteTable(
   "answers",
   {
@@ -118,6 +141,7 @@ export const oauthRequests = sqliteTable("oauth_requests", {
   challenge: text("challenge").notNull(),
   state: text("state").notNull(),
   resource: text("resource").notNull(),
+  scope: text("scope").notNull().default("documents:read documents:write"),
   expiresAt: integer("expires_at").notNull(),
 });
 export const oauthCodes = sqliteTable("oauth_codes", {
@@ -127,6 +151,7 @@ export const oauthCodes = sqliteTable("oauth_codes", {
   redirectUri: text("redirect_uri").notNull(),
   challenge: text("challenge").notNull(),
   resource: text("resource").notNull(),
+  scope: text("scope").notNull().default("documents:read documents:write"),
   expiresAt: integer("expires_at").notNull(),
 });
 export const oauthTokens = sqliteTable(
@@ -136,6 +161,7 @@ export const oauthTokens = sqliteTable(
     userId: text("user_id").notNull(),
     clientId: text("client_id").notNull(),
     resource: text("resource").notNull(),
+  scope: text("scope").notNull().default("documents:read documents:write"),
     kind: text("kind", { enum: ["access", "refresh"] }).notNull(),
     family: text("family").notNull(),
     consumed: integer("consumed").notNull().default(0),

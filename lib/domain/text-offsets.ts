@@ -1,5 +1,14 @@
 import { decodeNamedCharacterReference } from "decode-named-character-reference";
-/** Map rendered UTF-16 boundaries back to Markdown source boundaries. */
+
+/**
+ * Map rendered UTF-16 boundaries back to Markdown source boundaries.
+ *
+ * Both strings use JavaScript's UTF-16 indexing.  The returned array has one
+ * entry for every rendered boundary, so its length is `rendered.length + 1`.
+ * A boundary can map to the same source position when Markdown has removed a
+ * delimiter.  Returning `null` is intentional: callers must not invent a
+ * source position for a transformation they do not understand.
+ */
 export function renderedTextOffsets(
   source: string,
   rendered: string,
@@ -7,8 +16,8 @@ export function renderedTextOffsets(
   if (source === rendered)
     return Array.from({ length: rendered.length + 1 }, (_, i) => i);
   function decode(raw: string, base: number) {
-    let text = "",
-      offsets = [base];
+    let text = "";
+    const offsets: number[] = [base];
     for (let i = 0; i < raw.length;) {
       let value = raw[i],
         width = 1;
@@ -33,8 +42,19 @@ export function renderedTextOffsets(
         width = raw[i + 1] === "\n" ? 2 : 1;
       }
       text += value;
-      for (let k = 1; k <= value.length; k++)
-        offsets.push(base + i + (k === value.length ? width : 0));
+      // `value.length` is a UTF-16 length.  For a supplementary code point
+      // (for example an emoji decoded from an entity), do not map the second
+      // code unit to a made-up position inside the source token.  The first
+      // rendered boundary stays at the token start and the final boundary is
+      // the token end; validation at the document boundary rejects a source
+      // surrogate split when the source itself contains one.
+      if (value.length > 1 && width > 1) {
+        for (let k = 1; k < value.length; k++) offsets.push(base + i);
+        offsets.push(base + i + width);
+      } else {
+        for (let k = 1; k <= value.length; k++)
+          offsets.push(base + i + (k === value.length ? width : 0));
+      }
       i += width;
     }
     return { text, offsets };
@@ -67,6 +87,33 @@ export function renderedTextOffsets(
     ];
   return null;
 }
+
+/** Check the shape and monotonicity of a rendered-to-source map. */
+export function isValidRenderedTextOffsets(
+  offsets: readonly number[],
+  renderedLength: number,
+  sourceLength: number,
+): boolean {
+  if (
+    !Number.isInteger(renderedLength) ||
+    renderedLength < 0 ||
+    offsets.length !== renderedLength + 1
+  )
+    return false;
+  let previous = -1;
+  for (const offset of offsets) {
+    if (
+      !Number.isInteger(offset) ||
+      offset < 0 ||
+      offset > sourceLength ||
+      offset < previous
+    )
+      return false;
+    previous = offset;
+  }
+  return true;
+}
+
 function numericEntity(entity: string): string | null {
   const hex = entity[1]?.toLowerCase() === "x";
   const value = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);

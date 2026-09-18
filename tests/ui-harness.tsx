@@ -6,13 +6,25 @@ import {
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Reader } from "../components/reader/reader";
 import type { ReaderClient } from "../lib/client/reader-client";
-import type {
-  CommandName,
-  CommandInput,
-  CommandResults,
+import {
+  commandSchemas,
+  parseCommandInput,
+  parseCommandResult,
+  type CommandName,
+  type CommandInput,
+  type CommandResults,
 } from "../lib/domain/commands";
+import type { Question } from "../lib/domain/model";
+import { createHostAnswer } from "./ui-host-answer";
 import "../app/globals.css";
 import appHtml from "../.app-build/reader.html?raw";
+import { observeReaderPerformance } from "./ui-performance";
+observeReaderPerformance();
+
+function isCommandName(name: string): name is CommandName {
+  return Object.hasOwn(commandSchemas, name);
+}
+
 const client: ReaderClient = {
   mode: "website",
   async invoke<K extends CommandName>(
@@ -24,71 +36,121 @@ const client: ReaderClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, args }),
     });
-    const data = (await res.json()) as { error?: { message?: string } };
-    if (!res.ok) throw new Error(data.error?.message ?? "QA request failed");
-    return data as CommandResults[K];
+    const data: unknown = await res.json();
+    if (!res.ok) throw new Error(JSON.stringify(data));
+    return parseCommandResult(name, data);
   },
 };
+
 function Harness() {
-  const [mode, setMode] = useState<"website" | "app">("website"),
-    [mobile, setMobile] = useState(false),
-    [message, setMessage] = useState("");
-  const ref = useRef<HTMLIFrameElement>(null);
+  const [mode, setMode] = useState<"website" | "app">("website");
+  const [mobile, setMobile] = useState(false);
+  const [message, setMessage] = useState("");
+  const [question, setQuestion] = useState<Question | null>(null);
+  const [hostStatus, setHostStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const bridgeRef = useRef<AppBridge | null>(null);
+
   useEffect(() => {
-    if (mode !== "app" || !ref.current) return;
-    const iframe = ref.current;
+    if (mode !== "app" || !iframeRef.current) return;
+    const iframe = iframeRef.current;
     const bridge = new AppBridge(
       null,
-      { name: "Local QA host", version: "1.0.0" },
+      { name: "Local QA host", version: "2.0.0" },
       { serverTools: {}, message: { text: {} } },
     );
+    bridgeRef.current = bridge;
     bridge.oncalltool = async ({ name, arguments: args }) => {
       try {
-        const data = await client.invoke(name as CommandName, args as never);
+        if (!isCommandName(name)) throw new Error("Unknown command");
+        const data = await client.invoke(name, parseCommandInput(name, args));
+        if (name === "ask")
+          setQuestion(parseCommandResult("ask", data).question);
         return {
           content: [{ type: "text", text: "ok" }],
-          structuredContent: data as unknown as Record<string, unknown>,
+          structuredContent: { ...data },
         };
-      } catch (e) {
-        return { isError: true, content: [{ type: "text", text: String(e) }] };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: String(error) }],
+        };
       }
     };
     bridge.onmessage = async ({ content }) => {
       setMessage(
-        content.map((c) => (c.type === "text" ? c.text : "")).join(""),
+        content.map((item) => (item.type === "text" ? item.text : "")).join(""),
       );
       return {};
     };
     bridge.oninitialized = async () => {
-      await bridge.sendToolInput({ arguments: {} });
-      await bridge.sendToolResult({
-        content: [{ type: "text", text: "Opened" }],
-        structuredContent: (await client.invoke(
-          "open_document",
-          {},
-        )) as unknown as Record<string, unknown>,
-      });
+      try {
+        await bridge.sendToolInput({ arguments: {} });
+        await bridge.sendToolResult({
+          content: [{ type: "text", text: "Opened" }],
+          structuredContent: { ...(await client.invoke("open_document", {})) },
+        });
+        setHostStatus("App connected");
+      } catch (error) {
+        setHostStatus(String(error));
+      }
     };
-    const transport = new PostMessageTransport(
-      iframe.contentWindow!,
-      iframe.contentWindow!,
-    );
-    void bridge.connect(transport);
+    const frameWindow = iframe.contentWindow;
+    if (!frameWindow) throw new Error("Missing QA iframe window");
+    const transport = new PostMessageTransport(frameWindow, frameWindow);
+    void bridge
+      .connect(transport)
+      .catch((error) => setHostStatus(String(error)));
     iframe.srcdoc = appHtml;
     return () => {
+      bridgeRef.current = null;
       void bridge.close();
     };
   }, [mode]);
+
+  async function respond() {
+    if (!question || !bridgeRef.current) return;
+    setBusy(true);
+    try {
+      const result = await createHostAnswer(client, question);
+      await bridgeRef.current.sendToolInput({
+        arguments:
+          result.status === "ready"
+            ? { documentId: result.view.document.id }
+            : {},
+      });
+      await bridgeRef.current.sendToolResult({
+        content: [
+          {
+            type: "text",
+            text: "Answer written, associated and linked; document opened.",
+          },
+        ],
+        structuredContent: { ...result },
+      });
+      setHostStatus("Host answer opened");
+    } catch (error) {
+      setHostStatus(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
+      <style>{".qa-reader-container > .reader-shell { height: 100%; }"}</style>
       <div
         style={{
-          height: 40,
+          minHeight: 40,
           padding: "6px 18px",
           display: "flex",
-          gap: 20,
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 16,
           background: "#fff",
-          fontSize: 14,
+          color: "#222",
+          fontSize: 12,
         }}
       >
         <strong>LOCAL QA</strong>
@@ -97,9 +159,43 @@ function Harness() {
         <button onClick={() => setMobile(!mobile)}>
           {mobile ? "Desktop" : "Mobile width"}
         </button>
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const response = await fetch("/__qa-api", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: "__benchmark" }),
+              });
+              if (!response.ok) throw new Error(await response.text());
+              window.location.reload();
+            } catch (error) {
+              setHostStatus(String(error));
+              setBusy(false);
+            }
+          }}
+        >
+          Load stress fixture
+        </button>
+        <button
+          onClick={() =>
+            document.dispatchEvent(new Event("qa-reset-performance"))
+          }
+        >
+          Reset performance
+        </button>
         {message && <span role="status">Host received question</span>}
+        {question && mode === "app" && (
+          <button disabled={busy} onClick={() => void respond()}>
+            Respond as QA host
+          </button>
+        )}
+        {hostStatus && <span>{hostStatus}</span>}
       </div>
       <div
+        className="qa-reader-container"
         style={{
           width: mobile ? 390 : "100%",
           margin: "0 auto",
@@ -119,7 +215,7 @@ function Harness() {
         ) : (
           <iframe
             title="MCP App test"
-            ref={ref}
+            ref={iframeRef}
             style={{ width: "100%", height: "100%", border: 0 }}
           />
         )}
@@ -131,6 +227,7 @@ function Harness() {
             bottom: 0,
             left: 0,
             background: "white",
+            color: "#222",
             zIndex: 100,
             maxWidth: 800,
           }}
@@ -142,7 +239,9 @@ function Harness() {
     </>
   );
 }
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (!root) throw new Error("Missing QA root");
+createRoot(root).render(
   new URLSearchParams(location.search).has("frame") ? (
     <Reader client={client} />
   ) : (

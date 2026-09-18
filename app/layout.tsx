@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Xanadu Sidebranch",
-  description: "文档、问题与思想之间的连接。",
+  description:
+    "让原文、解释与反例同时留在眼前。一个受 Project Xanadu 启发的私人文档空间。",
   other: {
     "codex-preview": "development",
   },
