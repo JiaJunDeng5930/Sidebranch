@@ -8,6 +8,20 @@
       "when": 1789648871334,
       "tag": "0000_curvy_human_torch",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789660047169,
+      "tag": "0001_service_query_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789698680970,
+      "tag": "0002_oauth_scopes",
+      "breakpoints": true
     }
   ]
 }

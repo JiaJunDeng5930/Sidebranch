@@ -1,8 +1,25 @@
 import { z } from "zod";
 import { DomainError } from "../domain/model";
 import type { RuntimeEnv } from "./env";
-import { sha256, randomToken, type Owner } from "./owner-auth";
-export const OAUTH_SCOPE = "documents:read documents:write";
+import {
+  sha256,
+  randomToken,
+  scopeString,
+  FULL_SCOPES,
+  type OAuthScope,
+  type Owner,
+} from "./owner-auth";
+export const OAUTH_SCOPE = scopeString(FULL_SCOPES);
+const SUPPORTED_SCOPES = new Set<OAuthScope>(FULL_SCOPES);
+function normalizeScope(raw: string | null | undefined): OAuthScope[] {
+  const requested = [...new Set((raw ?? OAUTH_SCOPE).split(/\s+/).filter(Boolean))];
+  if (!requested.length || requested.some((scope) => !SUPPORTED_SCOPES.has(scope as OAuthScope)))
+    throw new DomainError("INVALID_SCOPE", "Unsupported scope.");
+  return requested as OAuthScope[];
+}
+function isSubset(requested: readonly OAuthScope[], granted: readonly OAuthScope[]): boolean {
+  return requested.every((scope) => granted.includes(scope));
+}
 const redirectUri = z
   .string()
   .url()
@@ -114,11 +131,7 @@ export async function authorizationRequest(
       "INVALID_RESOURCE",
       "OAuth resource does not match this server.",
     );
-  if (
-    a.scope &&
-    a.scope.split(" ").some((s) => !OAUTH_SCOPE.split(" ").includes(s))
-  )
-    throw new DomainError("INVALID_SCOPE", "Unsupported scope.");
+  const scope = normalizeScope(a.scope);
   const client = await env.DB.prepare(
     "SELECT redirect_uris,name FROM oauth_clients WHERE id=?",
   )
@@ -137,7 +150,7 @@ export async function authorizationRequest(
     .run();
   const id = randomToken();
   await env.DB.prepare(
-    "INSERT INTO oauth_requests(id,user_id,client_id,redirect_uri,challenge,state,resource,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+    "INSERT INTO oauth_requests(id,user_id,client_id,redirect_uri,challenge,state,resource,scope,expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
   )
     .bind(
       id,
@@ -147,10 +160,11 @@ export async function authorizationRequest(
       a.code_challenge,
       a.state,
       a.resource,
+      scopeString(scope),
       Date.now() + 600000,
     )
     .run();
-  return { id, clientName: client.name };
+  return { id, clientName: client.name, scope: scopeString(scope) };
 }
 type AuthorizationRow = {
   user_id: string;
@@ -159,6 +173,7 @@ type AuthorizationRow = {
   challenge: string;
   state: string;
   resource: string;
+  scope: string;
   expires_at: number;
 };
 export async function consent(
@@ -183,7 +198,7 @@ export async function consent(
   }
   const code = randomToken();
   await env.DB.prepare(
-    "INSERT INTO oauth_codes(hash,user_id,client_id,redirect_uri,challenge,resource,expires_at) VALUES(?,?,?,?,?,?,?)",
+    "INSERT INTO oauth_codes(hash,user_id,client_id,redirect_uri,challenge,resource,scope,expires_at) VALUES(?,?,?,?,?,?,?,?)",
   )
     .bind(
       await sha256(code),
@@ -192,6 +207,7 @@ export async function consent(
       req.redirect_uri,
       req.challenge,
       req.resource,
+      req.scope,
       Date.now() + 120000,
     )
     .run();
@@ -203,6 +219,7 @@ type TokenRow = {
   user_id: string;
   client_id: string;
   resource: string;
+  scope: string;
   family: string;
   expires_at: number;
   consumed: number;
@@ -212,6 +229,7 @@ async function issueTokens(
   userId: string,
   clientId: string,
   resource: string,
+  scopes: readonly OAuthScope[],
   family = randomToken(),
 ) {
   const access = randomToken(),
@@ -220,22 +238,24 @@ async function issueTokens(
     refreshHash = await sha256(refresh);
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO oauth_tokens(hash,user_id,client_id,resource,kind,family,expires_at) VALUES(?,?,?,?,'access',?,?)",
+      "INSERT INTO oauth_tokens(hash,user_id,client_id,resource,scope,kind,family,expires_at) VALUES(?,?,?,?,?,'access',?,?)",
     ).bind(
       accessHash,
       userId,
       clientId,
       resource,
+      scopeString(scopes),
       family,
       Date.now() + 3600000,
     ),
     env.DB.prepare(
-      "INSERT INTO oauth_tokens(hash,user_id,client_id,resource,kind,family,expires_at) VALUES(?,?,?,?,'refresh',?,?)",
+      "INSERT INTO oauth_tokens(hash,user_id,client_id,resource,scope,kind,family,expires_at) VALUES(?,?,?,?,?,'refresh',?,?)",
     ).bind(
       refreshHash,
       userId,
       clientId,
       resource,
+      scopeString(scopes),
       family,
       Date.now() + 30 * 86400000,
     ),
@@ -245,7 +265,7 @@ async function issueTokens(
     refresh_token: refresh,
     token_type: "Bearer",
     expires_in: 3600,
-    scope: OAUTH_SCOPE,
+    scope: scopeString(scopes),
   };
 }
 export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
@@ -295,7 +315,11 @@ export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
         "invalid_grant",
         "Authorization code, PKCE verifier or redirect URI is invalid.",
       );
-    return issueTokens(env, row.user_id, clientId, resource);
+    const granted = normalizeScope(row.scope);
+    const requested = params.get("scope");
+    if (requested && !isSubset(normalizeScope(requested), granted))
+      throw new DomainError("invalid_scope", "Requested scope exceeds the grant.");
+    return issueTokens(env, row.user_id, clientId, resource, granted);
   }
   if (params.get("grant_type") === "refresh_token") {
     const refresh = params.get("refresh_token");
@@ -309,6 +333,10 @@ export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
       .first<TokenRow>();
     if (!old)
       throw new DomainError("invalid_grant", "Refresh token is invalid.");
+    const granted = normalizeScope(old.scope),
+      requested = params.get("scope");
+    if (requested && !isSubset(normalizeScope(requested), granted))
+      throw new DomainError("invalid_scope", "Requested scope exceeds the grant.");
     const used = await env.DB.prepare(
       "UPDATE oauth_tokens SET consumed=1 WHERE hash=? AND consumed=0 RETURNING hash",
     )
@@ -328,7 +356,7 @@ export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
     )
       .bind(old.family)
       .run();
-    return issueTokens(env, old.user_id, clientId, resource, old.family);
+    return issueTokens(env, old.user_id, clientId, resource, granted, old.family);
   }
   throw new DomainError("unsupported_grant_type", "Unsupported OAuth grant.");
 }

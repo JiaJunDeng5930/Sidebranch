@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { DocumentStore } from "../lib/server/document-store";
 import { authorizeIdentity } from "../lib/server/owner-auth";
 import type { RuntimeEnv } from "../lib/server/env";
@@ -20,10 +20,14 @@ export async function qaBackend() {
     SITE_ORIGIN: "http://terminal.local:4173",
     OWNER_USER_ID: "qa-owner",
   };
-  for (const sql of (
-    await readFile("drizzle/0000_curvy_human_torch.sql", "utf8")
-  ).split("--> statement-breakpoint"))
-    if (sql.trim()) await env.DB.prepare(sql).run();
+  for (const file of (await readdir("drizzle"))
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    for (const sql of (await readFile(`drizzle/${file}`, "utf8")).split(
+      "--> statement-breakpoint",
+    ))
+      if (sql.trim()) await env.DB.prepare(sql).run();
+  }
   const store = new DocumentStore(
     env,
     await authorizeIdentity(env, {

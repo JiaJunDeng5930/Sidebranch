@@ -1,3 +1,4 @@
+import { z, ZodError } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -6,15 +7,98 @@ import {
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 import {
+  commandResultSchemas,
   commandSchemas,
   commandDescriptions,
+  parseCommandInput,
+  parseCommandResult,
   readOnlyCommands,
   type CommandName,
+  ReadingViewSchema,
 } from "../domain/commands";
 import { DomainError } from "../domain/model";
 import { DocumentStore } from "./document-store";
-import { ZodError } from "zod";
+import {
+  FILE_PARAMS_META,
+  importFileInputShape,
+  normalizeImportFileInput,
+} from "./file-reference";
+import {
+  READ_SCOPE,
+  WRITE_SCOPE,
+  requireScope,
+} from "./owner-auth";
+import { friendlyErrorMessage } from "./http";
+
 export const APP_RESOURCE_URI = "ui://xanadu-sidebranch/reader-v1.html";
+function securitySchemes(scope: string) {
+  return [{ type: "oauth2", scopes: [scope] }] as const;
+}
+
+/**
+ * The SDK's raw-shape registration form only accepts an object shape.  The
+ * service decoder remains the authoritative discriminated union; this shape
+ * publishes the same status discriminator while retaining compatibility with
+ * the pinned SDK's tools/list and output validation paths.
+ */
+function inputSchema(name: CommandName): z.AnyZodObject {
+  if (name === "import_file")
+    return z.object(importFileInputShape).strict();
+  return commandSchemas[name] as z.AnyZodObject;
+}
+
+function outputSchema(name: CommandName): z.AnyZodObject {
+  if (name === "open_document")
+    return z
+      .object({
+        status: z.enum(["empty", "ready"]),
+        view: ReadingViewSchema.optional(),
+      })
+      .strict();
+  return commandResultSchemas[name] as z.AnyZodObject;
+}
+
+function toolError(
+  error: unknown,
+  requiredScope?: string,
+): {
+  isError: true;
+  content: [{ type: "text"; text: string }];
+  _meta?: Record<string, unknown>;
+} {
+  const code =
+    error instanceof DomainError
+      ? error.code
+      : error instanceof ZodError
+        ? "INVALID_INPUT"
+        : "INTERNAL_ERROR";
+  const message =
+    error instanceof DomainError
+      ? friendlyErrorMessage(error.code, error.message)
+      : error instanceof ZodError
+        ? friendlyErrorMessage(
+            "INVALID_INPUT",
+            error.issues.map((issue) => issue.message).join("; "),
+          )
+        : "操作未完成，请稍后重试。";
+  const requestId = crypto.randomUUID();
+  if (!(error instanceof DomainError) && !(error instanceof ZodError))
+    console.error("MCP tool failed", requestId, error);
+  const result: {
+    isError: true;
+    content: [{ type: "text"; text: string }];
+    _meta?: Record<string, unknown>;
+  } = {
+    isError: true,
+    content: [{ type: "text", text: code + ": " + message }],
+    _meta: { "x-request-id": requestId },
+  };
+  if (error instanceof DomainError && error.code === "INSUFFICIENT_SCOPE" && requiredScope)
+    result._meta!["mcp/www_authenticate"] =
+      "Bearer error=\"insufficient_scope\", scope=\"" + requiredScope + "\"";
+  return result;
+}
+
 export async function handleMcp(
   store: DocumentStore,
   request: Request,
@@ -53,19 +137,26 @@ export async function handleMcp(
     }),
   );
   for (const name of Object.keys(commandSchemas) as CommandName[]) {
+    const readOnly = readOnlyCommands.has(name);
+    const requiredScope = readOnly ? READ_SCOPE : WRITE_SCOPE;
     registerAppTool(
       server,
       name,
       {
         title: name === "open_document" ? "Open Xanadu Sidebranch" : name,
-        description: commandDescriptions[name],
-        inputSchema: commandSchemas[name].shape,
+        description:
+          name === "import_file"
+            ? commandDescriptions[name] +
+              " A ChatGPT file reference may be supplied when the host supports openai/fileParams."
+            : commandDescriptions[name],
+        inputSchema: inputSchema(name),
+        outputSchema: outputSchema(name),
         annotations: {
-          readOnlyHint: readOnlyCommands.has(name),
+          readOnlyHint: readOnly,
           destructiveHint: ["edit", "archive", "unlink", "mv"].includes(name),
           openWorldHint: false,
           idempotentHint:
-            readOnlyCommands.has(name) ||
+            readOnly ||
             name === "answer" ||
             name === "archive" ||
             name === "unlink",
@@ -77,55 +168,38 @@ export async function handleMcp(
               : {}),
             visibility: ["model", "app"],
           },
-          securitySchemes: [
-            { type: "oauth2", scopes: ["documents:read", "documents:write"] },
-          ],
+          securitySchemes: securitySchemes(requiredScope),
+          ...(name === "import_file"
+            ? { "openai/fileParams": FILE_PARAMS_META }
+            : {}),
         },
       },
       async (args: unknown) => {
         try {
-          const result = await store.execute(name, args);
+          requireScope(store.owner, requiredScope);
+          const input =
+            name === "import_file"
+              ? await normalizeImportFileInput(args, store.env)
+              : parseCommandInput(name, args);
+          const result = await store.execute(name, input);
+          const structuredContent = parseCommandResult(name, result);
           return {
             content: [
               {
-                type: "text",
-                text:
-                  name === "open_document"
-                    ? "Document opened in the reading space."
-                    : JSON.stringify(result),
+                type: "text" as const,
+                text: (() => {
+                  if (name === "open_document" && "status" in structuredContent)
+                    return structuredContent.status === "empty"
+                      ? "文档空间为空，请先导入文件或创建文档。"
+                      : "Document opened in the reading space.";
+                  return JSON.stringify(structuredContent);
+                })(),
               },
             ],
-            structuredContent: result as unknown as Record<string, unknown>,
+            structuredContent,
           };
         } catch (error) {
-          if (
-            name === "open_document" &&
-            error instanceof DomainError &&
-            error.code === "EMPTY_SPACE"
-          )
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Your space is empty. Import a file or create a document.",
-                },
-              ],
-              structuredContent: { empty: true, documents: [] },
-            };
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text:
-                  error instanceof DomainError
-                    ? `${error.code}: ${error.message}`
-                    : error instanceof ZodError
-                      ? error.message
-                      : "The operation could not be completed.",
-              },
-            ],
-          };
+          return toolError(error, requiredScope);
         }
       },
     );

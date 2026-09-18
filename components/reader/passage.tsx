@@ -1,223 +1,481 @@
 "use client";
-import React, { useMemo } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { renderedTextOffsets } from "../../lib/domain/text-offsets";
+
+import React, { memo, useId, useLayoutEffect, useMemo, useRef } from "react";
 import type { AnchorInput, DocumentRevision } from "../../lib/domain/model";
-// Every rendered text node retains source offsets. Markdown punctuation is never guessed from DOM text.
-interface SourceNode {
-  type: string;
-  tagName?: string;
-  value?: string;
-  properties?: Record<string, unknown>;
-  children?: SourceNode[];
-  position?: { start: { offset?: number }; end: { offset?: number } };
+import { isValidRenderedTextOffsets } from "../../lib/domain/text-offsets";
+import {
+  assertRendererAnchor,
+  createRenderPlan,
+  RendererMappingError,
+} from "../../lib/reader/render-markdown";
+import { DocumentBody } from "./document-virtualizer";
+import { sourceRanges } from "../../lib/reader/render-dom";
+
+export interface PassageMark {
+  id: string;
+  anchor: AnchorInput;
+  color: string;
 }
-function sourceSpans(source: string, focus?: AnchorInput | null) {
-  return function plugin() {
-    return (tree: SourceNode) => {
-      function visit(node: SourceNode) {
-        if (!node.children) return;
-        node.children = node.children.flatMap((child) => {
-          if (
-            child.type === "text" &&
-            child.position?.start.offset !== undefined &&
-            child.position?.end.offset !== undefined
-          ) {
-            const start = child.position.start.offset,
-              end = child.position.end.offset,
-              value = child.value ?? "",
-              raw = source.slice(start, end),
-              map = renderedTextOffsets(raw, value);
-            if (!map) return [child];
-            const boundaries = [0, value.length];
-            if (focus) {
-              for (const offset of [focus.start - start, focus.end - start]) {
-                const index = map.findIndex((n) => n >= offset);
-                if (index > 0 && index < value.length) boundaries.push(index);
-              }
-            }
-            boundaries.sort((a, b) => a - b);
-            return boundaries.slice(0, -1).flatMap((from, i) => {
-              const to = boundaries[i + 1];
-              if (from === to) return [];
-              const absoluteStart = start + map[from],
-                absoluteEnd = start + map[to],
-                relative = map.slice(from, to + 1).map((n) => n - map[from]);
-              return [
-                {
-                  type: "element",
-                  tagName: "span",
-                  properties: {
-                    "data-source-start": absoluteStart,
-                    "data-source-end": absoluteEnd,
-                    ...(raw !== value
-                      ? { "data-source-map": JSON.stringify(relative) }
-                      : {}),
-                  },
-                  children: [{ type: "text", value: value.slice(from, to) }],
-                },
-              ];
-            });
-          }
-          visit(child);
-          return [child];
-        });
-      }
-      visit(tree);
-    };
+
+export interface PassageProps {
+  doc: DocumentRevision;
+  onSelect: (anchor: AnchorInput, rect: DOMRect) => void;
+  focus?: AnchorInput | null;
+  marks?: readonly PassageMark[];
+  onActivateMark?: (id: string) => void;
+  onGeometryChange?: () => void;
+}
+
+interface SpanPoint {
+  span: HTMLElement;
+  source: number;
+  renderedIndex: number;
+  renderedLength: number;
+  nodeStart: number;
+  nodeEnd: number;
+}
+
+function elementForNode(node: Node): HTMLElement | null {
+  if (node.nodeType === Node.ELEMENT_NODE) return node as HTMLElement;
+  return node.parentElement;
+}
+
+function closestSourceSpan(node: Node): HTMLElement | null {
+  return (
+    elementForNode(node)?.closest<HTMLElement>(
+      "span[data-source-start][data-source-end]",
+    ) ?? null
+  );
+}
+
+function firstSourceSpan(node: Node, fromEnd: boolean): HTMLElement | null {
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const spans = (node as Element).querySelectorAll<HTMLElement>(
+      "span[data-source-start][data-source-end]",
+    );
+    return spans.length ? spans[fromEnd ? spans.length - 1 : 0] : null;
+  }
+  return closestSourceSpan(node);
+}
+
+function parseIntegerAttribute(span: HTMLElement, name: string): number {
+  const value = Number(span.dataset[name]);
+  if (!Number.isInteger(value) || value < 0)
+    throw new RendererMappingError(`Missing integer ${name} on source span`);
+  return value;
+}
+
+function sourceMap(span: HTMLElement, renderedLength: number): number[] {
+  if (span.dataset.sourceMapState === "unmapped")
+    throw new RendererMappingError(
+      "This rendered Markdown text has no checked source mapping",
+    );
+  const encoded = span.dataset.sourceMap;
+  if (!encoded) {
+    const start = parseIntegerAttribute(span, "sourceStart");
+    return Array.from(
+      { length: renderedLength + 1 },
+      (_, index) => index + start,
+    );
+  }
+  let offsets: unknown;
+  try {
+    offsets = JSON.parse(encoded);
+  } catch {
+    throw new RendererMappingError("Malformed rendered-to-source map");
+  }
+  if (
+    !Array.isArray(offsets) ||
+    !isValidRenderedTextOffsets(
+      offsets,
+      renderedLength,
+      parseIntegerAttribute(span, "sourceEnd") -
+        parseIntegerAttribute(span, "sourceStart"),
+    )
+  )
+    throw new RendererMappingError("Invalid rendered-to-source map");
+  return offsets as number[];
+}
+
+function pointInSpan(span: HTMLElement, node: Node, offset: number): SpanPoint {
+  const sourceStart = parseIntegerAttribute(span, "sourceStart");
+  const sourceEnd = parseIntegerAttribute(span, "sourceEnd");
+  const renderedLength = Number(span.dataset.sourceRenderedLength);
+  if (!Number.isInteger(renderedLength) || renderedLength < 0)
+    throw new RendererMappingError(
+      "Missing rendered text length on source span",
+    );
+  const prefix = document.createRange();
+  prefix.selectNodeContents(span);
+  try {
+    prefix.setEnd(node, Math.max(0, offset));
+  } catch {
+    throw new RendererMappingError(
+      "Selection endpoint is outside its source span",
+    );
+  }
+  const renderedIndex = prefix.toString().length;
+  if (renderedIndex > renderedLength)
+    throw new RendererMappingError("Rendered endpoint exceeds source span");
+  const offsets = sourceMap(span, renderedLength);
+  const relative = offsets[renderedIndex];
+  if (!Number.isInteger(relative))
+    throw new RendererMappingError("Rendered endpoint has no source boundary");
+  const source = span.dataset.sourceMap ? sourceStart + relative : relative;
+  if (source < sourceStart || source > sourceEnd)
+    throw new RendererMappingError("Source endpoint exceeds source span");
+  return {
+    span,
+    source,
+    renderedIndex,
+    renderedLength,
+    nodeStart: Number.isInteger(Number(span.dataset.sourceNodeStart))
+      ? Number(span.dataset.sourceNodeStart)
+      : sourceStart,
+    nodeEnd: Number.isInteger(Number(span.dataset.sourceNodeEnd))
+      ? Number(span.dataset.sourceNodeEnd)
+      : sourceEnd,
   };
 }
+
+function selectionPoint(
+  node: Node,
+  offset: number,
+  end: boolean,
+): SpanPoint | null {
+  const direct = closestSourceSpan(node);
+  if (direct) return pointInSpan(direct, node, offset);
+  const element = elementForNode(node);
+  if (!element) return null;
+  const children = Array.from(element.childNodes);
+  const child =
+    children[
+      end
+        ? Math.max(0, Math.min(children.length - 1, offset - 1))
+        : Math.max(0, Math.min(children.length - 1, offset))
+    ];
+  const span = child
+    ? firstSourceSpan(child, end)
+    : firstSourceSpan(element, end);
+  if (!span) return null;
+  const boundary = end ? span.childNodes.length : 0;
+  return pointInSpan(span, span, boundary);
+}
+
+function sourceSpanBoundary(point: SpanPoint): number {
+  // A visible selection maps to the exact text token.  Any Markdown syntax
+  // between two tokens remains in the source quote when the range crosses
+  // those tokens; a single token must not silently absorb a heading marker or
+  // a link destination.
+  return point.source;
+}
+
+/**
+ * Return the exact source anchor represented by the browser's native range.
+ * Markdown punctuation is taken from `doc.content`, while the browser's
+ * rendered string remains available through `selectionPreview`.
+ */
 export function selectionAnchor(
   root: HTMLElement,
   doc: DocumentRevision,
 ): AnchorInput | null {
+  const revision = root.dataset.revisionId;
+  if (revision !== doc.revisionId)
+    throw new RendererMappingError(
+      "Selection root does not contain this revision",
+    );
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  const r = selection.getRangeAt(0);
-  if (!root.contains(r.startContainer) || !root.contains(r.endContainer))
+  const range = selection.getRangeAt(0);
+  if (
+    !root.contains(range.startContainer) ||
+    !root.contains(range.endContainer)
+  )
     return null;
-  function point(node: Node, offset: number, end: boolean): number | null {
-    let el: HTMLElement | null =
-      node.nodeType === Node.TEXT_NODE
-        ? node.parentElement
-        : (node as HTMLElement);
-    let span = el?.closest<HTMLElement>("[data-source-start]");
-    if (!span && el) {
-      const child = el.childNodes[Math.max(0, end ? offset - 1 : offset)];
-      const base =
-        child?.nodeType === Node.TEXT_NODE
-          ? child.parentElement
-          : (child as HTMLElement | undefined);
-      span =
-        base?.closest?.("[data-source-start]") ??
-        base?.querySelector?.("[data-source-start]") ??
-        null;
-      if (span) return Number(span.dataset[end ? "sourceEnd" : "sourceStart"]);
-    }
-    if (!span) return null;
-    const start = Number(span.dataset.sourceStart),
-      stop = Number(span.dataset.sourceEnd);
-    const prefix = document.createRange();
-    prefix.selectNodeContents(span);
-    try {
-      prefix.setEnd(node, offset);
-    } catch {
-      return null;
-    }
-    const index = prefix.toString().length;
-    const mapped = span.dataset.sourceMap;
-    if (mapped) {
-      const offsets = JSON.parse(mapped) as number[];
-      return start + (offsets[index] ?? (end ? stop - start : 0));
-    }
-    return Math.min(stop, start + index);
-  }
-  const start = point(r.startContainer, r.startOffset, false),
-    end = point(r.endContainer, r.endOffset, true);
-  if (start === null || end === null || start >= end) return null;
-  return {
+  const startPoint = selectionPoint(
+    range.startContainer,
+    range.startOffset,
+    false,
+  );
+  const endPoint = selectionPoint(range.endContainer, range.endOffset, true);
+  if (!startPoint || !endPoint)
+    throw new RendererMappingError("Selection endpoint is outside mapped text");
+  let start = sourceSpanBoundary(startPoint);
+  let end = sourceSpanBoundary(endPoint);
+  if (start > end) [start, end] = [end, start];
+  if (start < 0 || start >= end || end > doc.content.length)
+    throw new RendererMappingError(
+      "Selection source range is outside revision",
+    );
+  const anchor: AnchorInput = {
     revisionId: doc.revisionId,
     start,
     end,
     quote: doc.content.slice(start, end),
   };
+  assertRendererAnchor(doc.content, anchor, doc.revisionId);
+  return anchor;
 }
-export function Passage({
+
+/** Rendered quotation for UI preview; never use this as the saved anchor quote. */
+export function selectionPreview(root: HTMLElement): string {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return "";
+  const range = selection.getRangeAt(0);
+  return root.contains(range.commonAncestorContainer) ? range.toString() : "";
+}
+
+function findOwnerScroller(root: HTMLElement): HTMLElement | null {
+  const explicit = root.closest<HTMLElement>("[data-document-scroll]");
+  if (explicit) return explicit;
+  let parent = root.parentElement;
+  while (parent && parent !== document.body) {
+    if (parent.classList.contains("reading-area")) {
+      parent.dataset.documentScroll = "";
+      return parent;
+    }
+    const style = window.getComputedStyle(parent);
+    if (/(auto|scroll|overlay)/.test(style.overflowY)) {
+      parent.dataset.documentScroll = "";
+      return parent;
+    }
+    parent = parent.parentElement;
+  }
+  return null;
+}
+
+function scrollRangeWithinDocument(root: HTMLElement, range: Range): void {
+  const scroller = findOwnerScroller(root);
+  if (!scroller) return;
+  const rect = range.getBoundingClientRect(),
+    container = scroller.getBoundingClientRect();
+  const scale = container.height / scroller.offsetHeight || 1;
+  const delta =
+    (rect.top - container.top) / scale -
+    (scroller.clientHeight - rect.height / scale) / 2;
+  scroller.scrollTop = Math.max(
+    0,
+    Math.min(
+      scroller.scrollHeight - scroller.clientHeight,
+      scroller.scrollTop + delta,
+    ),
+  );
+}
+
+function validateMarks(
+  content: string,
+  revisionId: string,
+  marks: readonly PassageMark[] | undefined,
+): readonly PassageMark[] {
+  if (!marks?.length) return [];
+  // A parent may pass the connection catalogue to both panes.  Anchors from a
+  // different immutable revision have no legal DOM mapping in this pane and
+  // are therefore ignored rather than projected onto a similarly shaped text.
+  const localMarks = marks.filter(
+    (mark) => mark.anchor.revisionId === revisionId,
+  );
+  for (const mark of localMarks) {
+    if (!mark.id) throw new RendererMappingError("A mark must have an id");
+    assertRendererAnchor(content, mark.anchor, revisionId);
+  }
+  return localMarks;
+}
+
+function sameAnchor(
+  a: AnchorInput | null | undefined,
+  b: AnchorInput | null | undefined,
+): boolean {
+  return (
+    Boolean(a) === Boolean(b) &&
+    (!a ||
+      !b ||
+      (a.revisionId === b.revisionId &&
+        a.start === b.start &&
+        a.end === b.end &&
+        a.quote === b.quote))
+  );
+}
+
+function sameMarks(
+  a: readonly PassageMark[] | undefined,
+  b: readonly PassageMark[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((mark, index) => {
+    const other = b[index];
+    return (
+      mark.id === other.id &&
+      mark.color === other.color &&
+      sameAnchor(mark.anchor, other.anchor)
+    );
+  });
+}
+
+function PassageImpl({
   doc,
   onSelect,
   focus,
-}: {
-  doc: DocumentRevision;
-  onSelect: (anchor: AnchorInput, rect: DOMRect) => void;
-  focus?: AnchorInput | null;
-}) {
+  marks,
+  onActivateMark,
+  onGeometryChange,
+}: PassageProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const onSelectRef = useRef(onSelect);
+  const onActivateMarkRef = useRef(onActivateMark);
+  useLayoutEffect(() => {
+    onSelectRef.current = onSelect;
+    onActivateMarkRef.current = onActivateMark;
+  }, [onActivateMark, onSelect]);
   const currentFocus = focus?.revisionId === doc.revisionId ? focus : null;
-  const plugins = useMemo(
-    () => [sourceSpans(doc.content, currentFocus)],
-    [doc.content, currentFocus],
+  const plan = useMemo(
+    () => createRenderPlan(doc.content, doc.format),
+    [doc.content, doc.format],
   );
-  const ref = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    const root = ref.current;
+  const checkedMarks = useMemo(
+    () => validateMarks(doc.content, doc.revisionId, marks),
+    [doc.content, doc.revisionId, marks],
+  );
+  if (currentFocus)
+    assertRendererAnchor(doc.content, currentFocus, doc.revisionId);
+
+  const highlightId = `xanadu-${useId().replace(/[^a-z0-9]/gi, "")}`;
+  const markRanges = useRef<Array<{ id: string; ranges: Range[] }>>([]);
+  const focusKey = currentFocus
+    ? `${doc.revisionId}:${currentFocus.start}:${currentFocus.end}`
+    : null;
+  const navigatedFocus = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
     if (!root) return;
-    root
-      .querySelectorAll(".passage-focus")
-      .forEach((n) => n.classList.remove("passage-focus"));
-    if (focus?.revisionId !== doc.revisionId) return;
-    const spans = Array.from(
-      root.querySelectorAll<HTMLElement>("[data-source-start]"),
-    );
-    const marked = spans.filter(
-      (el) =>
-        Number(el.dataset.sourceStart) < focus.end &&
-        Number(el.dataset.sourceEnd) > focus.start,
-    );
-    marked.forEach((el) => el.classList.add("passage-focus"));
-    marked[0]?.scrollIntoView({ block: "center" });
-  }, [focus, doc.revisionId]);
-  function capture() {
-    const root = ref.current;
+    if (!focusKey) navigatedFocus.current = null;
+    const style = document.createElement("style");
+    const names: string[] = [];
+    const clear = () => {
+      for (const name of names) CSS.highlights?.delete(name);
+      names.length = 0;
+    };
+    const annotate = () => {
+      clear();
+      const rules: string[] = [];
+      const register = (suffix: string, ranges: Range[], color: string) => {
+        if (
+          !ranges.length ||
+          typeof Highlight === "undefined" ||
+          !CSS.highlights
+        )
+          return;
+        const name = `${highlightId}-${suffix}`;
+        CSS.highlights.set(name, new Highlight(...ranges));
+        names.push(name);
+        const checkedColor = CSS.supports("background-color", color)
+          ? color
+          : "#bd9c6666";
+        rules.push(
+          `::highlight(${name}) { background-color: ${checkedColor}; }`,
+        );
+      };
+      markRanges.current = checkedMarks.map((mark, index) => {
+        const ranges = sourceRanges(root, mark.anchor);
+        register(`mark${index}`, ranges, `color-mix(in srgb, ${mark.color} 35%, transparent)`);
+        return { id: mark.id, ranges };
+      });
+      if (currentFocus) {
+        const ranges = sourceRanges(root, currentFocus);
+        register("focus", ranges, "#d49e6955");
+        if (ranges[0] && navigatedFocus.current !== focusKey) {
+          scrollRangeWithinDocument(root, ranges[0]);
+          navigatedFocus.current = focusKey;
+        }
+      }
+      style.textContent = rules.join("\n");
+    };
+    document.head.appendChild(style);
+    annotate();
+    const observer = new MutationObserver(annotate);
+    observer.observe(root, { childList: true });
+    return () => {
+      observer.disconnect();
+      clear();
+      style.remove();
+    };
+  }, [checkedMarks, currentFocus, doc.revisionId, focusKey, highlightId]);
+
+  function captureSelection(): void {
+    const root = rootRef.current;
     if (!root) return;
-    const anchor = selectionAnchor(root, doc);
-    if (anchor) {
-      const r = window.getSelection()?.getRangeAt(0);
-      if (r) onSelect(anchor, r.getBoundingClientRect());
+    try {
+      const anchor = selectionAnchor(root, doc);
+      if (!anchor) return;
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (range) onSelectRef.current(anchor, range.getBoundingClientRect());
+    } catch (error) {
+      // A malformed or virtualized endpoint is rejected instead of being
+      // converted to an approximate saved anchor.
+      if (!(error instanceof RendererMappingError)) throw error;
     }
   }
+
+  function activateMark(event: React.MouseEvent<HTMLDivElement>): void {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    const hit = markRanges.current.find((mark) =>
+      mark.ranges.some((range) =>
+        Array.from(range.getClientRects()).some(
+          (rect) =>
+            event.clientX >= rect.left &&
+            event.clientX <= rect.right &&
+            event.clientY >= rect.top &&
+            event.clientY <= rect.bottom,
+        ),
+      ),
+    );
+    if (hit && onActivateMarkRef.current) {
+      event.preventDefault();
+      onActivateMarkRef.current(hit.id);
+    }
+  }
+
   return (
     <div
-      ref={ref}
+      key={doc.revisionId}
+      ref={rootRef}
       className="document-content"
-      onPointerUp={capture}
-      onKeyUp={(e) => {
-        if (e.key === "Shift") capture();
+      data-revision-id={doc.revisionId}
+      onPointerUp={captureSelection}
+      onKeyUp={(event) => {
+        if (
+          event.key === "Shift" ||
+          event.shiftKey ||
+          event.key === "ArrowLeft" ||
+          event.key === "ArrowRight" ||
+          event.key === "ArrowUp" ||
+          event.key === "ArrowDown"
+        )
+          captureSelection();
       }}
+      onClick={activateMark}
     >
-      {doc.format === "text" ? (
-        <div className="plain-text">
-          {currentFocus ? (
-            <>
-              <span data-source-start="0" data-source-end={currentFocus.start}>
-                {doc.content.slice(0, currentFocus.start)}
-              </span>
-              <span
-                data-source-start={currentFocus.start}
-                data-source-end={currentFocus.end}
-              >
-                {doc.content.slice(currentFocus.start, currentFocus.end)}
-              </span>
-              <span
-                data-source-start={currentFocus.end}
-                data-source-end={doc.content.length}
-              >
-                {doc.content.slice(currentFocus.end)}
-              </span>
-            </>
-          ) : (
-            <span data-source-start="0" data-source-end={doc.content.length}>
-              {doc.content}
-            </span>
-          )}
-        </div>
-      ) : (
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={plugins}
-          components={{
-            img: ({ alt }) => (
-              <span className="image-note">[图片：{alt ?? "图片"}]</span>
-            ),
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noreferrer noopener">
-                {children}
-              </a>
-            ),
-          }}
-        >
-          {doc.content}
-        </ReactMarkdown>
-      )}
+      <DocumentBody
+        doc={doc}
+        plan={plan}
+        rootRef={rootRef}
+        focus={currentFocus}
+        onGeometryChange={onGeometryChange}
+      />
     </div>
   );
 }
+
+/** Native-selectable renderer for one immutable document revision. */
+export const Passage = memo(
+  PassageImpl,
+  (previous, next) =>
+    previous.doc === next.doc &&
+    sameAnchor(previous.focus, next.focus) &&
+    sameMarks(previous.marks, next.marks) &&
+    previous.onSelect === next.onSelect &&
+    previous.onActivateMark === next.onActivateMark &&
+    previous.onGeometryChange === next.onGeometryChange,
+);

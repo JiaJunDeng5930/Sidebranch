@@ -43,5 +43,6 @@ export function GET() {
 export function DELETE() {
   return json({ error: "Stateless MCP has no session to delete." }, 405, {
     Allow: "POST",
+    "WWW-Authenticate": challenge(runtime()),
   });
 }

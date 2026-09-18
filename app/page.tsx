@@ -1,86 +1,133 @@
 import { chatGPTSignInPath } from "./chatgpt-auth";
+import "./landing.css";
+
 export const dynamic = "force-dynamic";
+
 export default function Home() {
   return (
-    <main className="landing">
-      <header className="masthead">
-        <a className="wordmark" href="/">
-          Xanadu<span>Sidebranch</span>
-        </a>
-        <span className="edition">A PERSONAL HYPERTEXT SPACE</span>
+    <main className="xanadu-intro">
+      <header className="intro-masthead">
+        {/* Native navigation keeps this public page independent of the client router. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
-          className="text-link"
+          className="intro-wordmark"
+          href="/"
+          aria-label="Xanadu Sidebranch 首页"
+        >
+          xanadu<span>sidebranch</span>
+        </a>
+        <span className="intro-index">私人文档空间 / 01</span>
+        <a
+          className="intro-signin"
           href={chatGPTSignInPath("/space")}
           target="_top"
         >
-          用 ChatGPT 登录 ↗
+          用 ChatGPT 登录 <span aria-hidden="true">↗</span>
         </a>
       </header>
-      <section className="introduction">
-        <p className="eyebrow">READ BETWEEN DOCUMENTS</p>
-        <h1>
-          思想有分支。
-          <br />
-          <em>阅读也应该有。</em>
-        </h1>
-        <p className="intro-copy">
-          把文章、问题和回答放在同一个空间。沿着一段文字，走向另一份文档；循着连接，随时回到思考发生的地方。
-        </p>
-        <a
-          className="enter-link"
-          href={chatGPTSignInPath("/space")}
-          target="_top"
+
+      <section className="intro-reading">
+        <div className="intro-statement">
+          <p className="intro-kicker">文字有来处，也有去处。</p>
+          <h1>
+            读到这里，
+            <br />
+            还可以去<span>那里。</span>
+          </h1>
+          <p className="intro-description">
+            从一段文字走向另一份文档。让原文、解释与反例同时留在眼前，让连接落在它们真正相关的地方。
+          </p>
+          <div className="intro-number">
+            <span>01 — 02</span>
+            <i aria-hidden="true" />
+            <span>两段文字，一个关系。</span>
+          </div>
+        </div>
+
+        <figure
+          className="intro-space"
+          aria-label="文档在空间中并排展开，连接指向两边的具体文字"
         >
-          进入我的文档空间 <span>↗</span>
+          <div className="intro-depth-sheet" aria-hidden="true">
+            <span>03 / 另一个角度</span>
+            <i />
+            <i />
+            <i />
+            <i />
+            <i />
+          </div>
+          <article className="intro-paper intro-source">
+            <div className="intro-paper-heading">
+              <span>01</span>
+              <span>阅读笔记 / 原文</span>
+            </div>
+            <h2>
+              理解发生在
+              <br />
+              文档之间。
+            </h2>
+            <p>读一篇文章时，解释可能在别处，反例可能在昨天的笔记里。</p>
+            <p>
+              <mark>把相关的文字并排放在眼前。</mark>{" "}
+              不必离开原文，也不必记住返回的路。
+            </p>
+            <div className="intro-paper-rule" />
+            <small>当前文档</small>
+          </article>
+          <svg
+            className="intro-beam"
+            viewBox="0 0 180 340"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path d="M0 186 C60 186 115 113 180 113 L180 159 C110 159 65 211 0 211 Z" />
+            <path d="M0 186 C60 186 115 113 180 113 M0 211 C65 211 110 159 180 159" />
+          </svg>
+          <article className="intro-paper intro-companion">
+            <div className="intro-paper-heading">
+              <span>02</span>
+              <span>旁文 / 解释</span>
+            </div>
+            <h2>让来处可见。</h2>
+            <p>
+              <mark>
+                连接属于文字，
+                <br />
+                而不只是两个文件。
+              </mark>
+            </p>
+            <p>
+              回答可以独立成文，也可以与更多文档相连。修改后，旧的连接仍记得当时的文字。
+            </p>
+            <div className="intro-paper-rule" />
+            <small>关联文档</small>
+          </article>
+          <figcaption>并排阅读 · 文字连接 · 保留语境</figcaption>
+        </figure>
+      </section>
+
+      <section className="intro-colophon" aria-label="关于这个空间">
+        <p>
+          TXT、Markdown、PDF 与新写下的文字，进入同一个持久文档空间。在 ChatGPT
+          中划选、提问，继续阅读与写作。
+        </p>
+        <p>
+          受{" "}
+          <a
+            href="https://www.xanadu.net/XanaduSpace/btf.htm"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Project Xanadu
+          </a>{" "}
+          启发。
+          <br />
+          此页公开；文档仅向所有者开放。
+        </p>
+        <a href="https://github.com/JiaJunDeng5930/Sidebranch">
+          Sidebranch / GitHub ↗
         </a>
       </section>
-      <section className="specimen" aria-label="并排阅读示意">
-        <article className="specimen-page">
-          <div className="paper-meta">01 / 原文</div>
-          <h2>
-            文字之外，
-            <br />
-            还有关系。
-          </h2>
-          <p>
-            一篇文章从来不只属于它自己。它回应别人的问题，引用另一个声音，又成为后来思考的起点。
-          </p>
-          <p>
-            <mark>让这些关系留在文字之间。</mark>
-          </p>
-          <div className="paper-foot">阅读 · 划选 · 连接</div>
-        </article>
-        <svg
-          className="specimen-connection"
-          viewBox="0 0 140 320"
-          aria-label="文字之间的连接"
-        >
-          <path
-            d="M0 180 C70 180 50 90 140 90 M0 214 C70 214 60 144 140 144"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.4"
-          />
-        </svg>
-        <article className="specimen-page second">
-          <div className="paper-meta">02 / 延伸</div>
-          <h2>
-            一次提问，
-            <br />
-            一条新的去路。
-          </h2>
-          <p>
-            <mark>每份文档都有自己的位置。</mark>
-          </p>
-          <p>回答可以独立成文；连接指向具体的文字，带你在文档间往返。</p>
-          <div className="paper-foot">保留原文 · 自由生长</div>
-        </article>
-      </section>
-      <footer className="landing-footer">
-        <span>X / S</span>
-        <p>公开的是这页介绍。文档空间仅向所有者开放。</p>
-        <a href="https://github.com/JiaJunDeng5930/Sidebranch">GitHub ↗</a>
-      </footer>
     </main>
   );
 }
