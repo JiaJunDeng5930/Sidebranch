@@ -66,7 +66,9 @@ export function failure(error: unknown): Response {
           code: "INVALID_INPUT",
           message: friendlyErrorMessage(
             "INVALID_INPUT",
-            error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+            error.issues
+              .map((i) => `${i.path.join(".")}: ${i.message}`)
+              .join("; "),
           ),
         },
       },

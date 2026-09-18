@@ -12,12 +12,20 @@ import {
 export const OAUTH_SCOPE = scopeString(FULL_SCOPES);
 const SUPPORTED_SCOPES = new Set<OAuthScope>(FULL_SCOPES);
 function normalizeScope(raw: string | null | undefined): OAuthScope[] {
-  const requested = [...new Set((raw ?? OAUTH_SCOPE).split(/\s+/).filter(Boolean))];
-  if (!requested.length || requested.some((scope) => !SUPPORTED_SCOPES.has(scope as OAuthScope)))
+  const requested = [
+    ...new Set((raw ?? OAUTH_SCOPE).split(/\s+/).filter(Boolean)),
+  ];
+  if (
+    !requested.length ||
+    requested.some((scope) => !SUPPORTED_SCOPES.has(scope as OAuthScope))
+  )
     throw new DomainError("INVALID_SCOPE", "Unsupported scope.");
   return requested as OAuthScope[];
 }
-function isSubset(requested: readonly OAuthScope[], granted: readonly OAuthScope[]): boolean {
+function isSubset(
+  requested: readonly OAuthScope[],
+  granted: readonly OAuthScope[],
+): boolean {
   return requested.every((scope) => granted.includes(scope));
 }
 const redirectUri = z
@@ -318,7 +326,10 @@ export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
     const granted = normalizeScope(row.scope);
     const requested = params.get("scope");
     if (requested && !isSubset(normalizeScope(requested), granted))
-      throw new DomainError("invalid_scope", "Requested scope exceeds the grant.");
+      throw new DomainError(
+        "invalid_scope",
+        "Requested scope exceeds the grant.",
+      );
     return issueTokens(env, row.user_id, clientId, resource, granted);
   }
   if (params.get("grant_type") === "refresh_token") {
@@ -336,7 +347,10 @@ export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
     const granted = normalizeScope(old.scope),
       requested = params.get("scope");
     if (requested && !isSubset(normalizeScope(requested), granted))
-      throw new DomainError("invalid_scope", "Requested scope exceeds the grant.");
+      throw new DomainError(
+        "invalid_scope",
+        "Requested scope exceeds the grant.",
+      );
     const used = await env.DB.prepare(
       "UPDATE oauth_tokens SET consumed=1 WHERE hash=? AND consumed=0 RETURNING hash",
     )
@@ -356,7 +370,14 @@ export async function exchangeToken(env: RuntimeEnv, params: URLSearchParams) {
     )
       .bind(old.family)
       .run();
-    return issueTokens(env, old.user_id, clientId, resource, granted, old.family);
+    return issueTokens(
+      env,
+      old.user_id,
+      clientId,
+      resource,
+      granted,
+      old.family,
+    );
   }
   throw new DomainError("unsupported_grant_type", "Unsupported OAuth grant.");
 }

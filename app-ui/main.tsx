@@ -31,12 +31,14 @@ let hostSnapshot: HostSnapshot = { result: null, error: "" };
 const hostListeners = new Set<() => void>();
 const subscribeHost = (listener: () => void) => {
   hostListeners.add(listener);
-  return () => { hostListeners.delete(listener); };
+  return () => {
+    hostListeners.delete(listener);
+  };
 };
 const readHostSnapshot = () => hostSnapshot;
 function updateHostSnapshot(next: HostSnapshot) {
   hostSnapshot = next;
-  hostListeners.forEach(listener => listener());
+  hostListeners.forEach((listener) => listener());
 }
 let awaitingInitialOpen = true;
 
@@ -87,7 +89,11 @@ function deliverResult(result: OpenDocumentResult): void {
 function reportHostError(error: unknown): void {
   const message =
     error instanceof Error
-      ? friendlyErrorMessage("APP_ERROR", error.message, "ChatGPT App 连接失败，请重试。")
+      ? friendlyErrorMessage(
+          "APP_ERROR",
+          error.message,
+          "ChatGPT App 连接失败，请重试。",
+        )
       : "ChatGPT App 连接失败，请重试。";
   console.error("Xanadu App integration error", error);
   updateHostSnapshot({ ...hostSnapshot, error: message });
@@ -196,7 +202,10 @@ const client: ReaderClient = {
 };
 
 function AppReader() {
-  const { result, error } = useSyncExternalStore(subscribeHost, readHostSnapshot);
+  const { result, error } = useSyncExternalStore(
+    subscribeHost,
+    readHostSnapshot,
+  );
   const [retrying, setRetrying] = useState(false);
 
   async function retry() {
@@ -218,7 +227,12 @@ function AppReader() {
           <button disabled={retrying} onClick={() => void retry()}>
             {retrying ? "连接中…" : "重试"}
           </button>
-          <button aria-label="关闭连接提示" onClick={() => updateHostSnapshot({ ...hostSnapshot, error: "" })}>×</button>
+          <button
+            aria-label="关闭连接提示"
+            onClick={() => updateHostSnapshot({ ...hostSnapshot, error: "" })}
+          >
+            ×
+          </button>
         </aside>
       )}
       {result ? (

@@ -115,7 +115,10 @@ function stored<T>(schema: z.ZodType<T>, value: unknown): T {
   }
 }
 
-function validDocument(row: z.infer<typeof SummaryRow>, currentRevisionId: string): DocumentEntity {
+function validDocument(
+  row: z.infer<typeof SummaryRow>,
+  currentRevisionId: string,
+): DocumentEntity {
   try {
     return {
       id: DocumentId.parse(row.id),
@@ -186,7 +189,10 @@ function revisionMetadataFromSummaryRow(
   createdAt: Instant;
 } {
   const row = stored(SummaryRow, value);
-  const document = validDocument(row, currentRevisionId ?? RevisionId.parse(row.revision_id));
+  const document = validDocument(
+    row,
+    currentRevisionId ?? RevisionId.parse(row.revision_id),
+  );
   try {
     return {
       document,
@@ -221,7 +227,9 @@ export function documentSummaryFromRow(value: unknown): DocumentSummary {
   };
 }
 
-export function documentRevisionFromEntity(snapshot: DocumentAtRevision): DocumentRevision {
+export function documentRevisionFromEntity(
+  snapshot: DocumentAtRevision,
+): DocumentRevision {
   return {
     id: snapshot.document.id,
     path: snapshot.document.path,
@@ -278,7 +286,11 @@ export function anchorEntityFromFields(fields: {
       quote: fields.quote,
     };
   } catch {
-    throw new DomainError("DATA_CORRUPTION", "Stored anchor data is invalid.", 500);
+    throw new DomainError(
+      "DATA_CORRUPTION",
+      "Stored anchor data is invalid.",
+      500,
+    );
   }
 }
 
@@ -335,7 +347,9 @@ export function connectionFromEntity(connection: ConnectionEntity): Connection {
   };
 }
 
-export function questionEntitiesFromRows(rowsValue: unknown[]): QuestionEntity[] {
+export function questionEntitiesFromRows(
+  rowsValue: unknown[],
+): QuestionEntity[] {
   const groups = new Map<string, QuestionEntity>();
   for (const rowValue of rowsValue) {
     const row = stored(QuestionJoinRow, rowValue);
@@ -372,6 +386,8 @@ export function questionFromEntity(question: QuestionEntity): Question {
     anchor: anchorFromEntity(question.anchor),
     body: question.body,
     createdAt: question.createdAt,
-    answers: question.answers.map((answer: AnswerAssociation) => answer.documentId),
+    answers: question.answers.map(
+      (answer: AnswerAssociation) => answer.documentId,
+    ),
   };
 }

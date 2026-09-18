@@ -40,7 +40,9 @@
   cursor: pointer;
   font: inherit;
   padding: 7px 10px;
-  transition: background 160ms ease, color 160ms ease;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
 }
 
 .spatial-scene-toolbar button:hover,
@@ -108,9 +110,13 @@
   border: 1px solid #15151566;
   border-radius: 3px;
   background: var(--scene-paper);
-  box-shadow: 0 30px 68px #0005, 0 4px 12px #0003;
+  box-shadow:
+    0 30px 68px #0005,
+    0 4px 12px #0003;
   backface-visibility: hidden;
-  transition: box-shadow 180ms ease, opacity 180ms ease;
+  transition:
+    box-shadow 180ms ease,
+    opacity 180ms ease;
 }
 
 .spatial-view-current {
@@ -140,7 +146,9 @@
 .spatial-view:focus-within,
 .spatial-related:hover,
 .spatial-related:focus-within {
-  box-shadow: 0 32px 76px #0006, 0 6px 18px #0004;
+  box-shadow:
+    0 32px 76px #0006,
+    0 6px 18px #0004;
 }
 
 .spatial-view-header,
@@ -480,11 +488,26 @@
   }
 }
 
-.spatial-scene-hint { color: #747d86; font-size: 10px; letter-spacing: 0; }
-@media (max-width: 1100px) { .spatial-scene-hint { display: none; } }
+.spatial-scene-hint {
+  color: #747d86;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+@media (max-width: 1100px) {
+  .spatial-scene-hint {
+    display: none;
+  }
+}
 
-.spatial-beam-ribbon { opacity: .17; pointer-events: none; }
+.spatial-beam-ribbon {
+  opacity: 0.17;
+  pointer-events: none;
+}
 
 .spatial-view-current .spatial-view-heading strong,
-.spatial-view-companion .spatial-view-heading strong { display: none; }
-.spatial-view-header { min-height: 32px; }
+.spatial-view-companion .spatial-view-heading strong {
+  display: none;
+}
+.spatial-view-header {
+  min-height: 32px;
+}

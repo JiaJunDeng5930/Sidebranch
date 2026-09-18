@@ -23,11 +23,7 @@ import {
   importFileInputShape,
   normalizeImportFileInput,
 } from "./file-reference";
-import {
-  READ_SCOPE,
-  WRITE_SCOPE,
-  requireScope,
-} from "./owner-auth";
+import { READ_SCOPE, WRITE_SCOPE, requireScope } from "./owner-auth";
 import { friendlyErrorMessage } from "./http";
 
 export const APP_RESOURCE_URI = "ui://xanadu-sidebranch/reader-v1.html";
@@ -42,8 +38,7 @@ function securitySchemes(scope: string) {
  * the pinned SDK's tools/list and output validation paths.
  */
 function inputSchema(name: CommandName): z.AnyZodObject {
-  if (name === "import_file")
-    return z.object(importFileInputShape).strict();
+  if (name === "import_file") return z.object(importFileInputShape).strict();
   return commandSchemas[name] as z.AnyZodObject;
 }
 
@@ -93,9 +88,13 @@ function toolError(
     content: [{ type: "text", text: code + ": " + message }],
     _meta: { "x-request-id": requestId },
   };
-  if (error instanceof DomainError && error.code === "INSUFFICIENT_SCOPE" && requiredScope)
+  if (
+    error instanceof DomainError &&
+    error.code === "INSUFFICIENT_SCOPE" &&
+    requiredScope
+  )
     result._meta!["mcp/www_authenticate"] =
-      "Bearer error=\"insufficient_scope\", scope=\"" + requiredScope + "\"";
+      'Bearer error="insufficient_scope", scope="' + requiredScope + '"';
   return result;
 }
 

@@ -23,8 +23,14 @@ import {
   type ViewId,
 } from "../../lib/reader/scene";
 import "./spatial-scene.css";
-import { relationNames as RELATION_LABELS, relationColors as RELATION_COLORS } from "../../lib/reader/relations";
-import { sourceRanges, type SourceSelectionRange } from "../../lib/reader/render-dom";
+import {
+  relationNames as RELATION_LABELS,
+  relationColors as RELATION_COLORS,
+} from "../../lib/reader/relations";
+import {
+  sourceRanges,
+  type SourceSelectionRange,
+} from "../../lib/reader/render-dom";
 
 export interface SpatialSceneController {
   resetCamera(): void;
@@ -234,7 +240,9 @@ function RelatedPlane({
 }: RelatedPlaneProps) {
   const id = `related-${related.connectionId}-${index}`;
   const position = {
-    x: origin.x + (index % 2 === 0
+    x:
+      origin.x +
+      (index % 2 === 0
         ? -560 - Math.floor(index / 2) * 110
         : 560 + Math.floor(index / 2) * 110),
     y: origin.y + ((index % 3) - 1) * 115,
@@ -329,7 +337,10 @@ function clampPointToRect(point: ScenePoint, rect: RectLike): ScenePoint {
   };
 }
 
-type ProjectSourceRanges = (root: HTMLElement, source: SourceSelectionRange) => readonly Range[];
+type ProjectSourceRanges = (
+  root: HTMLElement,
+  source: SourceSelectionRange,
+) => readonly Range[];
 
 function sourceRects(
   root: HTMLElement,
@@ -363,12 +374,29 @@ function measureEndpoint(
   );
   if (!clip) return null;
   if (!source) {
-    const revisionRoot = Array.from(root.querySelectorAll<HTMLElement>("[data-revision-id]")).find(node => node.dataset.revisionId === revisionId);
-    const gap = revisionRoot && Array.from(revisionRoot.querySelectorAll<HTMLElement>("[data-source-gap-start]")).find(node => Number(node.dataset.sourceGapStart) <= start && Number(node.dataset.sourceGapEnd) >= end);
+    const revisionRoot = Array.from(
+      root.querySelectorAll<HTMLElement>("[data-revision-id]"),
+    ).find((node) => node.dataset.revisionId === revisionId);
+    const gap =
+      revisionRoot &&
+      Array.from(
+        revisionRoot.querySelectorAll<HTMLElement>("[data-source-gap-start]"),
+      ).find(
+        (node) =>
+          Number(node.dataset.sourceGapStart) <= start &&
+          Number(node.dataset.sourceGapEnd) >= end,
+      );
     if (!gap) return null;
     const rect = gap.getBoundingClientRect();
-    const above = rect.bottom <= clip.top || (rect.top < clip.top && rect.bottom < clip.bottom);
-    return {x:(clip.left+clip.right)/2-sceneRect.left,y:(above?clip.top:clip.bottom)-sceneRect.top,clipped:true,extent:3};
+    const above =
+      rect.bottom <= clip.top ||
+      (rect.top < clip.top && rect.bottom < clip.bottom);
+    return {
+      x: (clip.left + clip.right) / 2 - sceneRect.left,
+      y: (above ? clip.top : clip.bottom) - sceneRect.top,
+      clipped: true,
+      extent: 3,
+    };
   }
   const visible = all
     .map((rect) => intersectRect(rect, clip))
@@ -390,15 +418,20 @@ function measureEndpoint(
     x: finalPoint.x - sceneRect.left,
     y: finalPoint.y - sceneRect.top,
     clipped,
-    extent: clipped ? 3 : Math.min(22, Math.max(4, (pointRect.bottom - pointRect.top) / 2)),
+    extent: clipped
+      ? 3
+      : Math.min(22, Math.max(4, (pointRect.bottom - pointRect.top) / 2)),
   };
 }
 
 function beamRibbon(from: EndpointGeometry, to: EndpointGeometry): string {
-  const bend = Math.max(42, Math.abs(to.x - from.x) * 0.34) * (to.x >= from.x ? 1 : -1);
-  const a = from.y - from.extent, b = to.y - to.extent;
-  const c = to.y + to.extent, d = from.y + from.extent;
-  return `M ${from.x} ${a} C ${from.x+bend} ${a} ${to.x-bend} ${b} ${to.x} ${b} L ${to.x} ${c} C ${to.x-bend} ${c} ${from.x+bend} ${d} ${from.x} ${d} Z`;
+  const bend =
+    Math.max(42, Math.abs(to.x - from.x) * 0.34) * (to.x >= from.x ? 1 : -1);
+  const a = from.y - from.extent,
+    b = to.y - to.extent;
+  const c = to.y + to.extent,
+    d = from.y + from.extent;
+  return `M ${from.x} ${a} C ${from.x + bend} ${a} ${to.x - bend} ${b} ${to.x} ${b} L ${to.x} ${c} C ${to.x - bend} ${c} ${from.x + bend} ${d} ${from.x} ${d} Z`;
 }
 
 function beamPath(from: ScenePoint, to: ScenePoint): string {
@@ -462,12 +495,20 @@ export function SpatialScene({
 }: SpatialSceneProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const viewNodes = useRef(new Map<string, HTMLElement>());
-  const changeMode = useCallback((next: "read" | "overview") => {
-    const viewport = viewportRef.current;
-    if (next === "overview" && viewport) dispatch({ type: "overview-camera", width: viewport.clientWidth, height: viewport.clientHeight });
-    else if (next === "read") dispatch({ type: "reset-camera" });
-    onModeChange(next);
-  }, [dispatch, onModeChange]);
+  const changeMode = useCallback(
+    (next: "read" | "overview") => {
+      const viewport = viewportRef.current;
+      if (next === "overview" && viewport)
+        dispatch({
+          type: "overview-camera",
+          width: viewport.clientWidth,
+          height: viewport.clientHeight,
+        });
+      else if (next === "read") dispatch({ type: "reset-camera" });
+      onModeChange(next);
+    },
+    [dispatch, onModeChange],
+  );
 
   const dragRef = useRef<
     | { kind: "camera" | "orbit"; pointerId: number; x: number; y: number }
@@ -477,8 +518,15 @@ export function SpatialScene({
   const measureFrame = useRef<number | null>(null);
   const inputRef = useRef({ state, connections, related });
   const [beams, setBeams] = useState<readonly BeamGeometry[]>([]);
-  const sourceRangeCache = useRef(new WeakMap<HTMLElement, Map<string, readonly Range[]>>());
-  const measurementRootsKey = state.views.map(view => view.id).join("|") + "/" + related.map(item => item.connectionId + ":" + item.anchor.revisionId).join("|");
+  const sourceRangeCache = useRef(
+    new WeakMap<HTMLElement, Map<string, readonly Range[]>>(),
+  );
+  const measurementRootsKey =
+    state.views.map((view) => view.id).join("|") +
+    "/" +
+    related
+      .map((item) => item.connectionId + ":" + item.anchor.revisionId)
+      .join("|");
   const projectRanges = useCallback<ProjectSourceRanges>((root, source) => {
     let cache = sourceRangeCache.current.get(root);
     if (!cache) {
@@ -510,28 +558,66 @@ export function SpatialScene({
     const current = currentState.currentViewId;
     const companion = currentState.companionViewId;
     const endpointCache = new Map<string, EndpointGeometry | null>();
-    const currentView = currentState.views.find(view => view.id === current);
-    const companionView = currentState.views.find(view => view.id === companion);
-    const matchesFocus = (anchor: Anchor, view: DocumentView | undefined) => Boolean(view?.focus && view.focus.revisionId === anchor.revisionId && view.focus.start === anchor.start && view.focus.end === anchor.end);
+    const currentView = currentState.views.find((view) => view.id === current);
+    const companionView = currentState.views.find(
+      (view) => view.id === companion,
+    );
+    const matchesFocus = (anchor: Anchor, view: DocumentView | undefined) =>
+      Boolean(
+        view?.focus &&
+        view.focus.revisionId === anchor.revisionId &&
+        view.focus.start === anchor.start &&
+        view.focus.end === anchor.end,
+      );
     const priority = (connection: Connection) => {
-      const endpoints = [connection.from,connection.to];
-      const focusScore = endpoints.filter(anchor => matchesFocus(anchor,currentView) || matchesFocus(anchor,companionView)).length * 16;
-      return focusScore + endpoints.filter(anchor => anchor.revisionId === currentView?.document.revisionId || anchor.revisionId === companionView?.document.revisionId).length * 4;
+      const endpoints = [connection.from, connection.to];
+      const focusScore =
+        endpoints.filter(
+          (anchor) =>
+            matchesFocus(anchor, currentView) ||
+            matchesFocus(anchor, companionView),
+        ).length * 16;
+      return (
+        focusScore +
+        endpoints.filter(
+          (anchor) =>
+            anchor.revisionId === currentView?.document.revisionId ||
+            anchor.revisionId === companionView?.document.revisionId,
+        ).length *
+          4
+      );
     };
-    const prioritized = [...currentConnections].sort((a,b) => priority(b)-priority(a)).slice(0,MAX_BEAMS);
+    const prioritized = [...currentConnections]
+      .sort((a, b) => priority(b) - priority(a))
+      .slice(0, MAX_BEAMS);
     const endpoint = (revisionId: string, start: number, end: number) => {
       const cacheKey = `${revisionId}:${start}:${end}`;
       if (endpointCache.has(cacheKey))
         return endpointCache.get(cacheKey) ?? null;
-      const orderedViews = [...currentState.views].sort((a,b) => {
-        const score = (view:DocumentView) => Number(view.focus?.revisionId === revisionId && view.focus.start === start && view.focus.end === end)*4 + Number(view.id === current)*2 + Number(view.id === companion);
-        return score(b)-score(a);
+      const orderedViews = [...currentState.views].sort((a, b) => {
+        const score = (view: DocumentView) =>
+          Number(
+            view.focus?.revisionId === revisionId &&
+              view.focus.start === start &&
+              view.focus.end === end,
+          ) *
+            4 +
+          Number(view.id === current) * 2 +
+          Number(view.id === companion);
+        return score(b) - score(a);
       });
       for (const view of orderedViews) {
         if (view.document.revisionId !== revisionId) continue;
         const node = viewNodes.current.get(view.id);
         if (!node) continue;
-        const result = measureEndpoint(node, revisionId, start, end, sceneRect, projectRanges);
+        const result = measureEndpoint(
+          node,
+          revisionId,
+          start,
+          end,
+          sceneRect,
+          projectRanges,
+        );
         if (result) {
           endpointCache.set(cacheKey, result);
           return result;
@@ -543,7 +629,14 @@ export function SpatialScene({
           `related-${projection.connectionId}-${currentRelated.indexOf(projection)}`,
         );
         if (!node) continue;
-        const result = measureEndpoint(node, revisionId, start, end, sceneRect, projectRanges);
+        const result = measureEndpoint(
+          node,
+          revisionId,
+          start,
+          end,
+          sceneRect,
+          projectRanges,
+        );
         if (result) {
           endpointCache.set(cacheKey, result);
           return result;
@@ -565,7 +658,14 @@ export function SpatialScene({
         connection.to.end,
       );
       if (!from || !to) continue;
-      const primary = [connection.from, connection.to].some(anchor => matchesFocus(anchor, currentView) || matchesFocus(anchor, companionView));
+      const primary = [connection.from, connection.to].some(
+        (anchor) =>
+          matchesFocus(anchor, currentView) ||
+          matchesFocus(anchor, companionView),
+      );
+      // Offscreen-to-offscreen links remain in the relation catalogue; drawing
+      // dozens of coincident edge handles adds neither location nor context.
+      if (!primary && from.clipped && to.clipped) continue;
       const fromDocument =
         currentState.views.find(
           (view) => view.document.revisionId === connection.from.revisionId,
@@ -635,7 +735,13 @@ export function SpatialScene({
       sourceRangeCache.current = new WeakMap();
       scheduleMeasure();
     });
-    scrollNodes.forEach(node => mutationObserver.observe(node, { childList: true, characterData: true, subtree: true }));
+    scrollNodes.forEach((node) =>
+      mutationObserver.observe(node, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      }),
+    );
     sourceRangeCache.current = new WeakMap();
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -805,19 +911,33 @@ export function SpatialScene({
     let delta = 0;
     const onWheel = (event: WheelEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest("[data-document-scroll]") && !event.ctrlKey && !event.metaKey) return;
+      if (
+        target instanceof Element &&
+        target.closest("[data-document-scroll]") &&
+        !event.ctrlKey &&
+        !event.metaKey
+      )
+        return;
       event.preventDefault();
       delta += event.deltaY;
       if (frame !== null) return;
       frame = requestAnimationFrame(() => {
         frame = null;
-        dispatch({type:"camera",patch:{zoom:inputRef.current.state.camera.zoom*Math.exp(-delta*0.001)}});
+        dispatch({
+          type: "camera",
+          patch: {
+            zoom: inputRef.current.state.camera.zoom * Math.exp(-delta * 0.001),
+          },
+        });
         delta = 0;
       });
     };
-    viewport.addEventListener("wheel",onWheel,{passive:false});
-    return () => {viewport.removeEventListener("wheel",onWheel);if(frame !== null) cancelAnimationFrame(frame);};
-  },[dispatch]);
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", onWheel);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [dispatch]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -938,7 +1058,9 @@ export function SpatialScene({
         <span className="spatial-scene-status">
           {state.views.length} 个阅读面 · {connections.length} 条连接
         </span>
-        <span className="spatial-scene-hint">拖动空白平移 · Shift 拖动旋转 · 滚轮缩放</span>
+        <span className="spatial-scene-hint">
+          拖动空白平移 · Shift 拖动旋转 · 滚轮缩放
+        </span>
         <div className="spatial-scene-actions">
           {state.currentViewId && (
             <button
@@ -997,7 +1119,10 @@ export function SpatialScene({
               <RelatedPlane
                 key={`${projection.connectionId}-${index}`}
                 related={projection}
-                origin={state.views.find(view => view.id === state.currentViewId)?.position ?? { x: 0, y: 0, z: 0 }}
+                origin={
+                  state.views.find((view) => view.id === state.currentViewId)
+                    ?.position ?? { x: 0, y: 0, z: 0 }
+                }
                 index={index}
                 relationLabel={
                   connection
@@ -1029,7 +1154,13 @@ export function SpatialScene({
           </defs>
           {beams.map((beam) => (
             <g key={beam.id} data-beam-connection-id={beam.id}>
-              {beam.primary && <path d={beam.ribbon} fill={beam.color} className="spatial-beam-ribbon" />}
+              {beam.primary && (
+                <path
+                  d={beam.ribbon}
+                  fill={beam.color}
+                  className="spatial-beam-ribbon"
+                />
+              )}
               <path
                 d={beam.path}
                 className={`spatial-beam ${beam.primary ? "primary" : ""} ${beam.from.clipped || beam.to.clipped ? "clipped" : ""}`}
@@ -1101,28 +1232,31 @@ export function SpatialScene({
           ))}
         </svg>
         <div className="spatial-scene-beam-labels" aria-hidden="false">
-          {beams.filter(beam => beam.primary).slice(0, 3).map((beam) => {
-            const x = (beam.from.x + beam.to.x) / 2;
-            const y = (beam.from.y + beam.to.y) / 2;
-            return (
-              <button
-                type="button"
-                key={beam.id}
-                className={`spatial-beam-label ${beam.primary ? "primary" : ""}`}
-                style={customStyle({
-                  left: `${x}px`,
-                  top: `${y}px`,
-                  "--beam-color": beam.color,
-                })}
-                data-connection-id={beam.id}
-                aria-label={`${beam.label}：${beam.endpointLabel}`}
-                title={beam.endpointLabel}
-                onClick={() => onActivateConnection(beam.id)}
-              >
-                {beam.label}
-              </button>
-            );
-          })}
+          {beams
+            .filter((beam) => beam.primary)
+            .slice(0, 3)
+            .map((beam) => {
+              const x = (beam.from.x + beam.to.x) / 2;
+              const y = (beam.from.y + beam.to.y) / 2;
+              return (
+                <button
+                  type="button"
+                  key={beam.id}
+                  className={`spatial-beam-label ${beam.primary ? "primary" : ""}`}
+                  style={customStyle({
+                    left: `${x}px`,
+                    top: `${y}px`,
+                    "--beam-color": beam.color,
+                  })}
+                  data-connection-id={beam.id}
+                  aria-label={`${beam.label}：${beam.endpointLabel}`}
+                  title={beam.endpointLabel}
+                  onClick={() => onActivateConnection(beam.id)}
+                >
+                  {beam.label}
+                </button>
+              );
+            })}
         </div>
         {!state.views.length && (
           <div className="spatial-scene-empty">

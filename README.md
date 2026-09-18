@@ -18,15 +18,15 @@ Add the endpoint as a custom MCP connection in ChatGPT with OAuth. Sign in with 
 
 ## MCP operations
 
-| Tool                         | Operation                                                              |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| `ls`, `cat`, `grep`          | List, read and search the shared document space                        |
-| `write`, `import_file`       | Create text or import base64 UTF-8 TXT / Markdown / PDF                |
-| `edit`                       | Replace a UTF-16 range against an expected revision and exact old text |
-| `mv`, `archive`, `history`   | Change a path, archive/restore, list revisions                         |
-| `link`, `unlink`             | Create or remove a connection between two exact passages               |
-| `ask`, `questions`, `answer` | Save questions, find them, associate an existing answer document       |
-| `open_document`              | Display a document or historical revision in the reading App           |
+| Tool                         | Operation                                                               |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `ls`, `cat`, `grep`          | List, read and search the shared document space                         |
+| `write`, `import_file`       | Create text or import TXT / Markdown / PDF via file reference or base64 |
+| `edit`                       | Replace a UTF-16 range against an expected revision and exact old text  |
+| `mv`, `archive`, `history`   | Change a path, archive/restore, list revisions                          |
+| `link`, `unlink`             | Create or remove a connection between two exact passages                |
+| `ask`, `questions`, `answer` | Save questions, find them, associate an existing answer document        |
+| `open_document`              | Display a document or historical revision in the reading App            |
 
 Names resemble filesystem commands; no shell is executed. To answer a question: read its source, `write` an answer, call `answer` with the question and document IDs, `link` relevant passages, then `open_document`. Creating a document never implicitly creates a connection.
 
@@ -40,6 +40,7 @@ Requires Node 22.13+ and the package manager pinned in `package.json`.
 pnpm install --frozen-lockfile
 pnpm build:app
 pnpm typecheck
+pnpm lint
 pnpm test
 pnpm build
 ```
@@ -52,9 +53,9 @@ Runtime configuration:
 - `OWNER_USER_ID`: the Site-specific trusted ChatGPT user ID, preferred after the first authenticated owner visit.
 - `OWNER_BOOTSTRAP_EMAIL`: initially the email from the Sites owner's record. Only a trusted Sites dispatch identity with this email can bind the single owner row. Once pinned, subsequent authorization uses the ID. This value is configured as a secret, never committed.
 
-Sites dispatch supplies verified user headers. A standalone deployment must provide an equivalent trusted identity boundary and strip client-supplied identity headers. Browser cookies are not accepted as MCP bearer tokens. All document commands, downloads and authorization consent check the owner server-side. OAuth uses DCR, authorization code + PKCE S256, one-hour opaque access tokens and rotating refresh tokens. Only official ChatGPT callbacks are accepted.
+Sites dispatch supplies verified user headers. A standalone deployment must provide an equivalent trusted identity boundary and strip client-supplied identity headers. Browser cookies are not accepted as MCP bearer tokens. All document commands, downloads and authorization consent check the owner server-side. OAuth uses DCR, authorization code + PKCE S256, one-hour opaque access tokens and rotating refresh tokens. Read/write scopes are persisted and enforced. Only official ChatGPT callbacks are accepted. `MCP_FILE_DOWNLOAD_ORIGINS` optionally supplies comma-separated exact HTTPS origins for host attachment downloads; redirects and private network addresses remain restricted. Actual ChatGPT attachment URL compatibility must be checked with the host.
 
-`pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness can switch to a 390-pixel frame and an actual `AppBridge` host.
+`pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness can switch to a 390-pixel frame and an official `AppBridge` host, and can seed an isolated stress fixture of 260 documents, three 1,000-section documents and 80 passage connections. This validates the bridge contract, not installation in the actual ChatGPT account.
 
 ## Bounds
 

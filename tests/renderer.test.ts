@@ -19,7 +19,8 @@ type TestTree = {
 test("render plans preserve source offsets while bounding markdown chunks", () => {
   const source = Array.from(
     { length: 80 },
-    (_, index) => `## Section ${index}\n\nA [link](https://example.test/${index}) &amp; text.\n\n`,
+    (_, index) =>
+      `## Section ${index}\n\nA [link](https://example.test/${index}) &amp; text.\n\n`,
   ).join("");
   const plan = createRenderPlan(source, "markdown", 1_024);
   assert.ok(plan.chunks.length > 1);
@@ -27,7 +28,10 @@ test("render plans preserve source offsets while bounding markdown chunks", () =
   assert.equal(plan.chunks[0].range.start, 0);
   assert.equal(plan.chunks.at(-1)?.range.end, source.length);
   for (let index = 1; index < plan.chunks.length; index++)
-    assert.equal(plan.chunks[index - 1].range.end, plan.chunks[index].range.start);
+    assert.equal(
+      plan.chunks[index - 1].range.end,
+      plan.chunks[index].range.start,
+    );
 });
 
 test("fenced code is never split from its closing fence", () => {
@@ -37,7 +41,9 @@ test("fenced code is never split from its closing fence", () => {
   ).join("\n\n");
   const source = paragraphs + "\n\n```ts\nconst answer = 42;\n\n```\n\nAfter.";
   const plan = createRenderPlan(source, "markdown", 1_024);
-  const codeChunk = plan.chunks.find((chunk) => chunk.source.includes("const answer"));
+  const codeChunk = plan.chunks.find((chunk) =>
+    chunk.source.includes("const answer"),
+  );
   assert.ok(codeChunk);
   assert.match(codeChunk.source, /```ts[\s\S]*```/);
 });
@@ -48,15 +54,13 @@ test("fence type, length and info text determine the closing fence", () => {
     (_, index) => `Paragraph ${index} before the fence.`,
   ).join("\n\n");
   const source =
-    prefix +
-    "\n\n````ts\ninside\n```\n~~~~\nstill code\n````\n\nafter";
+    prefix + "\n\n````ts\ninside\n```\n~~~~\nstill code\n````\n\nafter";
   const plan = createRenderPlan(source, "markdown", 1_024);
-  const codeChunk = plan.chunks.find((chunk) => chunk.source.includes("inside"));
-  assert.ok(codeChunk);
-  assert.match(
-    codeChunk.source,
-    /````ts[\s\S]*```\n~~~~\nstill code\n````/,
+  const codeChunk = plan.chunks.find((chunk) =>
+    chunk.source.includes("inside"),
   );
+  assert.ok(codeChunk);
+  assert.match(codeChunk.source, /````ts[\s\S]*```\n~~~~\nstill code\n````/);
   assert.equal(
     codeChunk.source.includes("still code"),
     true,
@@ -71,15 +75,19 @@ test("CRLF fenced code closes without corrupting source ranges", () => {
     (_, index) => `Paragraph ${index} before the fence.`,
   ).join("\r\n\r\n");
   const source =
-    prefix +
-    "\r\n\r\n```ts\r\nconst answer = 42;\r\n```\r\n\r\nAfter.";
+    prefix + "\r\n\r\n```ts\r\nconst answer = 42;\r\n```\r\n\r\nAfter.";
   const plan = createRenderPlan(source, "markdown", 1_024);
-  const codeChunk = plan.chunks.find((chunk) => chunk.source.includes("const answer"));
+  const codeChunk = plan.chunks.find((chunk) =>
+    chunk.source.includes("const answer"),
+  );
   assert.ok(codeChunk);
   assert.match(codeChunk.source, /```ts\r\nconst answer = 42;\r\n```/);
   assert.equal(plan.chunks.map((chunk) => chunk.source).join(""), source);
   assert.equal(
-    plan.chunks.every((chunk) => source.slice(chunk.range.start, chunk.range.end) === chunk.source),
+    plan.chunks.every(
+      (chunk) =>
+        source.slice(chunk.range.start, chunk.range.end) === chunk.source,
+    ),
     true,
   );
 });
@@ -101,7 +109,10 @@ test("blank lines inside lists and block quotes stay in one chunk past 4096", ()
   assert.ok(listChunk);
   assert.ok(listChunk.source.length > 4_096);
   assert.match(listChunk.source, /- first [\s\S]*- second list item/);
-  assert.equal(listPlan.chunks.map((chunk) => chunk.source).join(""), listSource);
+  assert.equal(
+    listPlan.chunks.map((chunk) => chunk.source).join(""),
+    listSource,
+  );
 
   const quoteSource =
     `> first ${"c".repeat(3_000)}\n\n` +
@@ -114,7 +125,10 @@ test("blank lines inside lists and block quotes stay in one chunk past 4096", ()
   assert.ok(quoteChunk);
   assert.ok(quoteChunk.source.length > 4_096);
   assert.match(quoteChunk.source, /> first [\s\S]*> second/);
-  assert.equal(quotePlan.chunks.map((chunk) => chunk.source).join(""), quoteSource);
+  assert.equal(
+    quotePlan.chunks.map((chunk) => chunk.source).join(""),
+    quoteSource,
+  );
 });
 
 test("reference definitions are parser context across bounded chunks", () => {
@@ -127,7 +141,9 @@ test("reference definitions are parser context across bounded chunks", () => {
     "\n\n[source]: https://example.test/reference";
   const plan = createRenderPlan(source, "markdown", 4_096);
   assert.ok(plan.chunks.length > 2);
-  const linkChunk = plan.chunks.find((chunk) => chunk.source.includes("linked passage"));
+  const linkChunk = plan.chunks.find((chunk) =>
+    chunk.source.includes("linked passage"),
+  );
   const definitionChunk = plan.chunks.find((chunk) =>
     chunk.source.includes("[source]:"),
   );
@@ -174,7 +190,10 @@ test("source spans retain exact maps for entities, escapes, links and code", () 
   transformer(tree);
   const span = tree.children[0];
   assert.equal(span.properties["data-source-start"], 0);
-  assert.deepEqual(JSON.parse(String(span.properties["data-source-map"])), [0, 1, 2, 7, 8, 9, 10, 12, 13, 14]);
+  assert.deepEqual(
+    JSON.parse(String(span.properties["data-source-map"])),
+    [0, 1, 2, 7, 8, 9, 10, 12, 13, 14],
+  );
 });
 
 test("unknown rendered transformations are rejected instead of guessed", () => {
@@ -191,7 +210,10 @@ test("unknown rendered transformations are rejected instead of guessed", () => {
   } as unknown as TestTree;
   const transformer = sourceSpansPlugin("raw")() as (tree: TestTree) => void;
   transformer(tree);
-  assert.equal(tree.children[0].properties["data-source-map-state"], "unmapped");
+  assert.equal(
+    tree.children[0].properties["data-source-map-state"],
+    "unmapped",
+  );
   assert.ok(new RendererMappingError("boundary"));
 });
 
@@ -230,5 +252,8 @@ test("large-source planning work scales linearly", () => {
   // run on slower hardware, so the bound is intentionally generous.
   assert.ok(elapsed < 1_000, `render-plan scan took ${elapsed.toFixed(1)}ms`);
   assert.ok(plan.chunks.length < 100, "chunk count must stay bounded");
-  assert.deepEqual(renderedTextOffsets("x &amp; y", "x & y"), [0, 1, 2, 7, 8, 9]);
+  assert.deepEqual(
+    renderedTextOffsets("x &amp; y", "x & y"),
+    [0, 1, 2, 7, 8, 9],
+  );
 });

@@ -74,9 +74,7 @@ export function createRenderPlan(
     };
 
   const markdownPlan =
-    format === "markdown"
-      ? markdownBoundaries(source, boundedSize)
-      : undefined;
+    format === "markdown" ? markdownBoundaries(source, boundedSize) : undefined;
   const boundaries = markdownPlan
     ? markdownPlan.boundaries
     : textBoundaries(source, boundedSize);
@@ -143,9 +141,7 @@ function openingFence(text: string): FenceState | null {
 function closesFence(text: string, fence: FenceState): boolean {
   const match = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(text);
   return Boolean(
-    match &&
-      match[1][0] === fence.marker &&
-      match[1].length >= fence.length,
+    match && match[1][0] === fence.marker && match[1].length >= fence.length,
   );
 }
 
@@ -180,9 +176,7 @@ interface ReferenceScan {
 }
 
 /** Scan definitions and uses once so each chunk receives only needed context. */
-function scanReferences(
-  lines: readonly { text: string }[],
-): ReferenceScan {
+function scanReferences(lines: readonly { text: string }[]): ReferenceScan {
   const definitions = new Map<string, ReferenceDefinition>();
   const labelsByLine: string[][] = Array.from(
     { length: lines.length },
@@ -348,10 +342,7 @@ function markdownBoundaries(
     // A blank line is safe only outside a fenced code block and outside a
     // continued list/quote. The heading check avoids making a long run of
     // ATX sections one giant parse unit.
-    if (
-      !inFence &&
-      ((blank && !unsafeBlank) || nextIsHeading)
-    )
+    if (!inFence && ((blank && !unsafeBlank) || nextIsHeading))
       lastSafe = line.end;
 
     if (line.end - start > maxChunkSize && lastSafe > start) {

@@ -110,9 +110,7 @@ export const commandSchemas = {
       cursor: z.string().max(2_000).optional(),
     })
     .strict(),
-  answer: z
-    .object({ questionId: QuestionId, documentId: DocumentId })
-    .strict(),
+  answer: z.object({ questionId: QuestionId, documentId: DocumentId }).strict(),
   open_document: z
     .object({
       ...locateShape,
@@ -219,7 +217,10 @@ export const readOnlyCommands = new Set<CommandName>([
   "open_document",
 ]);
 
-function locatorValue(value: { documentId?: unknown; path?: unknown }): RequiredLocator {
+function locatorValue(value: {
+  documentId?: unknown;
+  path?: unknown;
+}): RequiredLocator {
   // Parse the complete object through the exclusive union.  Choosing one
   // truthy field would silently accept a malformed payload containing both
   // locators and would make the static XOR contract meaningless at runtime.
@@ -245,48 +246,63 @@ export function parseCommandInput<K extends CommandName>(
 ): ParsedInput<K> {
   const parsed = commandSchemas[name].parse(args) as RawOutput<K>;
   if ((["cat", "edit", "mv", "archive", "history"] as string[]).includes(name))
-    return { ...parsed, ...locatorValue(parsed as RawOutput<K> & { documentId?: unknown; path?: unknown }) } as ParsedInput<K>;
+    return {
+      ...parsed,
+      ...locatorValue(
+        parsed as RawOutput<K> & { documentId?: unknown; path?: unknown },
+      ),
+    } as ParsedInput<K>;
   if (name === "open_document")
     return {
       ...parsed,
-      ...optionalLocatorValue(parsed as RawOutput<K> & { documentId?: unknown; path?: unknown }),
+      ...optionalLocatorValue(
+        parsed as RawOutput<K> & { documentId?: unknown; path?: unknown },
+      ),
     } as ParsedInput<K>;
   return parsed as ParsedInput<K>;
 }
 
 export const commandResultSchemas = {
-  ls: z.object({
-    documents: z.array(DocumentSummarySchema),
-    nextOffset: z.number().int().nonnegative().nullable(),
-    nextCursor: z.string().nullable(),
-  }).strict(),
+  ls: z
+    .object({
+      documents: z.array(DocumentSummarySchema),
+      nextOffset: z.number().int().nonnegative().nullable(),
+      nextCursor: z.string().nullable(),
+    })
+    .strict(),
   cat: z.object({ document: DocumentRevisionSchema }).strict(),
-  grep: z.object({
-    matches: z.array(
-      z.object({
-        document: DocumentSummarySchema,
-        excerpt: z.string(),
-        start: z.number().int(),
-        end: z.number().int(),
-      }),
-    ),
-    nextCursor: z.string().nullable(),
-  }).strict(),
+  grep: z
+    .object({
+      matches: z.array(
+        z.object({
+          document: DocumentSummarySchema,
+          excerpt: z.string(),
+          start: z.number().int(),
+          end: z.number().int(),
+        }),
+      ),
+      nextCursor: z.string().nullable(),
+    })
+    .strict(),
   write: z.object({ document: DocumentRevisionSchema }).strict(),
   edit: z.object({ document: DocumentRevisionSchema }).strict(),
   mv: z.object({ document: DocumentRevisionSchema }).strict(),
   archive: z.object({ document: DocumentRevisionSchema }).strict(),
-  history: z.object({
-    revisions: z.array(DocumentRevisionSchema.omit({ content: true })),
-    nextCursor: z.string().nullable(),
-  }).strict(),
+  history: z
+    .object({
+      revisions: z.array(DocumentRevisionSchema.omit({ content: true })),
+      nextCursor: z.string().nullable(),
+    })
+    .strict(),
   link: z.object({ connection: ConnectionSchema }).strict(),
   unlink: z.object({ removed: z.boolean() }).strict(),
   ask: z.object({ question: QuestionSchema }).strict(),
-  questions: z.object({
-    questions: z.array(QuestionSchema),
-    nextCursor: z.string().nullable(),
-  }).strict(),
+  questions: z
+    .object({
+      questions: z.array(QuestionSchema),
+      nextCursor: z.string().nullable(),
+    })
+    .strict(),
   answer: z.object({ question: QuestionSchema }).strict(),
   open_document: OpenDocumentResultSchema,
   import_file: z.object({ document: DocumentRevisionSchema }).strict(),

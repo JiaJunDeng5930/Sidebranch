@@ -9,7 +9,8 @@ export type ViewId = string & { readonly __viewId: unique symbol };
 
 export function createViewId(seed?: string): ViewId {
   if (seed) return seed as ViewId;
-  const webCrypto = typeof globalThis.crypto !== "undefined" ? globalThis.crypto : undefined;
+  const webCrypto =
+    typeof globalThis.crypto !== "undefined" ? globalThis.crypto : undefined;
   if (webCrypto && typeof webCrypto.randomUUID === "function")
     return webCrypto.randomUUID() as ViewId;
   if (webCrypto && typeof webCrypto.getRandomValues === "function") {
@@ -174,11 +175,26 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-export function finitePoint(point: Point3, fallback = { x: 0, y: 0, z: 0 }): Point3 {
+export function finitePoint(
+  point: Point3,
+  fallback = { x: 0, y: 0, z: 0 },
+): Point3 {
   return {
-    x: clamp(numberOr(point.x, fallback.x), -SCENE_CAMERA_LIMITS.position, SCENE_CAMERA_LIMITS.position),
-    y: clamp(numberOr(point.y, fallback.y), -SCENE_CAMERA_LIMITS.position, SCENE_CAMERA_LIMITS.position),
-    z: clamp(numberOr(point.z, fallback.z), -SCENE_CAMERA_LIMITS.depth, SCENE_CAMERA_LIMITS.depth),
+    x: clamp(
+      numberOr(point.x, fallback.x),
+      -SCENE_CAMERA_LIMITS.position,
+      SCENE_CAMERA_LIMITS.position,
+    ),
+    y: clamp(
+      numberOr(point.y, fallback.y),
+      -SCENE_CAMERA_LIMITS.position,
+      SCENE_CAMERA_LIMITS.position,
+    ),
+    z: clamp(
+      numberOr(point.z, fallback.z),
+      -SCENE_CAMERA_LIMITS.depth,
+      SCENE_CAMERA_LIMITS.depth,
+    ),
   };
 }
 
@@ -202,8 +218,16 @@ function normalizeCamera(camera: CameraState): CameraState {
   return {
     position: finitePoint(camera.position),
     rotation: {
-      x: clamp(numberOr(camera.rotation.x, 0), -SCENE_CAMERA_LIMITS.rotation, SCENE_CAMERA_LIMITS.rotation),
-      y: clamp(numberOr(camera.rotation.y, 0), -SCENE_CAMERA_LIMITS.rotation, SCENE_CAMERA_LIMITS.rotation),
+      x: clamp(
+        numberOr(camera.rotation.x, 0),
+        -SCENE_CAMERA_LIMITS.rotation,
+        SCENE_CAMERA_LIMITS.rotation,
+      ),
+      y: clamp(
+        numberOr(camera.rotation.y, 0),
+        -SCENE_CAMERA_LIMITS.rotation,
+        SCENE_CAMERA_LIMITS.rotation,
+      ),
     },
     zoom: clamp(
       numberOr(camera.zoom, DEFAULT_CAMERA.zoom),
@@ -231,12 +255,15 @@ function snapshot(state: SceneDraft): SceneHistoryEntry {
   };
 }
 
-function baseState(state: SceneState, values: {
-  views?: readonly DocumentView[];
-  currentViewId?: ViewId | null;
-  companionViewId?: ViewId | null;
-  camera?: CameraState;
-}): SceneDraft {
+function baseState(
+  state: SceneState,
+  values: {
+    views?: readonly DocumentView[];
+    currentViewId?: ViewId | null;
+    companionViewId?: ViewId | null;
+    camera?: CameraState;
+  },
+): SceneDraft {
   return {
     views: values.views ?? state.views,
     currentViewId:
@@ -247,33 +274,32 @@ function baseState(state: SceneState, values: {
       values.companionViewId === undefined
         ? state.companionViewId
         : values.companionViewId,
-    camera: values.camera ? normalizeCamera(values.camera) : copyCamera(state.camera),
+    camera: values.camera
+      ? normalizeCamera(values.camera)
+      : copyCamera(state.camera),
   };
 }
 
-function enforceRoles(
-  state: SceneDraft,
-): SceneDraft {
+function enforceRoles(state: SceneDraft): SceneDraft {
   const ids = new Set(state.views.map((view) => view.id));
-  let current = state.currentViewId && ids.has(state.currentViewId)
-    ? state.currentViewId
-    : null;
+  let current =
+    state.currentViewId && ids.has(state.currentViewId)
+      ? state.currentViewId
+      : null;
   let companion =
     state.companionViewId &&
     ids.has(state.companionViewId) &&
     state.companionViewId !== current
       ? state.companionViewId
       : null;
-  if (!state.views.length) return { ...state, currentViewId: null, companionViewId: null };
+  if (!state.views.length)
+    return { ...state, currentViewId: null, companionViewId: null };
   if (!current) current = state.views[0].id;
   if (companion === current) companion = null;
   return { ...state, currentViewId: current, companionViewId: companion };
 }
 
-function withLiveHistory(
-  state: SceneState,
-  values: SceneDraft,
-): SceneState {
+function withLiveHistory(state: SceneState, values: SceneDraft): SceneState {
   const next = enforceRoles(values);
   const history = state.history.length
     ? state.history.slice()
@@ -288,31 +314,44 @@ function withLiveHistory(
 }
 
 function readingCamera(state: SceneDraft): CameraState {
-  const current = state.views.find(view => view.id === state.currentViewId);
-  const companion = state.views.find(view => view.id === state.companionViewId);
+  const current = state.views.find((view) => view.id === state.currentViewId);
+  const companion = state.views.find(
+    (view) => view.id === state.companionViewId,
+  );
   if (!current) return copyCamera(DEFAULT_CAMERA);
   return {
-    position: companion ? {
-      x: (current.position.x + companion.position.x) / 2,
-      y: (current.position.y + companion.position.y) / 2,
-      z: Math.max(current.position.z, companion.position.z),
-    } : copyPoint(current.position),
+    position: companion
+      ? {
+          x: (current.position.x + companion.position.x) / 2,
+          y: (current.position.y + companion.position.y) / 2,
+          z: Math.max(current.position.z, companion.position.z),
+        }
+      : copyPoint(current.position),
     rotation: { x: 0, y: 0 },
     zoom: companion ? 0.8 : 1,
   };
 }
 
-function withNavigation(
-  state: SceneState,
-  values: SceneDraft,
-): SceneState {
+function withNavigation(state: SceneState, values: SceneDraft): SceneState {
   const roles = enforceRoles(values);
   const next = { ...roles, camera: readingCamera(roles) };
-  const sameFocus = (a: AnchorInput | null, b: AnchorInput | null) => a?.revisionId === b?.revisionId && a?.start === b?.start && a?.end === b?.end;
-  if (state.currentViewId === next.currentViewId && state.companionViewId === next.companionViewId && state.views.length === next.views.length && next.views.every(view => {
-    const previous = state.views.find(item => item.id === view.id);
-    return previous?.document.revisionId === view.document.revisionId && sameFocus(previous.focus, view.focus);
-  })) return withLiveHistory(state, next);
+  const sameFocus = (a: AnchorInput | null, b: AnchorInput | null) =>
+    a?.revisionId === b?.revisionId &&
+    a?.start === b?.start &&
+    a?.end === b?.end;
+  if (
+    state.currentViewId === next.currentViewId &&
+    state.companionViewId === next.companionViewId &&
+    state.views.length === next.views.length &&
+    next.views.every((view) => {
+      const previous = state.views.find((item) => item.id === view.id);
+      return (
+        previous?.document.revisionId === view.document.revisionId &&
+        sameFocus(previous.focus, view.focus)
+      );
+    })
+  )
+    return withLiveHistory(state, next);
   const previousHistory = state.history.length
     ? state.history.slice(0, Math.max(0, state.historyIndex + 1))
     : [];
@@ -320,7 +359,9 @@ function withNavigation(
   return finalize(next, previousHistory, previousHistory.length - 1);
 }
 
-function hasViews(views: readonly DocumentView[]): views is readonly [DocumentView, ...DocumentView[]] {
+function hasViews(
+  views: readonly DocumentView[],
+): views is readonly [DocumentView, ...DocumentView[]] {
   return views.length > 0;
 }
 
@@ -369,9 +410,13 @@ function positionFor(
     });
   }
   if (role === "current") {
-    const current = state.views.find(view => view.id === state.currentViewId);
+    const current = state.views.find((view) => view.id === state.currentViewId);
     return current
-      ? finitePoint({ x: current.position.x + 700, y: current.position.y, z: current.position.z })
+      ? finitePoint({
+          x: current.position.x + 700,
+          y: current.position.y,
+          z: current.position.z,
+        })
       : { x: 0, y: 0, z: 0 };
   }
   if (role === "companion") {
@@ -388,7 +433,7 @@ function positionFor(
   const side = index % 2 === 0 ? 1 : -1;
   return finitePoint({
     x: side * (560 + Math.floor(index / 2) * 90),
-    y: (index % 3 - 1) * 90,
+    y: ((index % 3) - 1) * 90,
     z: -240 - Math.floor(index / 3) * 130,
   });
 }
@@ -461,11 +506,18 @@ function open(
   }
   return withNavigation(
     state,
-    baseState(state, { views, currentViewId: current, companionViewId: companion }),
+    baseState(state, {
+      views,
+      currentViewId: current,
+      companionViewId: companion,
+    }),
   );
 }
 
-function follow(state: SceneState, action: Extract<SceneAction, { type: "follow" }>): SceneState {
+function follow(
+  state: SceneState,
+  action: Extract<SceneAction, { type: "follow" }>,
+): SceneState {
   if ("viewId" in action) {
     const target = state.views.find((view) => view.id === action.viewId);
     if (!target) return state;
@@ -475,27 +527,38 @@ function follow(state: SceneState, action: Extract<SceneAction, { type: "follow"
             ...view,
             position: action.position
               ? finitePoint(action.position, view.position)
-              : state.currentViewId === target.id || state.companionViewId === target.id
+              : state.currentViewId === target.id ||
+                  state.companionViewId === target.id
                 ? view.position
                 : positionFor(state, "companion"),
-            focus: action.focus === undefined ? view.focus : copyFocus(action.focus),
+            focus:
+              action.focus === undefined ? view.focus : copyFocus(action.focus),
           }
         : view,
     );
     if (!state.currentViewId || state.currentViewId === target.id) {
       return withNavigation(
         state,
-        baseState(state, { views, currentViewId: target.id, companionViewId: null }),
+        baseState(state, {
+          views,
+          currentViewId: target.id,
+          companionViewId: null,
+        }),
       );
     }
-    return withNavigation(state, baseState(state, { views, companionViewId: target.id }));
+    return withNavigation(
+      state,
+      baseState(state, { views, companionViewId: target.id }),
+    );
   }
   if (!action.document) {
     // This is unreachable for TypeScript callers because FollowAction is an XOR.
     // Keep malformed JavaScript calls loud instead of silently dropping a follow.
     throw new Error("A follow action requires either viewId or document.");
   }
-  const target = state.views.find((view) => sameRevision(view.document, action.document));
+  const target = state.views.find((view) =>
+    sameRevision(view.document, action.document),
+  );
   if (!target) {
     const id = createViewId();
     const newTarget: DocumentView = {
@@ -520,17 +583,23 @@ function follow(state: SceneState, action: Extract<SceneAction, { type: "follow"
           ...view,
           position: action.position
             ? finitePoint(action.position, view.position)
-            : state.currentViewId === target.id || state.companionViewId === target.id
+            : state.currentViewId === target.id ||
+                state.companionViewId === target.id
               ? view.position
               : positionFor(state, "companion"),
-          focus: action.focus === undefined ? view.focus : copyFocus(action.focus),
+          focus:
+            action.focus === undefined ? view.focus : copyFocus(action.focus),
         }
       : view,
   );
   if (!state.currentViewId || state.currentViewId === target.id) {
     return withNavigation(
       state,
-      baseState(state, { views, currentViewId: target.id, companionViewId: null }),
+      baseState(state, {
+        views,
+        currentViewId: target.id,
+        companionViewId: null,
+      }),
     );
   }
   return withNavigation(
@@ -539,7 +608,10 @@ function follow(state: SceneState, action: Extract<SceneAction, { type: "follow"
   );
 }
 
-function restoreHistory(state: SceneState, entry: SceneHistoryEntry): SceneState {
+function restoreHistory(
+  state: SceneState,
+  entry: SceneHistoryEntry,
+): SceneState {
   const saved = new Map(entry.views.map((view) => [view.id, view]));
   const views = state.views.map((view) => {
     const context = saved.get(view.id);
@@ -576,7 +648,10 @@ export function emptyScene(): SceneState {
   return finalize(values, [], -1);
 }
 
-export function sceneReducer(state: SceneState, action: SceneAction): SceneState {
+export function sceneReducer(
+  state: SceneState,
+  action: SceneAction,
+): SceneState {
   switch (action.type) {
     case "open-document":
       return open(state, action, false);
@@ -591,13 +666,19 @@ export function sceneReducer(state: SceneState, action: SceneAction): SceneState
           ? { ...view, focus: copyFocus(action.focus) }
           : view,
       );
-      const target = views.find(view => view.id === action.viewId)!;
+      const target = views.find((view) => view.id === action.viewId)!;
       const values = baseState(state, {
         views,
         currentViewId: state.currentViewId ?? action.viewId,
-        camera: { position: copyPoint(target.position), rotation: { x: 0, y: 0 }, zoom: 1 },
+        camera: {
+          position: copyPoint(target.position),
+          rotation: { x: 0, y: 0 },
+          zoom: 1,
+        },
       });
-      return action.history ? withNavigation(state, values) : withLiveHistory(state, values);
+      return action.history
+        ? withNavigation(state, values)
+        : withLiveHistory(state, values);
     }
     case "promote-view": {
       if (!state.views.some((view) => view.id === action.viewId)) return state;
@@ -613,18 +694,24 @@ export function sceneReducer(state: SceneState, action: SceneAction): SceneState
     case "close-view": {
       if (!state.views.some((view) => view.id === action.viewId)) return state;
       const views = state.views.filter((view) => view.id !== action.viewId);
-      let current = state.currentViewId === action.viewId ? null : state.currentViewId;
+      let current =
+        state.currentViewId === action.viewId ? null : state.currentViewId;
       let companion =
         state.companionViewId === action.viewId ? null : state.companionViewId;
       if (!current) {
-        current = companion && views.some((view) => view.id === companion)
-          ? companion
-          : views[0]?.id ?? null;
+        current =
+          companion && views.some((view) => view.id === companion)
+            ? companion
+            : (views[0]?.id ?? null);
         if (current === companion) companion = null;
       }
       return withNavigation(
         state,
-        baseState(state, { views, currentViewId: current, companionViewId: companion }),
+        baseState(state, {
+          views,
+          currentViewId: current,
+          companionViewId: companion,
+        }),
       );
     }
     case "update-view": {
@@ -640,10 +727,12 @@ export function sceneReducer(state: SceneState, action: SceneAction): SceneState
             patch.scrollTop === undefined
               ? view.scrollTop
               : Math.max(0, numberOr(patch.scrollTop, view.scrollTop)),
-          focus: patch.focus === undefined ? view.focus : copyFocus(patch.focus),
+          focus:
+            patch.focus === undefined ? view.focus : copyFocus(patch.focus),
         };
       });
-      if (views.every((view, index) => view === state.views[index])) return state;
+      if (views.every((view, index) => view === state.views[index]))
+        return state;
       return withLiveHistory(state, baseState(state, { views }));
     }
     case "replace-document": {
@@ -682,29 +771,44 @@ export function sceneReducer(state: SceneState, action: SceneAction): SceneState
       return withLiveHistory(state, baseState(state, { camera }));
     }
     case "reset-camera":
-      return withLiveHistory(state, baseState(state, { camera: readingCamera(state) }));
+      return withLiveHistory(
+        state,
+        baseState(state, { camera: readingCamera(state) }),
+      );
     case "overview-camera": {
       if (!state.views.length) return state;
-      const xs = state.views.map(view => view.position.x);
-      const ys = state.views.map(view => view.position.y);
-      const left = Math.min(...xs) - 340, right = Math.max(...xs) + 340;
-      const top = Math.min(...ys) - 390, bottom = Math.max(...ys) + 390;
+      const xs = state.views.map((view) => view.position.x);
+      const ys = state.views.map((view) => view.position.y);
+      const left = Math.min(...xs) - 340,
+        right = Math.max(...xs) + 340;
+      const top = Math.min(...ys) - 390,
+        bottom = Math.max(...ys) + 390;
       const camera = normalizeCamera({
         position: { x: (left + right) / 2, y: (top + bottom) / 2, z: 0 },
         rotation: { x: 8, y: -13 },
-        zoom: Math.min(0.72, Math.max(1, action.width - 80) / (right - left), Math.max(1, action.height - 60) / (bottom - top)),
+        zoom: Math.min(
+          0.72,
+          Math.max(1, action.width - 80) / (right - left),
+          Math.max(1, action.height - 60) / (bottom - top),
+        ),
       });
       return withLiveHistory(state, baseState(state, { camera }));
     }
     case "history-back": {
       if (state.historyIndex <= 0) return state;
       const historyIndex = state.historyIndex - 1;
-      return { ...restoreHistory(state, state.history[historyIndex]), historyIndex };
+      return {
+        ...restoreHistory(state, state.history[historyIndex]),
+        historyIndex,
+      };
     }
     case "history-forward": {
       if (state.historyIndex >= state.history.length - 1) return state;
       const historyIndex = state.historyIndex + 1;
-      return { ...restoreHistory(state, state.history[historyIndex]), historyIndex };
+      return {
+        ...restoreHistory(state, state.history[historyIndex]),
+        historyIndex,
+      };
     }
   }
 }

@@ -36,10 +36,7 @@ import type {
   CommandName,
   CommandResults,
 } from "../domain/commands";
-import {
-  parseCommandInput,
-  parseCommandResult,
-} from "../domain/commands";
+import { parseCommandInput, parseCommandResult } from "../domain/commands";
 import type { Owner } from "./owner-auth";
 import type { RuntimeEnv } from "./env";
 import { importFile } from "./import-file";
@@ -67,43 +64,53 @@ type CursorKind = "ls" | "grep" | "connections" | "questions" | "history";
  * rows when it is replayed for another search or filter.
  */
 const CursorPayloadSchema = z.discriminatedUnion("kind", [
-  z.object({
-    v: z.literal(1),
-    kind: z.literal("ls"),
-    prefix: z.string().min(1).max(500),
-    archived: z.boolean(),
-    updatedAt: z.string().min(1),
-    id: z.string().uuid(),
-  }).strict(),
-  z.object({
-    v: z.literal(1),
-    kind: z.literal("grep"),
-    prefix: z.string().min(1).max(500),
-    query: z.string().min(1).max(200),
-    path: z.string().min(2).max(500),
-    id: z.string().uuid(),
-  }).strict(),
-  z.object({
-    v: z.literal(1),
-    kind: z.literal("connections"),
-    documentId: z.string().uuid(),
-    createdAt: z.string().min(1),
-    id: z.string().uuid(),
-  }).strict(),
-  z.object({
-    v: z.literal(1),
-    kind: z.literal("questions"),
-    documentId: z.string().uuid().nullable(),
-    unanswered: z.boolean(),
-    createdAt: z.string().min(1),
-    id: z.string().uuid(),
-  }).strict(),
-  z.object({
-    v: z.literal(1),
-    kind: z.literal("history"),
-    documentId: z.string().uuid(),
-    sequence: z.number().int().positive(),
-  }).strict(),
+  z
+    .object({
+      v: z.literal(1),
+      kind: z.literal("ls"),
+      prefix: z.string().min(1).max(500),
+      archived: z.boolean(),
+      updatedAt: z.string().min(1),
+      id: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      v: z.literal(1),
+      kind: z.literal("grep"),
+      prefix: z.string().min(1).max(500),
+      query: z.string().min(1).max(200),
+      path: z.string().min(2).max(500),
+      id: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      v: z.literal(1),
+      kind: z.literal("connections"),
+      documentId: z.string().uuid(),
+      createdAt: z.string().min(1),
+      id: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      v: z.literal(1),
+      kind: z.literal("questions"),
+      documentId: z.string().uuid().nullable(),
+      unanswered: z.boolean(),
+      createdAt: z.string().min(1),
+      id: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      v: z.literal(1),
+      kind: z.literal("history"),
+      documentId: z.string().uuid(),
+      sequence: z.number().int().positive(),
+    })
+    .strict(),
 ]);
 type CursorPayload = z.infer<typeof CursorPayloadSchema>;
 
@@ -136,11 +143,13 @@ function decodeCursor<K extends CursorKind>(
     const payload = CursorPayloadSchema.parse(
       JSON.parse(new TextDecoder().decode(bytes)) as unknown,
     );
-    if (payload.kind !== kind)
-      throw new Error("cursor kind");
+    if (payload.kind !== kind) throw new Error("cursor kind");
     return payload as CursorOf<K>;
   } catch {
-    throw new DomainError("INVALID_CURSOR", "The continuation cursor is invalid.");
+    throw new DomainError(
+      "INVALID_CURSOR",
+      "The continuation cursor is invalid.",
+    );
   }
 }
 
@@ -164,7 +173,8 @@ function locatorSql(locator: RequiredLocator): {
 } {
   if (locator.documentId !== undefined)
     return { clause: "d.id=?", value: locator.documentId };
-  if (locator.path !== undefined) return { clause: "d.path=?", value: locator.path };
+  if (locator.path !== undefined)
+    return { clause: "d.path=?", value: locator.path };
   throw new DomainError("INVALID_LOCATOR", "Supply documentId or path.");
 }
 
@@ -185,7 +195,10 @@ function cursorAfterDescending(
 ): { sql: string; values: string[] } {
   if (!cursor) return { sql: "", values: [] };
   if (cursor.kind !== "connections" && cursor.kind !== "questions")
-    throw new DomainError("INVALID_CURSOR", "The continuation cursor is invalid.");
+    throw new DomainError(
+      "INVALID_CURSOR",
+      "The continuation cursor is invalid.",
+    );
   return {
     sql: " AND (" + column + "<? OR (" + column + "=? AND " + idColumn + "<?))",
     values: [cursor.createdAt, cursor.createdAt, cursor.id],
@@ -202,14 +215,19 @@ export class DocumentStore {
     return this.env.DB;
   }
 
-  private async readSummary(locator: RequiredLocator): Promise<DocumentSummary> {
+  private async readSummary(
+    locator: RequiredLocator,
+  ): Promise<DocumentSummary> {
     const located = locatorSql(locator);
     const row = await this.db
       .prepare(
         "SELECT d.id,d.path,d.title,d.asset_id,d.archived,d.created_at," +
           "r.id AS revision_id,r.sequence,r.parent_id,r.format,r.created_at AS updated_at " +
           "FROM documents d JOIN revisions r ON r.document_id=d.id " +
-          "WHERE " + located.clause + " AND " + this.latestClause("r", "d") +
+          "WHERE " +
+          located.clause +
+          " AND " +
+          this.latestClause("r", "d") +
           " LIMIT 1",
       )
       .bind(located.value)
@@ -241,27 +259,33 @@ export class DocumentStore {
           " ORDER BY r.created_at DESC,d.id DESC LIMIT 1",
       )
       .first<unknown>();
-    return row ? documentRevisionFromEntity(documentAtRevisionFromRow(row)) : null;
+    return row
+      ? documentRevisionFromEntity(documentAtRevisionFromRow(row))
+      : null;
   }
 
   async list(a: ParsedInput<"ls">): Promise<CommandResults["ls"]> {
     const cursor = decodeCursor(a.cursor, "ls");
     if (cursor && a.offset > 0)
-      throw new DomainError("INVALID_CURSOR", "Use cursor or offset, not both.");
+      throw new DomainError(
+        "INVALID_CURSOR",
+        "Use cursor or offset, not both.",
+      );
     if (
       cursor &&
       (cursor.kind !== "ls" ||
         cursor.prefix !== a.prefix ||
         cursor.archived !== a.archived)
     )
-      throw new DomainError("INVALID_CURSOR", "The continuation cursor does not match this list.");
+      throw new DomainError(
+        "INVALID_CURSOR",
+        "The continuation cursor does not match this list.",
+      );
     const upper = pathUpperBound(a.prefix);
     const where = [
       "d.archived=?",
       "d.path COLLATE BINARY>=?",
-      ...(upper
-        ? ["d.path COLLATE BINARY<?"]
-        : ["d.path LIKE ? ESCAPE '\\'"]),
+      ...(upper ? ["d.path COLLATE BINARY<?"] : ["d.path LIKE ? ESCAPE '\\'"]),
       this.latestClause("r", "d"),
     ];
     const values: unknown[] = [
@@ -310,12 +334,8 @@ export class DocumentStore {
     revisionId?: RevisionId,
   ): Promise<DocumentAtRevision> {
     const located = locatorSql(locator);
-    const revisionClause = revisionId
-      ? "r.id=?"
-      : this.latestClause("r", "d");
-    const values = revisionId
-      ? [located.value, revisionId]
-      : [located.value];
+    const revisionClause = revisionId ? "r.id=?" : this.latestClause("r", "d");
+    const values = revisionId ? [located.value, revisionId] : [located.value];
     const row = await this.db
       .prepare(
         "SELECT d.id,d.path,d.title,d.asset_id,d.archived,d.created_at," +
@@ -324,7 +344,10 @@ export class DocumentStore {
           "(SELECT h.id FROM revisions h WHERE h.document_id=d.id " +
           "ORDER BY h.sequence DESC LIMIT 1) AS head_revision_id " +
           "FROM documents d JOIN revisions r ON r.document_id=d.id " +
-          "WHERE " + located.clause + " AND " + revisionClause +
+          "WHERE " +
+          located.clause +
+          " AND " +
+          revisionClause +
           " LIMIT 1",
       )
       .bind(...values)
@@ -453,7 +476,14 @@ export class DocumentStore {
           .prepare(
             "INSERT INTO assets(id,key,name,mime,bytes,created_at) VALUES(?,?,?,?,?,?)",
           )
-          .bind(asset.id, asset.key, asset.name, asset.mime, asset.bytes, asset.createdAt),
+          .bind(
+            asset.id,
+            asset.key,
+            asset.name,
+            asset.mime,
+            asset.bytes,
+            asset.createdAt,
+          ),
         this.insertDocumentEntity(document),
         this.insertRevisionEntity(revision),
       ]);
@@ -566,11 +596,11 @@ export class DocumentStore {
     const locator = requiredLocator(a);
     const doc = await this.readSummary(locator);
     const cursor = decodeCursor(a.cursor, "history");
-    if (
-      cursor &&
-      (cursor.kind !== "history" || cursor.documentId !== doc.id)
-    )
-      throw new DomainError("INVALID_CURSOR", "The continuation cursor does not match this history.");
+    if (cursor && (cursor.kind !== "history" || cursor.documentId !== doc.id))
+      throw new DomainError(
+        "INVALID_CURSOR",
+        "The continuation cursor does not match this history.",
+      );
     const where = ["d.id=?"];
     const values: unknown[] = [doc.id];
     if (cursor) {
@@ -608,16 +638,20 @@ export class DocumentStore {
   async grep(a: ParsedInput<"grep">): Promise<CommandResults["grep"]> {
     const cursor = decodeCursor(a.cursor, "grep");
     if (cursor && cursor.kind !== "grep")
-      throw new DomainError("INVALID_CURSOR", "The continuation cursor is invalid.");
+      throw new DomainError(
+        "INVALID_CURSOR",
+        "The continuation cursor is invalid.",
+      );
     if (cursor && cursor.prefix !== a.prefix)
-      throw new DomainError("INVALID_CURSOR", "The continuation cursor does not match this search.");
+      throw new DomainError(
+        "INVALID_CURSOR",
+        "The continuation cursor does not match this search.",
+      );
     const upper = pathUpperBound(a.prefix);
     const where = [
       "d.archived=0",
       "d.path COLLATE BINARY>=?",
-      ...(upper
-        ? ["d.path COLLATE BINARY<?"]
-        : ["d.path LIKE ? ESCAPE '\\'"]),
+      ...(upper ? ["d.path COLLATE BINARY<?"] : ["d.path LIKE ? ESCAPE '\\'"]),
       this.latestClause("r", "d"),
     ];
     const values: unknown[] = [
@@ -672,19 +706,23 @@ export class DocumentStore {
         nextCursor =
           processed < rows.results.length
             ? encodeCursor({
-              v: 1,
-              kind: "grep",
-              prefix: a.prefix,
-              query: a.query,
-              path: row.path,
-              id: row.id,
+                v: 1,
+                kind: "grep",
+                prefix: a.prefix,
+                query: a.query,
+                path: row.path,
+                id: row.id,
               })
             : null;
         break;
       }
     }
     if (matches.length > a.limit) matches.length = a.limit;
-    if (nextCursor === null && processed === SEARCH_PAGE_SIZE && rows.results.length > SEARCH_PAGE_SIZE) {
+    if (
+      nextCursor === null &&
+      processed === SEARCH_PAGE_SIZE &&
+      rows.results.length > SEARCH_PAGE_SIZE
+    ) {
       const lastRow = searchRowFromValue(rows.results[SEARCH_PAGE_SIZE - 1]);
       nextCursor = encodeCursor({
         v: 1,
@@ -860,7 +898,9 @@ export class DocumentStore {
       "JOIN revisions r0 ON r0.id=a0.revision_id " +
       "WHERE " +
       (documentId ? "r0.document_id=?" : "1=1") +
-      (unanswered ? " AND NOT EXISTS (SELECT 1 FROM answers ans0 WHERE ans0.question_id=q.id)" : "") +
+      (unanswered
+        ? " AND NOT EXISTS (SELECT 1 FROM answers ans0 WHERE ans0.question_id=q.id)"
+        : "") +
       (questionId ? " AND q.id=?" : "") +
       (cursor ? " AND (q.created_at<? OR (q.created_at=? AND q.id<?))" : "") +
       " ORDER BY q.created_at DESC,q.id DESC LIMIT ?";
@@ -886,13 +926,20 @@ export class DocumentStore {
     // The page count is carried on every outer row, so answer fan-out cannot
     // make one question look like several paginated questions.
     const rows = (
-      await this.db.prepare(query).bind(...pageValues).all<unknown>()
+      await this.db
+        .prepare(query)
+        .bind(...pageValues)
+        .all<unknown>()
     ).results;
     const first = rows[0];
     const pageCount =
-      first && typeof first === "object" && first !== null &&
+      first &&
+      typeof first === "object" &&
+      first !== null &&
       "question_page_count" in first
-        ? Number((first as { question_page_count: unknown }).question_page_count)
+        ? Number(
+            (first as { question_page_count: unknown }).question_page_count,
+          )
         : 0;
     return { rows, hasMore: pageCount > limit };
   }
@@ -903,7 +950,12 @@ export class DocumentStore {
     limit: number,
     rawCursor?: string,
   ): Promise<{ questions: Question[]; nextCursor: string | null }> {
-    const page = await this.questionRows(documentId, unanswered, limit, rawCursor);
+    const page = await this.questionRows(
+      documentId,
+      unanswered,
+      limit,
+      rawCursor,
+    );
     const questions = questionEntitiesFromRows(page.rows)
       .slice(0, limit)
       .map(questionFromEntity);
@@ -936,7 +988,9 @@ export class DocumentStore {
     return questionFromEntity(await this.questionEntity(id));
   }
 
-  async questions(a: ParsedInput<"questions">): Promise<CommandResults["questions"]> {
+  async questions(
+    a: ParsedInput<"questions">,
+  ): Promise<CommandResults["questions"]> {
     return this.questionPage(
       a.documentId ?? null,
       a.unanswered,
@@ -949,7 +1003,9 @@ export class DocumentStore {
     await this.questionEntity(a.questionId);
     await this.readSummary({ documentId: a.documentId });
     await this.db
-      .prepare("INSERT OR IGNORE INTO answers(question_id,document_id) VALUES(?,?)")
+      .prepare(
+        "INSERT OR IGNORE INTO answers(question_id,document_id) VALUES(?,?)",
+      )
       .bind(a.questionId, a.documentId)
       .run();
     return questionFromEntity(await this.questionEntity(a.questionId));
@@ -971,9 +1027,7 @@ export class DocumentStore {
     if (!row) return false;
     const anchorIds = [...new Set([row.from_id, row.to_id])];
     const statements: D1PreparedStatement[] = [
-      this.db
-        .prepare("DELETE FROM connections WHERE id=?")
-        .bind(connectionId),
+      this.db.prepare("DELETE FROM connections WHERE id=?").bind(connectionId),
     ];
     for (const anchorId of anchorIds)
       statements.push(
@@ -1064,7 +1118,9 @@ export class DocumentStore {
         result = { document: await this.move(input as ParsedInput<"mv">) };
         break;
       case "archive":
-        result = { document: await this.archive(input as ParsedInput<"archive">) };
+        result = {
+          document: await this.archive(input as ParsedInput<"archive">),
+        };
         break;
       case "history":
         result = await this.history(input as ParsedInput<"history">);
@@ -1086,17 +1142,16 @@ export class DocumentStore {
         result = await this.questions(input as ParsedInput<"questions">);
         break;
       case "answer":
-        result = { question: await this.answer(input as ParsedInput<"answer">) };
+        result = {
+          question: await this.answer(input as ParsedInput<"answer">),
+        };
         break;
       case "open_document":
         result = await this.open(input as ParsedInput<"open_document">);
         break;
       case "import_file":
         result = {
-          document: await importFile(
-            this,
-            input as ParsedInput<"import_file">,
-          ),
+          document: await importFile(this, input as ParsedInput<"import_file">),
         };
         break;
       default:

@@ -30,9 +30,7 @@ export const downloadableFileShape = {
   file_name: z.string().min(1).max(200).optional(),
   mime_type: z.string().min(1).max(200).optional(),
 } satisfies z.ZodRawShape;
-export const downloadableFileSchema = z
-  .object(downloadableFileShape)
-  .strict();
+export const downloadableFileSchema = z.object(downloadableFileShape).strict();
 
 export const importFileInputShape = {
   path: Path,
@@ -106,9 +104,7 @@ function allowedOrigins(env: RuntimeEnv): Set<string> {
   const values = configured
     ? configured.split(",")
     : [env.SITE_ORIGIN, DEFAULT_FILE_DOWNLOAD_ORIGIN];
-  for (const value of values
-    .map((origin) => origin.trim())
-    .filter(Boolean)) {
+  for (const value of values.map((origin) => origin.trim()).filter(Boolean)) {
     try {
       const url = new URL(value);
       if (
@@ -200,12 +196,19 @@ async function fetchFile(
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    throw new DomainError("FILE_DOWNLOAD_FAILED", "文件下载失败，请检查文件链接。", 502);
+    throw new DomainError(
+      "FILE_DOWNLOAD_FAILED",
+      "文件下载失败，请检查文件链接。",
+      502,
+    );
   }
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("location");
     if (!location)
-      throw new DomainError("FILE_REDIRECT_INVALID", "文件下载重定向缺少地址。");
+      throw new DomainError(
+        "FILE_REDIRECT_INVALID",
+        "文件下载重定向缺少地址。",
+      );
     return fetchFile(new URL(location, url).toString(), env, redirects + 1);
   }
   if (!response.ok)
@@ -245,11 +248,17 @@ function resolveMime(
     ?.split(";", 1)[0]
     .trim()
     .toLowerCase();
-  if (detected === "application/pdf" || bytes[0] === 0x25 && bytes[1] === 0x50)
+  if (
+    detected === "application/pdf" ||
+    (bytes[0] === 0x25 && bytes[1] === 0x50)
+  )
     return "application/pdf";
   if (detected === "text/markdown") return "text/markdown";
   if (detected === "text/plain" || !detected) return "text/plain";
-  throw new DomainError("UNSUPPORTED_FILE_TYPE", "只支持 TXT、Markdown 或 PDF 文件。");
+  throw new DomainError(
+    "UNSUPPORTED_FILE_TYPE",
+    "只支持 TXT、Markdown 或 PDF 文件。",
+  );
 }
 
 export async function normalizeImportFileInput(
@@ -265,13 +274,24 @@ export async function normalizeImportFileInput(
   if (input.base64) {
     if (!input.mime)
       throw new DomainError("INVALID_FILE_TYPE", "base64 导入缺少文件类型。");
-    return { path: input.path, title: input.title, mime: input.mime, base64: input.base64 };
+    return {
+      path: input.path,
+      title: input.title,
+      mime: input.mime,
+      base64: input.base64,
+    };
   }
   const file = input.file;
   if (!file) throw new DomainError("INVALID_FILE_INPUT", "缺少文件内容。");
   const downloaded = await fetchFile(file.download_url, env);
-  const mime = resolveMime(input.mime, file.mime_type, downloaded.contentType, downloaded.bytes);
-  const title = input.title ?? (file.file_name ? titleFromName(file.file_name) : undefined);
+  const mime = resolveMime(
+    input.mime,
+    file.mime_type,
+    downloaded.contentType,
+    downloaded.bytes,
+  );
+  const title =
+    input.title ?? (file.file_name ? titleFromName(file.file_name) : undefined);
   return {
     path: input.path,
     title,

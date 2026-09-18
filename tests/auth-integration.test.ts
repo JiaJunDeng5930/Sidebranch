@@ -155,12 +155,10 @@ test("MCP tools expose output schemas and the exact empty/ready union", async ()
   const importTool = tools.find((tool) => tool.name === "import_file");
   assert.deepEqual(importTool?._meta?.["openai/fileParams"], ["file"]);
 
-  const empty = await callMcp(
-    fixture.store,
-    fixture.env,
-    "tools/call",
-    { name: "open_document", arguments: {} },
-  );
+  const empty = await callMcp(fixture.store, fixture.env, "tools/call", {
+    name: "open_document",
+    arguments: {},
+  });
   assert.deepEqual(empty.result?.structuredContent, { status: "empty" });
   assert.equal(empty.result?.isError, undefined);
 
@@ -172,12 +170,10 @@ test("MCP tools expose output schemas and the exact empty/ready union", async ()
       format: "markdown",
     })
   ).document;
-  const ready = await callMcp(
-    fixture.store,
-    fixture.env,
-    "tools/call",
-    { name: "open_document", arguments: { documentId: document.id } },
-  );
+  const ready = await callMcp(fixture.store, fixture.env, "tools/call", {
+    name: "open_document",
+    arguments: { documentId: document.id },
+  });
   assert.equal(ready.result?.structuredContent?.status, "ready");
   assert.equal(
     ready.result?.structuredContent?.view?.document?.id,
@@ -211,20 +207,15 @@ test("a read-only access token cannot invoke a write MCP tool", async () => {
     }),
   );
   const readOnlyStore = new DocumentStore(fixture.env, readOnlyOwner);
-  const denied = await callMcp(
-    readOnlyStore,
-    fixture.env,
-    "tools/call",
-    {
-      name: "write",
-      arguments: {
-        path: "/auth/denied.md",
-        title: "Denied",
-        content: "must not write",
-        format: "markdown",
-      },
+  const denied = await callMcp(readOnlyStore, fixture.env, "tools/call", {
+    name: "write",
+    arguments: {
+      path: "/auth/denied.md",
+      title: "Denied",
+      content: "must not write",
+      format: "markdown",
     },
-  );
+  });
   assert.equal(denied.result?.isError, true);
   assert.match(String(denied.result?.content?.[0]?.text), /INSUFFICIENT_SCOPE/);
   assert.equal(
@@ -293,14 +284,18 @@ test("file reference accepts the current official host and a configured exact ho
   assert.deepEqual(seen, [DEFAULT_FILE_DOWNLOAD_ORIGIN + "/file_test_123"]);
   assert.equal(official.mime, "text/plain");
   assert.equal(official.title, "from-chatgpt");
-  assert.equal(official.base64, Buffer.from("来自 ChatGPT 文件").toString("base64"));
+  assert.equal(
+    official.base64,
+    Buffer.from("来自 ChatGPT 文件").toString("base64"),
+  );
 
   const configuredEnv = {
     ...fixture.env,
     MCP_FILE_DOWNLOAD_ORIGINS: "https://signed.example",
   };
   const configured = await withFetch(
-    async () => new Response("configured", { headers: { "Content-Type": "text/plain" } }),
+    async () =>
+      new Response("configured", { headers: { "Content-Type": "text/plain" } }),
     () =>
       normalizeImportFileInput(
         fileInput("https://signed.example/file_test_123"),
@@ -310,10 +305,10 @@ test("file reference accepts the current official host and a configured exact ho
   assert.equal(configured.base64, Buffer.from("configured").toString("base64"));
   await assert.rejects(
     () =>
-      normalizeImportFileInput(
-        fileInput("https://127.0.0.1/private.txt"),
-        { ...configuredEnv, MCP_FILE_DOWNLOAD_ORIGINS: "https://127.0.0.1" },
-      ),
+      normalizeImportFileInput(fileInput("https://127.0.0.1/private.txt"), {
+        ...configuredEnv,
+        MCP_FILE_DOWNLOAD_ORIGINS: "https://127.0.0.1",
+      }),
     (error: unknown) =>
       error instanceof DomainError && error.code === "FILE_URL_DENIED",
   );

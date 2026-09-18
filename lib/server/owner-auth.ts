@@ -16,9 +16,13 @@ export function scopeString(scopes: readonly OAuthScope[]): string {
 }
 export function parseScopes(value: unknown): OAuthScope[] {
   const allowed = new Set<string>(FULL_SCOPES);
-  return [...new Set(String(value ?? "").split(/\s+/).filter(Boolean))].filter(
-    (scope): scope is OAuthScope => allowed.has(scope),
-  );
+  return [
+    ...new Set(
+      String(value ?? "")
+        .split(/\s+/)
+        .filter(Boolean),
+    ),
+  ].filter((scope): scope is OAuthScope => allowed.has(scope));
 }
 export function hasScope(owner: Owner, scope: OAuthScope): boolean {
   return owner.scopes.includes(scope);

@@ -1,15 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  AssetId,
-  DocumentId,
-  RevisionId,
-} from "../lib/domain/model";
-import {
-  createViewId,
-  emptyScene,
-  sceneReducer,
-} from "../lib/reader/scene";
+import { AssetId, DocumentId, RevisionId } from "../lib/domain/model";
+import { createViewId, emptyScene, sceneReducer } from "../lib/reader/scene";
 import type { DocumentRevision } from "../lib/domain/model";
 
 function revision(title: string, content: string): DocumentRevision {
@@ -58,7 +50,10 @@ test("scene keeps current and companion roles while follow/promote/back retain c
     focus: anchor(b),
   });
   assert.equal(state.currentViewId, aView);
-  assert.equal(state.companionViewId, state.views.find((v) => v.document.id === b.id)?.id);
+  assert.equal(
+    state.companionViewId,
+    state.views.find((v) => v.document.id === b.id)?.id,
+  );
   assert.equal(state.views.find((v) => v.id === aView)?.document.id, a.id);
   const companion = state.companionViewId!;
   state = sceneReducer(state, { type: "promote-view", viewId: companion });
@@ -88,14 +83,21 @@ test("open-new-view permits two slabs for one immutable revision", () => {
     role: "peripheral",
   });
   assert.equal(state.views.length, 2);
-  assert.equal(state.views[0].document.revisionId, state.views[1].document.revisionId);
+  assert.equal(
+    state.views[0].document.revisionId,
+    state.views[1].document.revisionId,
+  );
   assert.notEqual(state.views[0].id, state.views[1].id);
   assert.equal(state.currentViewId, first.id);
 });
 
 test("replace-document preserves slab context and drops stale focus", () => {
   const oldDocument = revision("Editable", "old words"),
-    nextDocument = { ...revision("Editable", "new words"), id: oldDocument.id, sequence: 2 };
+    nextDocument = {
+      ...revision("Editable", "new words"),
+      id: oldDocument.id,
+      sequence: 2,
+    };
   let state = sceneReducer(emptyScene(), {
     type: "open-document",
     document: oldDocument,
@@ -108,7 +110,11 @@ test("replace-document preserves slab context and drops stale focus", () => {
     viewId: view.id,
     patch: { scrollTop: 420, position: { x: 50, y: 12, z: -30 } },
   });
-  state = sceneReducer(state, { type: "replace-document", viewId: view.id, document: nextDocument });
+  state = sceneReducer(state, {
+    type: "replace-document",
+    viewId: view.id,
+    document: nextDocument,
+  });
   const replaced = state.views.find((candidate) => candidate.id === view.id);
   assert.ok(replaced);
   assert.equal(replaced.id, view.id);
@@ -136,34 +142,63 @@ test("camera reducer clamps every component to finite bounds", () => {
 });
 
 test("closing a historical role does not resurrect its view during back", () => {
-  const a = revision("A", "aa"), b = revision("B", "bb");
-  let state = sceneReducer(emptyScene(), { type: "open-document", document: a });
+  const a = revision("A", "aa"),
+    b = revision("B", "bb");
+  let state = sceneReducer(emptyScene(), {
+    type: "open-document",
+    document: a,
+  });
   state = sceneReducer(state, { type: "follow", document: b });
   const bView = state.companionViewId;
   assert.ok(bView);
   state = sceneReducer(state, { type: "close-view", viewId: bView });
   state = sceneReducer(state, { type: "history-back" });
-  assert.equal(state.views.some((view) => view.id === bView), false);
+  assert.equal(
+    state.views.some((view) => view.id === bView),
+    false,
+  );
   assert.equal(state.currentViewId, state.views[0]?.id ?? null);
   assert.equal(state.companionViewId, null);
 });
 
-
 test("navigation keeps two papers apart and focus restores a readable camera without losing context", () => {
-  const a = revision("Source", "source words"), b = revision("Companion", "companion words");
-  let state = sceneReducer(emptyScene(), { type: "open-document", document: a });
+  const a = revision("Source", "source words"),
+    b = revision("Companion", "companion words");
+  let state = sceneReducer(emptyScene(), {
+    type: "open-document",
+    document: a,
+  });
   const source = state.views[0];
   assert.ok(source);
   state = sceneReducer(state, { type: "follow", document: b });
-  const companion = state.views.find(view => view.id === state.companionViewId)!;
-  assert.ok(Math.abs(companion.position.x - source.position.x) > 620, "reading papers must not overlap");
-  assert.ok(state.camera.position.x > source.position.x && state.camera.position.x < companion.position.x);
-  state = sceneReducer(state, { type: "camera", patch: { position: { x: -300, y: 150, z: 80 }, rotation: { x: 24, y: -32 }, zoom: .6 } });
+  const companion = state.views.find(
+    (view) => view.id === state.companionViewId,
+  )!;
+  assert.ok(
+    Math.abs(companion.position.x - source.position.x) > 620,
+    "reading papers must not overlap",
+  );
+  assert.ok(
+    state.camera.position.x > source.position.x &&
+      state.camera.position.x < companion.position.x,
+  );
+  state = sceneReducer(state, {
+    type: "camera",
+    patch: {
+      position: { x: -300, y: 150, z: 80 },
+      rotation: { x: 24, y: -32 },
+      zoom: 0.6,
+    },
+  });
   const currentId = state.currentViewId;
   state = sceneReducer(state, { type: "focus-view", viewId: companion.id });
   assert.deepEqual(state.camera.position, companion.position);
   assert.deepEqual(state.camera.rotation, { x: 0, y: 0 });
   assert.equal(state.camera.zoom, 1);
-  assert.equal(state.currentViewId, currentId, "camera focus does not silently promote a document");
+  assert.equal(
+    state.currentViewId,
+    currentId,
+    "camera focus does not silently promote a document",
+  );
   assert.equal(state.views.length, 2);
 });

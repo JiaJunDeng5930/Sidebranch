@@ -13,16 +13,9 @@ export type ConnectionId = z.infer<typeof ConnectionId>;
 export type QuestionId = z.infer<typeof QuestionId>;
 export type AssetId = z.infer<typeof AssetId>;
 
-export const PositiveInt = z
-  .number()
-  .int()
-  .positive()
-  .brand<"PositiveInt">();
+export const PositiveInt = z.number().int().positive().brand<"PositiveInt">();
 export type PositiveInt = z.infer<typeof PositiveInt>;
-export const Instant = z
-  .string()
-  .datetime({ offset: true })
-  .brand<"Instant">();
+export const Instant = z.string().datetime({ offset: true }).brand<"Instant">();
 export type Instant = z.infer<typeof Instant>;
 
 export const Format = z.enum(["markdown", "text"]);
@@ -47,14 +40,20 @@ export const Path = z
   .string()
   .min(2)
   .max(500)
-  .refine((p) => !p.endsWith("/") && validPathPrefix(p), "Use an absolute path without . or .. segments")
+  .refine(
+    (p) => !p.endsWith("/") && validPathPrefix(p),
+    "Use an absolute path without . or .. segments",
+  )
   .brand<"DocumentPath">();
 export type DocumentPath = z.infer<typeof Path>;
 export const PathPrefix = z
   .string()
   .min(1)
   .max(500)
-  .refine(validPathPrefix, "Use an absolute path prefix without . or .. segments")
+  .refine(
+    validPathPrefix,
+    "Use an absolute path prefix without . or .. segments",
+  )
   .brand<"DocumentPathPrefix">();
 export type DocumentPathPrefix = z.infer<typeof PathPrefix>;
 
@@ -69,7 +68,9 @@ export type RequiredLocator = z.infer<typeof Locator>;
 export const OptionalOpenLocator = z.union([
   ByDocumentId,
   ByPath,
-  z.object({ documentId: z.never().optional(), path: z.never().optional() }).strict(),
+  z
+    .object({ documentId: z.never().optional(), path: z.never().optional() })
+    .strict(),
 ]);
 export type OptionalOpenLocator = z.infer<typeof OptionalOpenLocator>;
 export type OptionalLocator = z.infer<typeof OptionalOpenLocator>;
@@ -112,11 +113,7 @@ export interface Anchor extends AnchorInput {
 }
 
 export type ConnectionRelation =
-  | "reference"
-  | "explanation"
-  | "question"
-  | "contrast"
-  | "continuation";
+  "reference" | "explanation" | "question" | "contrast" | "continuation";
 export interface Connection {
   id: ConnectionId;
   from: Anchor;
@@ -143,8 +140,7 @@ export interface ReadingView {
 }
 
 export type OpenDocumentResult =
-  | { status: "empty" }
-  | { status: "ready"; view: ReadingView };
+  { status: "empty" } | { status: "ready"; view: ReadingView };
 
 export class DomainError extends Error {
   constructor(
@@ -159,7 +155,10 @@ export class DomainError extends Error {
 
 function assertOffset(offset: number): void {
   if (!Number.isSafeInteger(offset) || offset < 0)
-    throw new DomainError("INVALID_OFFSET", "Text offsets must be safe non-negative integers.");
+    throw new DomainError(
+      "INVALID_OFFSET",
+      "Text offsets must be safe non-negative integers.",
+    );
 }
 
 export function validateAnchor(content: string, input: AnchorInput): void {

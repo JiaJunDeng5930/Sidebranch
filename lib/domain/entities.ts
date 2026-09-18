@@ -58,11 +58,7 @@ export type AnchorEntity = Readonly<AnchorInput> & {
 export type NewAnchorEntity = AnchorEntity & ValidatedAnchorInput;
 
 export type ConnectionRelation =
-  | "reference"
-  | "explanation"
-  | "question"
-  | "contrast"
-  | "continuation";
+  "reference" | "explanation" | "question" | "contrast" | "continuation";
 
 export interface ConnectionEntity {
   id: ConnectionId;

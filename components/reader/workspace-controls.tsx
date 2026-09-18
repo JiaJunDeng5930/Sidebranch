@@ -12,7 +12,11 @@ import React, {
 } from "react";
 import { X } from "lucide-react";
 
-type DialogContextValue = { close: () => void; titleId: string; descriptionId: string };
+type DialogContextValue = {
+  close: () => void;
+  titleId: string;
+  descriptionId: string;
+};
 const DialogContext = createContext<DialogContextValue | null>(null);
 
 export function ReaderDialog({
@@ -88,17 +92,26 @@ export function ReaderDialogContent({
 
 export function ReaderDialogTitle({ children }: { children: ReactNode }) {
   const { titleId } = useDialog();
-  return <h2 id={titleId} data-reader-dialog-title>{children}</h2>;
+  return (
+    <h2 id={titleId} data-reader-dialog-title>
+      {children}
+    </h2>
+  );
 }
 
 export function ReaderDialogDescription({ children }: { children: ReactNode }) {
   const { descriptionId } = useDialog();
-  return <p id={descriptionId} data-reader-dialog-description>{children}</p>;
+  return (
+    <p id={descriptionId} data-reader-dialog-description>
+      {children}
+    </p>
+  );
 }
 
 function useDialog(): DialogContextValue {
   const context = useContext(DialogContext);
-  if (!context) throw new Error("Reader dialog content must be inside ReaderDialog.");
+  if (!context)
+    throw new Error("Reader dialog content must be inside ReaderDialog.");
   return context;
 }
 
@@ -125,7 +138,9 @@ export function ReaderMenu({
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        rootRef.current?.querySelector<HTMLButtonElement>(":scope > button")?.focus();
+        rootRef.current
+          ?.querySelector<HTMLButtonElement>(":scope > button")
+          ?.focus();
         close();
         return;
       }
@@ -133,7 +148,10 @@ export function ReaderMenu({
         close();
         return;
       }
-      if (!menuRef.current || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key))
+      if (
+        !menuRef.current ||
+        !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+      )
         return;
       const items = Array.from(
         menuRef.current.querySelectorAll<HTMLElement>(

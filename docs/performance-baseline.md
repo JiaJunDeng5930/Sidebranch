@@ -36,3 +36,26 @@ recreating 9,000 source spans and a 655 ms task. The corrected implementation
 keeps nonadjacent source chunks in source order with measured spacers. Highlights
 and scene beams share the checked `sourceRanges` projection; highlighting never
 replaces React-owned text nodes.
+
+## Complete workspace, 2026-09-18
+
+The isolated workspace contained 260 benchmark documents, three 1,000-section
+Markdown documents and 80 connections, plus the reading/import QA documents.
+All catalogue pages reached the UI. Following connection 80 positioned both
+long-document views around section 80; the first version of this check exposed
+and fixed a parent scroll-restoration effect overriding a newly mounted focus.
+
+A mixed two-document rotation/scroll/import sample mounted 3,069 DOM nodes and
+395 source spans. It recorded one 63 ms long task and input-to-paint samples
+17.9–51.1 ms; it includes import and catalogue refresh and is not a pure camera
+benchmark. A subsequent isolated rotation sample had no >50 ms task,
+23.0/33.6 ms input-to-paint and a 33.4 ms 95th-percentile frame interval (49.9 ms
+maximum). These observations demonstrate improvement from the old 577–618 ms
+blocking path, but do **not** establish a consistent 60 fps budget or smoothness
+on every device. Cold initialization also remains a separate cost.
+
+Only distinct unopened revisions receive related previews. Offscreen-to-offscreen
+connections are omitted from the geometry unless focused; all remain available
+in the relation catalogue. Native text selection, exact-source highlighting and
+current/companion document bodies remain active. No continuous idle render loop
+is used. Production does not include the QA fixture or telemetry.

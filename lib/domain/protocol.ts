@@ -16,18 +16,20 @@ import {
   type ReadingView,
 } from "./model";
 
-export const DocumentSummarySchema = z.object({
-  id: DocumentId,
-  path: Path,
-  title: z.string(),
-  revisionId: RevisionId,
-  sequence: z.number().int().positive(),
-  format: Format,
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  assetId: AssetId.nullable(),
-  archived: z.boolean(),
-}).strict();
+export const DocumentSummarySchema = z
+  .object({
+    id: DocumentId,
+    path: Path,
+    title: z.string(),
+    revisionId: RevisionId,
+    sequence: z.number().int().positive(),
+    format: Format,
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    assetId: AssetId.nullable(),
+    archived: z.boolean(),
+  })
+  .strict();
 
 export const DocumentRevisionSchema = DocumentSummarySchema.extend({
   content: z.string(),
@@ -35,45 +37,53 @@ export const DocumentRevisionSchema = DocumentSummarySchema.extend({
   isCurrent: z.boolean(),
 });
 
-export const AnchorSchema = z.object({
-  id: AnchorId,
-  revisionId: RevisionId,
-  documentId: DocumentId,
-  start: z.number().int().nonnegative(),
-  end: z.number().int().positive(),
-  quote: z.string().min(1),
-}).strict();
+export const AnchorSchema = z
+  .object({
+    id: AnchorId,
+    revisionId: RevisionId,
+    documentId: DocumentId,
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+    quote: z.string().min(1),
+  })
+  .strict();
 
-export const ConnectionSchema = z.object({
-  id: ConnectionId,
-  from: AnchorSchema,
-  to: AnchorSchema,
-  relation: z.enum([
-    "reference",
-    "explanation",
-    "question",
-    "contrast",
-    "continuation",
-  ]),
-  label: z.string(),
-  createdAt: z.string(),
-}).strict();
+export const ConnectionSchema = z
+  .object({
+    id: ConnectionId,
+    from: AnchorSchema,
+    to: AnchorSchema,
+    relation: z.enum([
+      "reference",
+      "explanation",
+      "question",
+      "contrast",
+      "continuation",
+    ]),
+    label: z.string(),
+    createdAt: z.string(),
+  })
+  .strict();
 
-export const QuestionSchema = z.object({
-  id: QuestionId,
-  anchor: AnchorSchema,
-  body: z.string(),
-  createdAt: z.string(),
-  answers: z.array(DocumentId),
-}).strict();
+export const QuestionSchema = z
+  .object({
+    id: QuestionId,
+    anchor: AnchorSchema,
+    body: z.string(),
+    createdAt: z.string(),
+    answers: z.array(DocumentId),
+  })
+  .strict();
 
-export const ReadingViewSchema = z.object({
-  document: DocumentRevisionSchema,
-  connections: z.array(ConnectionSchema),
-  questions: z.array(QuestionSchema),
-  connectionsNextCursor: z.string().nullable(),
-  questionsNextCursor: z.string().nullable(),
-}).strict();
+export const ReadingViewSchema = z
+  .object({
+    document: DocumentRevisionSchema,
+    connections: z.array(ConnectionSchema),
+    questions: z.array(QuestionSchema),
+    connectionsNextCursor: z.string().nullable(),
+    questionsNextCursor: z.string().nullable(),
+  })
+  .strict();
 
 export const OpenDocumentResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("empty") }).strict(),

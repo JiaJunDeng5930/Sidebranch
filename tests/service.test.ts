@@ -94,10 +94,19 @@ test("locators and UTF-16 anchors stay checked at the domain boundary", async ()
     quote: "😀",
   });
   assert.throws(
-    () => validateAnchor(content, { revisionId, start: 2, end: 3, quote: "\ud83d" }),
+    () =>
+      validateAnchor(content, {
+        revisionId,
+        start: 2,
+        end: 3,
+        quote: "\ud83d",
+      }),
     /surrogate/,
   );
-  assert.equal(applyEdit(content, 0, 2, "汉字", "文字"), "文字😀 and punctuation?!");
+  assert.equal(
+    applyEdit(content, 0, 2, "汉字", "文字"),
+    "文字😀 and punctuation?!",
+  );
   assert.throws(() => applyEdit(content, 3, 3, "", "x"), /surrogate/);
 
   const document = (
@@ -126,7 +135,12 @@ test("ls is metadata-only and continues through a large catalogue", async () => 
     inserts.push(
       env.DB.prepare(
         "INSERT INTO documents(id,path,title,created_at) VALUES(?,?,?,?)",
-      ).bind(id, `/catalogue/${String(i).padStart(3, "0")}.md`, `Catalogue ${i}`, createdAt),
+      ).bind(
+        id,
+        `/catalogue/${String(i).padStart(3, "0")}.md`,
+        `Catalogue ${i}`,
+        createdAt,
+      ),
       env.DB.prepare(
         "INSERT INTO revisions(id,document_id,sequence,parent_id,content,format,created_at) VALUES(?,?,1,NULL,?,?,?)",
       ).bind(revisionId, id, `body ${i}`, "markdown", createdAt),
@@ -180,10 +194,21 @@ test("Unicode path keysets are stable and search cursors bind the query", async 
     rows.push(
       env.DB.prepare(
         "INSERT INTO documents(id,path,title,created_at) VALUES(?,?,?,?)",
-      ).bind(id, maxCodePointPath, "Maximum code point", "2040-01-01T00:01:00.000Z"),
+      ).bind(
+        id,
+        maxCodePointPath,
+        "Maximum code point",
+        "2040-01-01T00:01:00.000Z",
+      ),
       env.DB.prepare(
         "INSERT INTO revisions(id,document_id,sequence,parent_id,content,format,created_at) VALUES(?,?,1,NULL,?,?,?)",
-      ).bind(revisionId, id, "max code point", "markdown", "2040-01-01T00:01:00.000Z"),
+      ).bind(
+        revisionId,
+        id,
+        "max code point",
+        "markdown",
+        "2040-01-01T00:01:00.000Z",
+      ),
     );
   }
   for (let index = 0; index < 26; index += 1) {
@@ -193,7 +218,12 @@ test("Unicode path keysets are stable and search cursors bind the query", async 
     rows.push(
       env.DB.prepare(
         "INSERT INTO documents(id,path,title,created_at) VALUES(?,?,?,?)",
-      ).bind(id, `/keyset/${String(index).padStart(2, "0")}.md`, `Keyset ${index}`, createdAt),
+      ).bind(
+        id,
+        `/keyset/${String(index).padStart(2, "0")}.md`,
+        `Keyset ${index}`,
+        createdAt,
+      ),
       env.DB.prepare(
         "INSERT INTO revisions(id,document_id,sequence,parent_id,content,format,created_at) VALUES(?,?,1,NULL,?,?,?)",
       ).bind(revisionId, id, `needle ${index}`, "markdown", createdAt),
@@ -212,19 +242,18 @@ test("Unicode path keysets are stable and search cursors bind the query", async 
     paths.push(...page.documents.map((document) => document.path));
     cursor = page.nextCursor ?? undefined;
   } while (cursor);
-  assert.deepEqual(new Set(paths), new Set([
-    "/中文/甲.md",
-    "/中文/乙.md",
-    "/中文/😀.md",
-    "/中文/é.md",
-  ]));
+  assert.deepEqual(
+    new Set(paths),
+    new Set(["/中文/甲.md", "/中文/乙.md", "/中文/😀.md", "/中文/é.md"]),
+  );
   const maxCodePointPage = await store.execute("ls", {
     prefix: maxCodePointPath,
     limit: 2,
   });
-  assert.deepEqual(maxCodePointPage.documents.map((document) => document.path), [
-    maxCodePointPath,
-  ]);
+  assert.deepEqual(
+    maxCodePointPage.documents.map((document) => document.path),
+    [maxCodePointPath],
+  );
 
   const first = await store.execute("grep", {
     prefix: "/keyset/",
@@ -243,7 +272,10 @@ test("Unicode path keysets are stable and search cursors bind the query", async 
   );
 });
 
-async function seedRelations(document: { id: DocumentId; revisionId: RevisionId }) {
+async function seedRelations(document: {
+  id: DocumentId;
+  revisionId: RevisionId;
+}) {
   const target = (
     await store.execute("write", {
       path: "/relations/target.md",
@@ -291,7 +323,9 @@ async function seedRelations(document: { id: DocumentId; revisionId: RevisionId 
       await env.DB.batch(questionStatements.splice(0));
   }
   if (questionStatements.length) await env.DB.batch(questionStatements);
-  await env.DB.prepare("INSERT INTO answers(question_id,document_id) VALUES(?,?)")
+  await env.DB.prepare(
+    "INSERT INTO answers(question_id,document_id) VALUES(?,?)",
+  )
     .bind(questionIds[0], target.id)
     .run();
   return { target, questionIds };
@@ -366,7 +400,9 @@ test("an import keeps committed bytes when the response read fails", async () =>
   );
   const row = await env.DB.prepare(
     "SELECT id,key FROM assets WHERE name=? ORDER BY created_at DESC LIMIT 1",
-  ).bind("postcommit.txt").first<{ id: string; key: string }>();
+  )
+    .bind("postcommit.txt")
+    .first<{ id: string; key: string }>();
   assert.ok(row);
   assert.ok(await env.BUCKET.get(row.key));
   assert.ok(
@@ -414,6 +450,8 @@ test("unlink cleans only connection-owned anchors", async () => {
   );
   const remaining = await env.DB.prepare(
     "SELECT COUNT(*) AS count FROM anchors WHERE id IN (?,?)",
-  ).bind(...endpointIds).first<{ count: number }>();
+  )
+    .bind(...endpointIds)
+    .first<{ count: number }>();
   assert.equal(remaining?.count, 0);
 });

@@ -377,7 +377,11 @@ function PassageImpl({
       };
       markRanges.current = checkedMarks.map((mark, index) => {
         const ranges = sourceRanges(root, mark.anchor);
-        register(`mark${index}`, ranges, `color-mix(in srgb, ${mark.color} 35%, transparent)`);
+        register(
+          `mark${index}`,
+          ranges,
+          `color-mix(in srgb, ${mark.color} 35%, transparent)`,
+        );
         return { id: mark.id, ranges };
       });
       if (currentFocus) {
