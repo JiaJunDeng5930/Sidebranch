@@ -7,13 +7,10 @@ import type {
   DocumentSummary,
   RevisionId,
 } from "../domain/model";
+import type { SpaceView } from "./space-view";
 import type { DocumentTarget, NeighborhoodKnowledge } from "./space-index";
 import { relationNames } from "./relations";
-import type {
-  CameraPose,
-  ReadingPosition,
-  SurfaceRole,
-} from "./attention";
+import type { ReadingPosition, SurfaceRole } from "./attention";
 
 /** A front-end occurrence of a revision on the reading plane.
  *
@@ -30,7 +27,9 @@ let nextSurfaceInstance = 0;
 /** Construct an occurrence id at a Reader/navigation boundary. */
 export function createSurfaceInstanceId(prefix = "surface"): SurfaceInstanceId {
   nextSurfaceInstance =
-    nextSurfaceInstance >= Number.MAX_SAFE_INTEGER ? 1 : nextSurfaceInstance + 1;
+    nextSurfaceInstance >= Number.MAX_SAFE_INTEGER
+      ? 1
+      : nextSurfaceInstance + 1;
   return `${prefix}-${nextSurfaceInstance.toString(36)}` as SurfaceInstanceId;
 }
 
@@ -159,15 +158,20 @@ export function relationNavigationItems(
       });
     }
   }
-  return items.sort((left, right) =>
-    left.anchor.start - right.anchor.start ||
-    left.anchor.end - right.anchor.end ||
-    (String(left.connectionId) < String(right.connectionId)
-      ? -1
-      : String(left.connectionId) > String(right.connectionId)
-        ? 1
-        : 0) ||
-    (left.endpoint === right.endpoint ? 0 : left.endpoint === "from" ? -1 : 1),
+  return items.sort(
+    (left, right) =>
+      left.anchor.start - right.anchor.start ||
+      left.anchor.end - right.anchor.end ||
+      (String(left.connectionId) < String(right.connectionId)
+        ? -1
+        : String(left.connectionId) > String(right.connectionId)
+          ? 1
+          : 0) ||
+      (left.endpoint === right.endpoint
+        ? 0
+        : left.endpoint === "from"
+          ? -1
+          : 1),
   );
 }
 
@@ -177,12 +181,17 @@ export interface SpatialCatalogueState {
   readonly loading: boolean;
 }
 
+export interface ViewCheckpoint {
+  readonly generation: number;
+  readonly view: SpaceView;
+}
+
 /** The complete data contract consumed by SpatialScene. */
 export interface SpatialSceneProps<RenderedDocument = unknown> {
   readonly current: ReadingSurface | null;
   readonly companion: ReadingSurface | null;
   readonly previous: ReturnLeaf | null;
-  readonly camera: CameraPose;
+  readonly view: SpaceView;
   readonly documents: readonly DocumentSummary[];
   readonly catalogue: SpatialCatalogueState;
   readonly neighborhood: NeighborhoodKnowledge;
@@ -204,7 +213,8 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
     scrollTop: number,
     presentationId: number,
   ) => void;
-  readonly onCameraCheckpoint: (pose: CameraPose) => void;
+  readonly onViewCheckpoint: (checkpoint: ViewCheckpoint) => void;
+  readonly onReturnToReading: () => void;
   readonly renderDocument: (
     surface: ReadingSurface,
     role: SurfaceRole,

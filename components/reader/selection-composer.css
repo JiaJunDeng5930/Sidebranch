@@ -10,14 +10,13 @@
   width: min(360px, calc(100vw - 32px));
   gap: 11px;
   padding: 12px;
-  border: 1px solid rgba(205, 213, 224, 0.2);
+  border: 1px solid var(--sb-chrome-line);
   border-radius: 12px;
-  background: rgba(29, 36, 44, 0.98);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
-  color: var(--reader-ink);
+  background: var(--sb-chrome-panel);
+  box-shadow: 0 18px 48px var(--sb-shadow-strong);
+  color: var(--sb-chrome-text);
   font-size: 13px;
 }
-
 .selection-composer-v2--selection {
   width: max-content;
   min-width: 132px;
@@ -82,7 +81,7 @@
 
 .selection-composer-v2__pending-copy span:last-child {
   overflow: hidden;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   font-size: 11px;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -95,9 +94,9 @@
   height: 22px;
   flex: none;
   place-items: center;
-  border: 1px solid rgba(211, 158, 109, 0.58);
+  border: 1px solid var(--sb-action);
   border-radius: 50%;
-  color: var(--reader-accent);
+  color: var(--sb-action);
   font-size: 12px;
   font-weight: 700;
 }
@@ -122,10 +121,10 @@
   min-width: 142px;
   gap: 2px;
   padding: 5px;
-  border: 1px solid rgba(205, 213, 224, 0.2);
+  border: 1px solid var(--sb-chrome-line);
   border-radius: 8px;
-  background: #202832;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  background: var(--sb-chrome-panel);
+  box-shadow: 0 12px 28px var(--sb-shadow-medium);
 }
 
 .selection-composer-v2__menu-item,
@@ -152,17 +151,17 @@
 }
 
 .selection-composer-v2__primary {
-  border-color: var(--reader-accent);
-  background: var(--reader-accent);
-  color: #2d2721;
+  border-color: var(--sb-action);
+  background: var(--sb-action);
+  color: var(--sb-action-ink);
   font-size: 12px;
   font-weight: 650;
 }
 
 .selection-composer-v2__secondary {
-  border-color: rgba(205, 213, 224, 0.17);
+  border-color: var(--sb-chrome-line);
   background: transparent;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   font-size: 12px;
 }
 
@@ -171,7 +170,7 @@
   height: 30px;
   padding: 0;
   background: transparent;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
 }
 
 .selection-composer-v2__menu-item {
@@ -179,7 +178,7 @@
   min-height: 31px;
   padding: 7px 9px;
   background: transparent;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   font-size: 12px;
   text-align: left;
 }
@@ -188,13 +187,13 @@
   justify-self: start;
   padding: 0;
   background: transparent;
-  color: var(--reader-accent);
+  color: var(--sb-action);
   font-size: 11px;
 }
 
 .selection-composer-v2__primary:hover,
 .selection-composer-v2__primary:focus-visible {
-  background: #e1b081;
+  background: var(--sb-action-hover);
 }
 
 .selection-composer-v2__secondary:hover,
@@ -205,9 +204,9 @@
 .selection-composer-v2__menu-item:focus-visible,
 .selection-composer-v2__quote-toggle:hover,
 .selection-composer-v2__quote-toggle:focus-visible {
-  border-color: rgba(205, 213, 224, 0.25);
-  background: rgba(211, 158, 109, 0.1);
-  color: var(--reader-ink);
+  border-color: var(--sb-chrome-border);
+  background: var(--sb-chrome-hover);
+  color: var(--sb-chrome-text);
 }
 
 .selection-composer-v2__primary:focus-visible,
@@ -218,7 +217,7 @@
 .selection-composer-v2__question-field textarea:focus-visible,
 .selection-composer-v2__field input:focus-visible,
 .selection-composer-v2__field select:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--reader-focus) 60%, transparent);
+  outline: 2px solid var(--sb-focus-chrome);
   outline-offset: 1px;
 }
 
@@ -248,7 +247,7 @@
 
 .selection-composer-v2__source {
   overflow: hidden;
-  color: var(--reader-dim);
+  color: var(--sb-chrome-dim);
   font-size: 11px;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -260,9 +259,9 @@
   max-height: 4.8em;
   margin: 0;
   overflow: hidden;
-  border-left: 2px solid var(--reader-accent);
+  border-left: 2px solid var(--sb-action);
   padding: 1px 8px;
-  color: var(--reader-ink);
+  color: var(--sb-chrome-text);
   font-family: Georgia, "Times New Roman", serif;
   font-size: 13px;
   line-height: 1.6;
@@ -281,7 +280,7 @@
 .selection-composer-v2__field {
   display: grid;
   gap: 5px;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   font-size: 11px;
 }
 
@@ -289,10 +288,10 @@
 .selection-composer-v2__field input,
 .selection-composer-v2__field select {
   width: 100%;
-  border: 1px solid rgba(205, 213, 224, 0.2);
+  border: 1px solid var(--sb-chrome-line);
   border-radius: 7px;
-  background: #161c23;
-  color: var(--reader-ink);
+  background: var(--sb-chrome-input);
+  color: var(--sb-chrome-text);
   font: inherit;
 }
 
@@ -306,12 +305,12 @@
 
 .selection-composer-v2__question-field textarea::placeholder,
 .selection-composer-v2__field input::placeholder {
-  color: var(--reader-dim);
+  color: var(--sb-chrome-dim);
 }
 
 .selection-composer-v2__question-field textarea:disabled {
   cursor: wait;
-  opacity: 0.68;
+  color: var(--sb-chrome-dim);
 }
 
 .selection-composer-v2__field input,
@@ -321,8 +320,8 @@
 }
 
 .selection-composer-v2__field option {
-  background: #202832;
-  color: var(--reader-ink);
+  background: var(--sb-chrome-panel);
+  color: var(--sb-chrome-text);
 }
 
 .selection-composer-v2__question-actions {
@@ -332,20 +331,20 @@
 
 .selection-composer-v2__shortcut {
   margin-right: auto;
-  color: var(--reader-dim);
+  color: var(--sb-chrome-dim);
   font-size: 10px;
 }
 
 .selection-composer-v2__error {
   margin: 0;
-  color: var(--reader-danger);
+  color: var(--sb-danger-chrome);
   font-size: 11px;
   line-height: 1.45;
 }
 
 .selection-composer-v2__hint {
   margin: -3px 0 0;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -357,22 +356,22 @@
 
 .selection-composer-v2__endpoints p {
   margin: 0;
-  border-left: 2px solid var(--reader-accent);
+  border-left: 2px solid var(--sb-action);
   padding-left: 8px;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   font-size: 11px;
   line-height: 1.45;
 }
 
 .selection-composer-v2__endpoints strong {
-  color: var(--reader-ink);
+  color: var(--sb-chrome-text);
 }
 
 .selection-composer-v2__endpoints span {
   display: block;
   margin-top: 3px;
   overflow: hidden;
-  color: var(--reader-dim);
+  color: var(--sb-chrome-dim);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

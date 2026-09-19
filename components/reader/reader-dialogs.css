@@ -6,20 +6,20 @@
 
 .editor-location-details {
   margin: -2px 0 15px;
-  border-top: 1px solid var(--reader-line);
+  border-top: 1px solid var(--sb-chrome-line);
   padding-top: 10px;
 }
 
 .editor-location-details summary {
   width: fit-content;
-  color: var(--reader-muted);
+  color: var(--sb-chrome-muted);
   cursor: pointer;
   font-size: 12px;
 }
 
 .editor-location-details summary:hover,
 .editor-location-details summary:focus-visible {
-  color: var(--reader-ink);
+  color: var(--sb-chrome-text);
 }
 
 .editor-location-details .workspace-label {

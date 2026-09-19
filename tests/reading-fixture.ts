@@ -38,6 +38,16 @@ const documents = [
 记录每次核对的理由，才能让新的说明接上旧的证据。`,
   },
   {
+    key: "question",
+    path: `${readingFixturePrefix}question.md`,
+    title: "待回答问题",
+    content: `# 待回答问题
+
+当情境发生变化时，原始材料中的判断还适用吗？
+
+请先指出仍然可靠的观察，再说明需要重新核对的条件。`,
+  },
+  {
     key: "center",
     path: `${readingFixturePrefix}center.md`,
     title: "中心论述",
@@ -90,7 +100,7 @@ export async function seedReadingFixture(
     return {
       centerPath: `${readingFixturePrefix}center.md`,
       paths: documents.map((document) => document.path),
-      connectionCount: 4,
+      connectionCount: 6,
     };
   if (existingPaths.size > 0)
     throw new Error(
@@ -131,6 +141,18 @@ export async function seedReadingFixture(
       relation: "continuation" as const,
       label: "进一步说明行动线索",
     },
+    {
+      from: anchor(seeded.center, centerSecond),
+      to: anchor(seeded.followUp, "记录每次核对的理由"),
+      relation: "explanation" as const,
+      label: "进一步说明如何保留分歧",
+    },
+    {
+      from: anchor(seeded.center, centerBridge),
+      to: anchor(seeded.question, "当情境发生变化时，原始材料中的判断还适用吗？"),
+      relation: "question" as const,
+      label: "把适用边界化为问题",
+    },
     // Keep D as the from end and B as the to end.  Following this relation
     // from a side-read B exercises the reverse endpoint lookup.
     {
@@ -145,6 +167,6 @@ export async function seedReadingFixture(
   return {
     centerPath: seeded.center.path,
     paths: documents.map((document) => document.path),
-    connectionCount: 4,
+    connectionCount: 6,
   };
 }

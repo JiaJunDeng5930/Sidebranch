@@ -80,9 +80,7 @@ import {
   requestToken,
 } from "../../lib/reader/navigation-requests";
 import type { DocumentTarget } from "../../lib/reader/space-index";
-import type {
-  SpatialSceneController,
-} from "./spatial-scene";
+import type { SpatialSceneController } from "./spatial-scene";
 import type {
   ConnectionActivation,
   ConnectionEndpoint,
@@ -113,7 +111,9 @@ import {
   SelectionComposer,
 } from "./reader-overlays";
 import { ReaderDialogs } from "./reader-dialogs";
+import { readerPaletteStyle } from "../../lib/reader/semantic-palette";
 import "./reader.css";
+import "./reader-palette.css";
 
 const NO_CONNECTIONS: readonly Connection[] = [];
 const WAITING_FOR_ANSWER_STATUS = "问题已发送，等待回答。";
@@ -140,9 +140,8 @@ export function Reader({
   const [historyItems, setHistoryItems] = useState<
     readonly Omit<DocumentRevision, "content">[]
   >([]);
-  const [pendingSurface, setPendingSurface] = useState<OwnedPendingSurface | null>(
-    null,
-  );
+  const [pendingSurface, setPendingSurface] =
+    useState<OwnedPendingSurface | null>(null);
   const [importInputKey, setImportInputKey] = useState(0);
   const [composing, setComposing] = useState(false);
   const [pointerSelecting, setPointerSelecting] = useState(false);
@@ -195,7 +194,10 @@ export function Reader({
   }, []);
 
   const requestPresentation = useCallback(
-    (kind: PresentationRequest["kind"], surfaces: readonly SurfaceInstanceId[] = []) => {
+    (
+      kind: PresentationRequest["kind"],
+      surfaces: readonly SurfaceInstanceId[] = [],
+    ) => {
       const id = nextRequest(presentationSequenceRef.current);
       presentationSequenceRef.current = id;
       const next: PresentationRequest =
@@ -226,39 +228,52 @@ export function Reader({
     [],
   );
 
-  const dispatchAttention = useCallback((action: AttentionAction) => {
-    if (changesReadingContext(action)) {
-      attentionEpochRef.current = nextRequest(attentionEpochRef.current);
-      pendingConnectionRef.current = null;
-      setPendingSurface(null);
-      retireCancelledNavigation();
-    }
-    const current = sessionRef.current.attention.attention;
-    if (action.type === "history") requestPresentation("restore");
-    else if (
-      action.type === "navigate" ||
-      action.type === "compare" ||
-      action.type === "inspect-connection" ||
-      action.type === "promote" ||
-      action.type === "return-to-current" ||
-      action.type === "replace-revision"
-    ) {
-      const surfaces: SurfaceInstanceId[] = [];
-      if (action.type === "navigate") surfaces.push(action.position.surfaceId);
-      else if (action.type === "compare") {
-        if (current.kind === "reading") surfaces.push(current.current.surfaceId);
-        surfaces.push(action.position.surfaceId);
-      } else if (action.type === "inspect-connection") {
-        const inspection = action.inspection;
-        surfaces.push(inspection.current.surfaceId, inspection.companion.surfaceId);
-      } else if (current.kind === "reading") {
-        surfaces.push(current.current.surfaceId);
-        if (current.companion) surfaces.push(current.companion.position.surfaceId);
+  const dispatchAttention = useCallback(
+    (action: AttentionAction) => {
+      if (changesReadingContext(action) || action.type === "return-to-reading")
+        controllerRef.current?.cancelInput();
+      if (changesReadingContext(action)) {
+        attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+        pendingConnectionRef.current = null;
+        setPendingSurface(null);
+        retireCancelledNavigation();
       }
-      requestPresentation("align-ranges", surfaces);
-    }
-    dispatchSession({ type: "attention", action });
-  }, [requestPresentation, retireCancelledNavigation]);
+      const current = sessionRef.current.attention.attention;
+      if (action.type === "history") requestPresentation("restore");
+      else if (action.type === "return-to-reading")
+        requestPresentation("layout");
+      else if (
+        action.type === "navigate" ||
+        action.type === "compare" ||
+        action.type === "inspect-connection" ||
+        action.type === "promote" ||
+        action.type === "return-to-current" ||
+        action.type === "replace-revision"
+      ) {
+        const surfaces: SurfaceInstanceId[] = [];
+        if (action.type === "navigate")
+          surfaces.push(action.position.surfaceId);
+        else if (action.type === "compare") {
+          if (current.kind === "reading")
+            surfaces.push(current.current.surfaceId);
+          surfaces.push(action.position.surfaceId);
+        } else if (action.type === "inspect-connection") {
+          const inspection = action.inspection;
+          surfaces.push(
+            inspection.current.surfaceId,
+            inspection.companion.surfaceId,
+          );
+        } else if (current.kind === "reading") {
+          surfaces.push(current.current.surfaceId);
+          if (current.companion)
+            surfaces.push(current.companion.position.surfaceId);
+        }
+        requestPresentation("align-ranges", surfaces);
+      }
+      dispatchSession({ type: "attention", action });
+    },
+    [requestPresentation, retireCancelledNavigation],
+  );
 
   const cancelLocalNavigation = useCallback(() => {
     openRequestRef.current = nextRequest(openRequestRef.current);
@@ -580,6 +595,7 @@ export function Reader({
         };
       } = {},
     ): Promise<boolean> => {
+      controllerRef.current?.cancelInput();
       if (!options.force && hasInteractionProtection()) {
         const cachedRevision = target.revisionId
           ? sessionRef.current.revisionCache.get(target.revisionId)?.document
@@ -593,7 +609,9 @@ export function Reader({
           cachedSummary?.revisionId;
         const pending: PendingNavigation = {
           lifecycle: "blocked",
-          intentId: navigationIntentId(nextRequest(navigationIntentRef.current)),
+          intentId: navigationIntentId(
+            nextRequest(navigationIntentRef.current),
+          ),
           target: resolvedRevisionId
             ? {
                 kind: "resolved",
@@ -821,7 +839,13 @@ export function Reader({
       dispatch({ type: "loading", loading: false });
       dispatch({ type: "error", message: errorMessage(error) });
     }
-  }, [commitView, deferNavigation, dispatch, hasInteractionProtection, readOpenResult]);
+  }, [
+    commitView,
+    deferNavigation,
+    dispatch,
+    hasInteractionProtection,
+    readOpenResult,
+  ]);
 
   useEffect(() => {
     void loadCatalogue("active");
@@ -970,6 +994,7 @@ export function Reader({
       target: DocumentTarget,
       reason: OrdinaryComparisonReason = { kind: "document" },
     ): Promise<boolean> => {
+      controllerRef.current?.cancelInput();
       const attention = sessionRef.current.attention.attention;
       if (attention.kind !== "reading") return false;
       pendingConnectionRef.current = null;
@@ -1050,6 +1075,7 @@ export function Reader({
 
   const onFollow = useCallback(
     (activation: ConnectionActivation): void => {
+      controllerRef.current?.cancelInput();
       const attention = sessionRef.current.attention.attention;
       if (hasInteractionProtection()) {
         dispatch({
@@ -1066,15 +1092,19 @@ export function Reader({
         return;
       }
 
-      const endpointMatches = (position: ReadingPosition, endpoint: ConnectionEndpoint) => {
+      const endpointMatches = (
+        position: ReadingPosition,
+        endpoint: ConnectionEndpoint,
+      ) => {
         const anchor = connection[endpoint];
         return (
           position.documentId === anchor.documentId &&
           position.revisionId === anchor.revisionId
         );
       };
-      const otherEndpoint = (endpoint: ConnectionEndpoint): ConnectionEndpoint =>
-        endpoint === "from" ? "to" : "from";
+      const otherEndpoint = (
+        endpoint: ConnectionEndpoint,
+      ): ConnectionEndpoint => (endpoint === "from" ? "to" : "from");
 
       let origin: ReadingPosition | null = null;
       let endpoint: ConnectionEndpoint | null = null;
@@ -1097,16 +1127,18 @@ export function Reader({
           origin = attention.current;
           originWasPresent = true;
         } else if (
-          attention.companion?.position.surfaceId === activation.origin.surfaceId
+          attention.companion?.position.surfaceId ===
+          activation.origin.surfaceId
         ) {
           origin = attention.companion.position;
           originWasPresent = true;
         }
         endpoint = activation.origin.endpoint;
         if (!origin)
-          origin = pendingPositions.find(
-            (position) => position.surfaceId === originSurfaceId,
-          ) ?? null;
+          origin =
+            pendingPositions.find(
+              (position) => position.surfaceId === originSurfaceId,
+            ) ?? null;
         if (!origin || !endpointMatches(origin, endpoint)) {
           dispatch({
             type: "status",
@@ -1237,13 +1269,12 @@ export function Reader({
                 }),
           ]);
           const latest = sessionRef.current.attention.attention;
-          const originStillValid =
-            originWasPresent
-              ? latest.kind === "reading" &&
-                [latest.current, latest.companion?.position].some(
-                  (position) => position?.surfaceId === origin?.surfaceId,
-                )
-              : latest.kind === initialAttentionKind;
+          const originStillValid = originWasPresent
+            ? latest.kind === "reading" &&
+              [latest.current, latest.companion?.position].some(
+                (position) => position?.surfaceId === origin?.surfaceId,
+              )
+            : latest.kind === initialAttentionKind;
           if (
             !isCurrentRequest(
               request,
@@ -1330,17 +1361,46 @@ export function Reader({
   );
 
   const onScroll = useCallback(
-    (surfaceId: SurfaceInstanceId, scrollTop: number, presentationId: number) => {
+    (
+      surfaceId: SurfaceInstanceId,
+      scrollTop: number,
+      presentationId: number,
+    ) => {
       if (presentationId !== presentationRef.current.id) return;
       dispatchAttention({ type: "scroll", surfaceId, scrollTop });
     },
     [dispatchAttention],
   );
 
-  const onCameraCheckpoint = useCallback(
-    (pose: import("../../lib/reader/attention").CameraPose) => {
-      dispatchAttention({ type: "camera", pose });
+  const onViewCheckpoint = useCallback(
+    ({
+      generation,
+      view,
+    }: import("../../lib/reader/spatial-contract").ViewCheckpoint) => {
+      if (generation !== presentationRef.current.id) return;
+      const attention = sessionRef.current.attention.attention;
+      if (attention.kind !== "reading") return;
+      const ids = new Set([
+        attention.current.surfaceId,
+        attention.companion?.position.surfaceId,
+      ]);
+      if (
+        view.kind === "free" &&
+        [...view.placements.keys()].some((id) => !ids.has(id))
+      )
+        return;
+      if (
+        view.kind === "reading" &&
+        view.exposedSurfaceId !== null &&
+        !ids.has(view.exposedSurfaceId)
+      )
+        return;
+      dispatchAttention({ type: "view", view });
     },
+    [dispatchAttention],
+  );
+  const onReturnToReading = useCallback(
+    () => dispatchAttention({ type: "return-to-reading" }),
     [dispatchAttention],
   );
 
@@ -1410,18 +1470,19 @@ export function Reader({
       const body = draft.body.trim();
       const draftId = draft.draftId;
       let persistenceAttemptId:
-        | import("../../lib/reader/session").QuestionPersistenceAttemptId
-        | null = null;
+        import("../../lib/reader/session").QuestionPersistenceAttemptId | null =
+        null;
       let deliveryAttemptId:
-        | import("../../lib/reader/session").QuestionDeliveryAttemptId
-        | null = null;
+        import("../../lib/reader/session").QuestionDeliveryAttemptId | null =
+        null;
       let question: Question | null = null;
       try {
         if (draft.kind === "draft") {
           persistenceAttemptId = questionPersistenceAttemptId(
             nextRequest(questionPersistenceAttemptRef.current),
           );
-          questionPersistenceAttemptRef.current = persistenceAttemptId as number;
+          questionPersistenceAttemptRef.current =
+            persistenceAttemptId as number;
           dispatch({
             type: "question/saving",
             draftId,
@@ -1660,8 +1721,7 @@ export function Reader({
 
   useEffect(() => {
     const currentSession = sessionRef.current;
-    if (!currentSession.pendingNavigation || hasInteractionProtection())
-      return;
+    if (!currentSession.pendingNavigation || hasInteractionProtection()) return;
     flushPendingNavigation();
   }, [
     flushPendingNavigation,
@@ -2018,45 +2078,40 @@ export function Reader({
         </article>
       );
     },
-    [
-      onFollow,
-      selectText,
-      session.connections,
-    ],
+    [onFollow, selectText, session.connections],
   );
 
   const renderDocumentMenu = (
     surface: ReadingSurface,
     role: SurfaceRole,
   ): React.ReactNode => {
-      const document = surface.document;
-      const owner =
-        sessionRef.current.attention.attention.kind === "reading"
-          ? role === "current"
-            ? sessionRef.current.attention.attention.current
-            : (sessionRef.current.attention.attention.companion?.position ?? null)
-          : null;
-      return (
-        <PlaneMenu
-          document={document}
-          onEdit={() =>
-            dispatch({ type: "editor/open-edit", document, owner })
-          }
-          onHistory={() => void openHistory(document, owner)}
-          onRename={() =>
-            dispatch({ type: "editor/open-rename", document, owner })
-          }
-          onArchive={() => void archiveDocument(document)}
-          onDownload={() => downloadDocument(document)}
-          website={client.mode === "website"}
-        />
-      );
+    const document = surface.document;
+    const owner =
+      sessionRef.current.attention.attention.kind === "reading"
+        ? role === "current"
+          ? sessionRef.current.attention.attention.current
+          : (sessionRef.current.attention.attention.companion?.position ?? null)
+        : null;
+    return (
+      <PlaneMenu
+        document={document}
+        onEdit={() => dispatch({ type: "editor/open-edit", document, owner })}
+        onHistory={() => void openHistory(document, owner)}
+        onRename={() =>
+          dispatch({ type: "editor/open-rename", document, owner })
+        }
+        onArchive={() => void archiveDocument(document)}
+        onDownload={() => downloadDocument(document)}
+        website={client.mode === "website"}
+      />
+    );
   };
 
   const loadPreview = useCallback(
     async (target: DocumentTarget): Promise<DocumentRevision | null> => {
-      const cached = sessionRef.current.revisionCache.get(target.revisionId)
-        ?.document;
+      const cached = sessionRef.current.revisionCache.get(
+        target.revisionId,
+      )?.document;
       if (cached) return cached;
       const view = await readOpenResult({
         documentId: target.documentId,
@@ -2175,13 +2230,12 @@ export function Reader({
         : null;
     return {
       items,
-      current: itemIndex >= 0 ? items[itemIndex] ?? null : null,
+      current: itemIndex >= 0 ? (items[itemIndex] ?? null) : null,
       ordinal: itemIndex >= 0 ? itemIndex + 1 : null,
       total: items.length,
       canPrevious: items.length > 0 && (itemIndex < 0 || itemIndex > 0),
       canNext:
-        items.length > 0 &&
-        (itemIndex < 0 || itemIndex < items.length - 1),
+        items.length > 0 && (itemIndex < 0 || itemIndex < items.length - 1),
       loading: session.neighborhood.kind === "loading",
       error,
     };
@@ -2254,21 +2308,20 @@ export function Reader({
       const base =
         selected >= 0
           ? selected
-            : direction > 0
-              ? items.findIndex(
-                  (item) =>
-                    visibleOffset === null ||
-                    item.anchor.start >= visibleOffset,
-                )
-            : [...items]
+          : direction > 0
+            ? items.findIndex(
+                (item) =>
+                  visibleOffset === null || item.anchor.start >= visibleOffset,
+              )
+            : ([...items]
                 .map((item, index) => ({ item, index }))
                 .reverse()
                 .find(
                   ({ item }) =>
-                    visibleOffset === null || item.anchor.start <= visibleOffset,
-                )?.index ?? -1;
-      const targetIndex =
-        selected >= 0 ? base + direction : base;
+                    visibleOffset === null ||
+                    item.anchor.start <= visibleOffset,
+                )?.index ?? -1);
+      const targetIndex = selected >= 0 ? base + direction : base;
       const target = items[targetIndex];
       if (!target) {
         dispatch({
@@ -2312,7 +2365,7 @@ export function Reader({
       : null;
 
   return (
-    <main className="reader-shell">
+    <main className="reader-shell reader-palette" style={readerPaletteStyle}>
       <header className="reader-topbar">
         <div className="brand-lockup">
           <button
@@ -2511,7 +2564,7 @@ export function Reader({
               current={currentSurface}
               companion={companionSurface}
               previous={previousLeaf}
-              camera={session.attention.camera}
+              view={session.attention.view}
               documents={session.documents}
               catalogue={session.catalogue}
               neighborhood={session.neighborhood}
@@ -2527,7 +2580,8 @@ export function Reader({
               presentation={presentation}
               onHistory={onHistory}
               onScroll={onScroll}
-              onCameraCheckpoint={onCameraCheckpoint}
+              onViewCheckpoint={onViewCheckpoint}
+              onReturnToReading={onReturnToReading}
               renderDocument={renderDocument}
               renderDocumentMenu={renderDocumentMenu}
               loadPreview={loadPreview}

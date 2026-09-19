@@ -12,7 +12,11 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import "./passage.css";
-import type { AnchorInput, DocumentRevision } from "../../lib/domain/model";
+import type {
+  AnchorInput,
+  ConnectionRelation,
+  DocumentRevision,
+} from "../../lib/domain/model";
 import type {
   ConnectionEndpoint,
   DocumentRenderContext,
@@ -30,12 +34,17 @@ import {
 import { DocumentBody } from "./document-virtualizer";
 import { sourceRanges } from "../../lib/reader/render-dom";
 import { passageHighlightRuns } from "../../lib/reader/passage-highlights";
+import {
+  readerPalette,
+  readerPaletteStyle,
+  relationAppearance,
+} from "../../lib/reader/semantic-palette";
 
 export interface PassageMark {
   id: string;
   anchor: AnchorInput;
   endpoint?: ConnectionEndpoint;
-  color: string;
+  relation: ConnectionRelation;
   label?: string;
 }
 
@@ -453,7 +462,7 @@ function sameMarks(
     return (
       mark.id === other.id &&
       mark.endpoint === other.endpoint &&
-      mark.color === other.color &&
+      mark.relation === other.relation &&
       mark.label === other.label &&
       sameAnchor(mark.anchor, other.anchor)
     );
@@ -528,7 +537,7 @@ function PassageImpl({
         checkedMarks.map((mark) => ({
           start: mark.anchor.start,
           end: mark.anchor.end,
-          color: mark.color,
+          relation: mark.relation,
         })),
       ),
     [checkedMarks],
@@ -600,7 +609,7 @@ function PassageImpl({
         names.push(name);
         const checkedColor = CSS.supports("background-color", color)
           ? color
-          : "#bd9c6666";
+          : readerPalette.overlap;
         rules.push(
           // Highlight decorations are progressive enhancement. The color fill
           // remains visible in engines that only implement highlight colors.
@@ -614,16 +623,27 @@ function PassageImpl({
       });
       highlightRuns.forEach((run, index) => {
         const ranges = rangesFor(run);
+        const appearance =
+          run.relation === "overlap"
+            ? null
+            : relationAppearance(run.relation);
+        const signal = appearance?.signal ?? readerPalette.overlap;
+        const ink = appearance?.ink;
         register(
           `mark${index}`,
           ranges,
-          `color-mix(in srgb, ${run.color} 12%, transparent)`,
-          run.color,
+          `color-mix(in srgb, ${signal} ${readerPalette.state.signal.range * 100}%, transparent)`,
+          ink,
         );
       });
       if (currentFocus) {
         const ranges = rangesFor(currentFocus);
-        register("focus", ranges, "#d6b36a29");
+        register(
+          "focus",
+          ranges,
+          `color-mix(in srgb, ${readerPalette.focus.paper} ${readerPalette.state.focus * 100}%, transparent)`,
+          readerPalette.focus.paper,
+        );
       }
       style.textContent = rules.join("\n");
     };
@@ -763,7 +783,11 @@ function PassageImpl({
       />
       {selectionError &&
         createPortal(
-          <p className="passage-selection-note" role="status">
+          <p
+            className="reader-palette passage-selection-note"
+            style={readerPaletteStyle}
+            role="status"
+          >
             {selectionError}
           </p>,
           document.body,
@@ -772,7 +796,8 @@ function PassageImpl({
         createPortal(
           <div
             ref={choiceRef}
-            className="passage-relation-choices"
+            className="reader-palette passage-relation-choices"
+            style={readerPaletteStyle}
             role="dialog"
             aria-label="选择这段文字的连接"
             data-hit-role="control"

@@ -2,13 +2,24 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   alignPaperReadingLines,
+  compensateCameraForPaperReflow,
   interpolatePaperMotion,
+  planFreePaperCenters,
+  planSpacePresentation,
   paperRect,
   rangeScrollTarget,
   reconcileFocusScroll,
+  resolvePaperCenters,
   type PaperMotion,
+  type SurfaceMeasurement,
   type SurfaceLayout,
 } from "../components/reader/scene-presentation";
+import { worldPoint } from "../lib/reader/camera";
+import {
+  freeView,
+  manualPlacement,
+} from "../lib/reader/space-view";
+import { surfaceInstanceId } from "../lib/reader/spatial-contract";
 
 const layout: SurfaceLayout = {
   width: 600,
@@ -127,4 +138,77 @@ test("manual scroll revokes later geometry corrections for only that endpoint", 
     reconcileFocusScroll(measured, new Map(), new Map(), new Set(["A", "C"])),
     undefined,
   );
+});
+
+test("free planning keeps measured narrow paper sizes and applies only active manual centers", () => {
+  const current: SurfaceMeasurement = {
+    surfaceId: surfaceInstanceId("current-layout"),
+    width: 358,
+    height: 780,
+  };
+  const companion: SurfaceMeasurement = {
+    surfaceId: surfaceInstanceId("companion-layout"),
+    width: 358,
+    height: 780,
+  };
+  const automatic = planFreePaperCenters(current, companion);
+  assert.deepEqual(automatic.get(current.surfaceId), worldPoint(-227, 0));
+  assert.deepEqual(automatic.get(companion.surfaceId), worldPoint(227, 0));
+  const placements = new Map([
+    [current.surfaceId, manualPlacement(worldPoint(420, -30))],
+    [surfaceInstanceId("departed"), manualPlacement(worldPoint(999, 999))],
+  ]);
+  const resolved = resolvePaperCenters(automatic, placements);
+  assert.deepEqual(resolved.get(current.surfaceId), worldPoint(420, -30));
+  assert.deepEqual(resolved.get(companion.surfaceId), worldPoint(227, 0));
+  assert.equal(resolved.has(surfaceInstanceId("departed")), false);
+
+  const plan = planSpacePresentation({
+    width: 390,
+    height: 900,
+    current,
+    companion,
+    view: freeView(
+      { x: 0, y: 0, yaw: 0, pitch: 0, zoom: 1 },
+      placements,
+    ),
+  });
+  assert.equal(plan.kind, "free");
+  assert.equal(plan.poses.get(current.surfaceId)?.x, 420);
+  assert.equal(plan.poses.get(companion.surfaceId)?.x, 227);
+});
+
+test("manual centers cannot be rewritten by reading-line alignment", () => {
+  const poses: PaperMotion<string> = new Map([
+    ["A", { x: 0, y: 0, scale: 1, opacity: 1 }],
+    ["B", { x: 227, y: 12, scale: 1, opacity: 1 }],
+  ]);
+  const layouts = new Map([
+    ["A", layout],
+    ["B", layout],
+  ]);
+  const aligned = alignPaperReadingLines(
+    poses,
+    layouts,
+    "A",
+    undefined,
+    new Set(["B"]),
+  );
+  assert.equal(aligned.get("B")?.y, 12);
+});
+
+test("free entry camera compensation preserves the selected paper projection", () => {
+  const camera = { x: 12, y: -18, yaw: 8, pitch: -4, zoom: 1.2 } as const;
+  const compensated = compensateCameraForPaperReflow(
+    camera,
+    worldPoint(0, 0),
+    worldPoint(-227, 0),
+  );
+  assert.deepEqual(compensated, {
+    x: -215,
+    y: -18,
+    yaw: 8,
+    pitch: -4,
+    zoom: 1.2,
+  });
 });

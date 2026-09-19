@@ -1,4 +1,13 @@
 import type { SurfaceInstanceId } from "../../lib/reader/spatial-contract";
+import type { CameraPose } from "../../lib/reader/attention";
+import {
+  worldPoint,
+  type WorldPoint,
+} from "../../lib/reader/camera";
+import type {
+  PaperPlacement,
+  SpaceView,
+} from "../../lib/reader/space-view";
 /** Private presentation math; coordinates are unscaled paper CSS pixels. */
 export type PaperRect = {
   left: number;
@@ -47,6 +56,27 @@ export type ScenePresentationPlan = {
   currentPosition: { x: number; y: number };
   companionPosition: { x: number; y: number };
 };
+
+/** The measured body of one active occurrence. */
+export type SurfaceMeasurement = {
+  readonly surfaceId: SurfaceInstanceId;
+  readonly width: number;
+  readonly height: number;
+};
+
+export type SpacePresentationPlan = {
+  readonly kind: SpaceView["kind"];
+  readonly reading: ScenePresentationPlan;
+  /** Automatic centers before manual placement overrides. */
+  readonly automaticCenters: ReadonlyMap<SurfaceInstanceId, WorldPoint>;
+  /** Final centers consumed by the live paper transform. */
+  readonly centers: ReadonlyMap<SurfaceInstanceId, WorldPoint>;
+  readonly poses: PaperMotion;
+  readonly paperMaxHeight: number;
+  readonly companionWidth: number | null;
+};
+
+const FREE_PAPER_GAP = 96;
 
 const READABLE_MIN_WIDTH = 440;
 const PRIMARY_MAX_WIDTH = 640;
@@ -199,6 +229,141 @@ export function planScenePresentation(
     ),
   };
 }
+
+export interface SpacePresentationInput {
+  readonly width: number;
+  readonly height: number;
+  readonly current: SurfaceMeasurement;
+  readonly companion: SurfaceMeasurement | null;
+  readonly view: SpaceView;
+}
+
+function finiteDimension(value: number, fallback: number): number {
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/**
+ * Lay active papers out on the shared world plane. The measured dimensions
+ * are deliberately used in free mode: entering free must not reflow a narrow
+ * 358px paper into a 640px paper while the pointer is down.
+ */
+export function planFreePaperCenters(
+  current: SurfaceMeasurement,
+  companion: SurfaceMeasurement | null,
+): ReadonlyMap<SurfaceInstanceId, WorldPoint> {
+  const currentWidth = finiteDimension(current.width, 0);
+  const currentCenter = companion
+    ? worldPoint(-(finiteDimension(companion.width, 0) + FREE_PAPER_GAP) / 2, 0)
+    : worldPoint(0, 0);
+  const centers = new Map<SurfaceInstanceId, WorldPoint>([
+    [current.surfaceId, currentCenter],
+  ]);
+  if (companion) {
+    centers.set(
+      companion.surfaceId,
+      worldPoint((currentWidth + FREE_PAPER_GAP) / 2, 0),
+    );
+  }
+  return centers;
+}
+
+/** Apply only active manual overrides to one automatic center plan. */
+export function resolvePaperCenters(
+  automaticCenters: ReadonlyMap<SurfaceInstanceId, WorldPoint>,
+  placements: ReadonlyMap<SurfaceInstanceId, PaperPlacement>,
+): ReadonlyMap<SurfaceInstanceId, WorldPoint> {
+  const resolved = new Map<SurfaceInstanceId, WorldPoint>();
+  for (const [surfaceId, automatic] of automaticCenters) {
+    const placement = placements.get(surfaceId);
+    if (
+      placement?.kind === "manual" &&
+      Number.isFinite(placement.center.x) &&
+      Number.isFinite(placement.center.y)
+    ) {
+      resolved.set(
+        surfaceId,
+        worldPoint(placement.center.x, placement.center.y),
+      );
+    } else {
+      resolved.set(surfaceId, worldPoint(automatic.x, automatic.y));
+    }
+  }
+  return resolved;
+}
+
+/** Resolve reading/free geometry and manual placements through one plan. */
+export function planSpacePresentation(
+  input: SpacePresentationInput,
+): SpacePresentationPlan {
+  const reading = planScenePresentation(
+    input.width,
+    input.height,
+    input.companion !== null,
+  );
+  const activeIds = [
+    input.current.surfaceId,
+    ...(input.companion ? [input.companion.surfaceId] : []),
+  ];
+  const automaticCenters =
+    input.view.kind === "free"
+      ? planFreePaperCenters(input.current, input.companion)
+      : new Map<SurfaceInstanceId, WorldPoint>([
+          [
+            input.current.surfaceId,
+            worldPoint(reading.currentPosition.x, reading.currentPosition.y),
+          ],
+          ...(input.companion
+            ? [
+                [
+                  input.companion.surfaceId,
+                  worldPoint(
+                    reading.companionPosition.x,
+                    reading.companionPosition.y,
+                  ),
+                ] as const,
+              ]
+            : []),
+        ]);
+  const placements =
+    input.view.kind === "free" ? input.view.placements : new Map();
+  const centers = resolvePaperCenters(automaticCenters, placements);
+  const poses = new Map<SurfaceInstanceId, PaperPose>();
+  for (const surfaceId of activeIds) {
+    const center = centers.get(surfaceId);
+    if (!center) continue;
+    poses.set(surfaceId, { x: center.x, y: center.y, scale: 1, opacity: 1 });
+  }
+  return {
+    kind: input.view.kind,
+    reading,
+    automaticCenters,
+    centers,
+    poses,
+    paperMaxHeight: reading.paperMaxHeight,
+    companionWidth:
+      input.view.kind === "free"
+        ? input.companion?.width ?? null
+        : reading.companionWidth,
+  };
+}
+
+/**
+ * Re-anchor the camera when paper centers change at free-entry. Since the
+ * transform depends on world minus camera translation, this preserves every
+ * point of the selected paper under the same camera pose.
+ */
+export function compensateCameraForPaperReflow(
+  camera: CameraPose,
+  previousCenter: WorldPoint,
+  nextCenter: WorldPoint,
+): CameraPose {
+  return {
+    ...camera,
+    x: camera.x + nextCenter.x - previousCenter.x,
+    y: camera.y + nextCenter.y - previousCenter.y,
+  };
+}
+
 export type PaperMotion<Id extends string = SurfaceInstanceId> = ReadonlyMap<
   Id,
   PaperPose
@@ -251,6 +416,7 @@ export function alignPaperReadingLines<Id extends string>(
   layouts: ReadonlyMap<Id, SurfaceLayout>,
   currentId: Id | undefined,
   paperMaxHeight?: number,
+  manualSurfaceIds: ReadonlySet<Id> = new Set(),
 ): PaperMotion<Id> {
   if (!currentId) return poses;
   const currentPose = poses.get(currentId);
@@ -264,7 +430,11 @@ export function alignPaperReadingLines<Id extends string>(
   const line = currentPose.y + lineOffset(currentLayout, currentPose.scale);
   let result: Map<Id, PaperPose> | undefined;
   for (const [id, pose] of poses) {
-    if (id === currentId || pose.opacity < 1) continue;
+    // A manual world center is a user decision. Range-line alignment can
+    // correct an automatic peer, but it must never rewrite that center (or
+    // indirectly move the peer through a paired correction pass).
+    if (id === currentId || manualSurfaceIds.has(id) || pose.opacity < 1)
+      continue;
     const layout = layouts.get(id);
     if (!layout) continue;
     const readingLineY = line - lineOffset(layout, pose.scale);

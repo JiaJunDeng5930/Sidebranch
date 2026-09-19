@@ -1,0 +1,144 @@
+/*
+ * Reader colors are injected once by readerPaletteStyle. This stylesheet owns
+ * state-dependent use of those tokens; component styles keep layout only.
+ */
+.reader-palette {
+  color: var(--sb-text);
+  background: var(--sb-canvas);
+}
+
+.reader-palette ::selection {
+  background: var(--sb-selection);
+  color: var(--sb-text);
+}
+
+.reader-palette .spatial-beam {
+  fill: var(--relation-signal);
+  fill-opacity: var(--relation-beam-alpha);
+  stroke: var(--relation-ink);
+  stroke-opacity: 1;
+  stroke-width: 1.5;
+}
+
+.reader-palette .spatial-beam.is-selected {
+  fill-opacity: var(--relation-beam-selected-alpha);
+  stroke-width: 2;
+}
+
+.reader-palette .spatial-beam.is-proxy:not(.is-selected) {
+  fill-opacity: var(--relation-beam-proxy-alpha);
+  stroke-width: 1.5;
+}
+
+.reader-palette .spatial-range-contour {
+  fill: none;
+  stroke: var(--relation-ink);
+  stroke-opacity: 1;
+  stroke-width: 2;
+}
+
+.reader-palette .spatial-range-contour.is-selected {
+  stroke-width: 2;
+}
+
+.reader-palette .spatial-beam-label {
+  border-color: var(--relation-ink);
+  background: color-mix(
+    in srgb,
+    var(--relation-signal) var(--relation-label-alpha),
+    var(--sb-paper-current)
+  );
+  color: var(--relation-ink);
+}
+
+.reader-palette .spatial-beam-label:hover,
+.reader-palette .spatial-beam-label.is-hovered {
+  border-width: 1.5px;
+  background: color-mix(
+    in srgb,
+    var(--relation-signal) var(--relation-label-alpha),
+    var(--sb-paper-current)
+  );
+  color: var(--relation-ink);
+}
+
+.reader-palette .spatial-beam-label.is-selected {
+  border-color: var(--relation-ink);
+  background: color-mix(
+    in srgb,
+    var(--relation-signal) var(--relation-label-alpha),
+    var(--sb-paper-current)
+  );
+  color: var(--relation-ink);
+  font-weight: 700;
+}
+
+.reader-palette .spatial-beam-label:focus-visible {
+  outline: 2px solid var(--sb-focus-paper);
+  outline-offset: 2px;
+}
+
+.reader-palette .spatial-beam-label-symbol::before {
+  content: var(--relation-symbol);
+  margin-right: 0.35em;
+  font-weight: 700;
+}
+
+.reader-palette .spatial-beam-label.is-selected::after {
+  content: " 已选";
+  margin-left: 0.35em;
+  font-size: 0.9em;
+}
+
+.reader-palette .spatial-paper-current {
+  --paper-surface: var(--sb-paper-current);
+  --paper-identity: var(--sb-identity-current);
+}
+
+.reader-palette .spatial-paper-companion {
+  --paper-surface: var(--sb-paper-companion);
+  --paper-identity: var(--sb-identity-companion);
+}
+
+.reader-palette .spatial-paper-identity::before {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.4em;
+  border: 1px solid currentColor;
+  vertical-align: 0.05em;
+}
+
+.reader-palette .spatial-paper-identity {
+  color: var(--paper-identity);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.reader-palette .spatial-paper-current .spatial-paper-identity::before {
+  background: var(--sb-identity-current);
+}
+
+.reader-palette .spatial-paper-companion .spatial-paper-identity::before {
+  background: transparent;
+  border-color: var(--sb-identity-companion);
+}
+
+.reader-palette .spatial-paper:focus-within {
+  outline: 2px solid var(--sb-focus-paper);
+  outline-offset: 2px;
+}
+
+.reader-palette .selection-composer-v2__primary:focus-visible,
+.reader-palette .solid-button:focus-visible,
+.reader-palette .reader-menu-item:focus-visible,
+.reader-palette .topbar-button:focus-visible,
+.reader-palette .account-button:focus-visible,
+.reader-palette .quiet-icon:focus-visible {
+  outline: 2px solid var(--sb-focus-chrome);
+  outline-offset: 2px;
+}

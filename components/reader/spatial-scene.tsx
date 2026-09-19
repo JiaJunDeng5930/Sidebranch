@@ -12,6 +12,7 @@ import React, {
 import type {
   Anchor,
   ConnectionId,
+  ConnectionRelation,
   DocumentRevision,
   DocumentSummary,
   RevisionId,
@@ -39,7 +40,6 @@ import {
   type Point as GeometryPoint,
   type RangeEdge,
   type RangeGeometry,
-  type RangeFragment,
   type RangeVisibility,
 } from "../../lib/reader/range-geometry";
 import type {
@@ -49,33 +49,47 @@ import type {
 } from "../../lib/reader/space-index";
 import {
   cameraTransform,
-  poseForScreenAnchor,
+  constrainCameraPose,
+  worldPoint,
+  screenPoint,
+  type WorldPoint,
   screenToWorld,
-  worldToScreen,
 } from "../../lib/reader/camera";
 import {
   projectSpaceEdges,
   resolveEdgeActivation,
 } from "../../lib/reader/space-index";
-import {
-  relationColors as RELATION_COLORS,
-  relationNames as RELATION_LABELS,
-} from "../../lib/reader/relations";
+import { relationNames as RELATION_LABELS } from "../../lib/reader/relations";
+import { relationStyle } from "../../lib/reader/semantic-palette";
 import {
   alignPaperReadingLines,
   interpolatePaperMotion,
   planScenePresentation,
+  planSpacePresentation,
+  compensateCameraForPaperReflow,
   paperRect,
   rangeScrollTarget,
   reconcileFocusScroll,
   type PaperPose,
   type PaperMotion,
-  type SurfaceLayout,
 } from "./scene-presentation";
+import {
+  SceneGeometry,
+  projectScenePoints,
+  type CachedAnchorGeometry,
+} from "./scene-geometry";
+import { SceneInteraction } from "./scene-interaction";
+import {
+  cameraForView,
+  readingView,
+  sameSpaceView,
+  type SpaceView,
+} from "../../lib/reader/space-view";
 import "./spatial-scene.css";
 
 export interface SpatialSceneController {
   resetCamera(): void;
+  cancelInput(): void;
   measure(): void;
 }
 
@@ -129,9 +143,9 @@ type EdgeGroup = {
 
 type Beam = {
   id: ConnectionId;
+  relation: ConnectionRelation;
   label: string;
   endpointLabel: string;
-  color: string;
   visibility: `${RangeVisibility}:${RangeVisibility}`;
   worldPolygon: readonly GeometryPoint[];
   worldRangeContours: readonly (readonly GeometryPoint[])[];
@@ -149,12 +163,6 @@ type AnchorMeasurement = {
   readonly surfaceId: SurfaceInstanceId | null;
   readonly geometry: RangeGeometry;
   readonly worldContours: readonly (readonly GeometryPoint[])[];
-};
-
-type CachedAnchorGeometry = {
-  readonly coverage: "complete" | "partial" | "unmounted" | "unmapped";
-  readonly missing: readonly { start: number; end: number }[];
-  readonly fragments: readonly RangeFragment[];
 };
 
 type FanState = {
@@ -179,61 +187,14 @@ type PreviewState = {
 };
 
 type Pose = CameraPose;
-type DragState =
-  | {
-      kind: "pending" | "pan" | "orbit";
-      pointerId: number;
-      pointerType: string;
-      x: number;
-      y: number;
-      startX: number;
-      startY: number;
-      spaceOverride: boolean;
-      orbitRequested: boolean;
-    }
-  | { kind: "pinch"; pointerId: number }
-  | null;
-
-type PointerPoint = { x: number; y: number; pointerType: string };
-
 const DESKTOP_FAN_LIMIT = 7;
 const NARROW_FAN_LIMIT = 3;
 const DESKTOP_BEAM_LIMIT = 48;
 const NARROW_BEAM_LIMIT = 16;
-const CAMERA_LIMITS = {
-  x: 10_000,
-  y: 10_000,
-  zoomMin: 0.55,
-  zoomMax: 1.8,
-  yaw: 22,
-  pitch: 10,
-} as const;
 const EMPTY_TARGETS: readonly EdgeItem[] = [];
-
-function finite(value: number, fallback: number): number {
-  return Number.isFinite(value) ? value : fallback;
-}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-function clampPose(pose: Pose): Pose {
-  return {
-    x: clamp(finite(pose.x, 0), -CAMERA_LIMITS.x, CAMERA_LIMITS.x),
-    y: clamp(finite(pose.y, 0), -CAMERA_LIMITS.y, CAMERA_LIMITS.y),
-    yaw: clamp(finite(pose.yaw, 0), -CAMERA_LIMITS.yaw, CAMERA_LIMITS.yaw),
-    pitch: clamp(
-      finite(pose.pitch, 0),
-      -CAMERA_LIMITS.pitch,
-      CAMERA_LIMITS.pitch,
-    ),
-    zoom: clamp(
-      finite(pose.zoom, 1),
-      CAMERA_LIMITS.zoomMin,
-      CAMERA_LIMITS.zoomMax,
-    ),
-  };
 }
 
 function samePose(a: Pose, b: Pose): boolean {
@@ -243,16 +204,6 @@ function samePose(a: Pose, b: Pose): boolean {
     a.yaw === b.yaw &&
     a.pitch === b.pitch &&
     a.zoom === b.zoom
-  );
-}
-
-function poseIsHome(pose: Pose): boolean {
-  return (
-    Math.abs(pose.x) < 0.5 &&
-    Math.abs(pose.y) < 0.5 &&
-    Math.abs(pose.yaw) < 0.5 &&
-    Math.abs(pose.pitch) < 0.5 &&
-    Math.abs(pose.zoom - 1) < 0.005
   );
 }
 
@@ -269,18 +220,6 @@ function interpolate(a: Pose, b: Pose, amount: number): Pose {
 function easeAttention(amount: number): number {
   const n = 1 - amount;
   return 1 - n * n * n;
-}
-
-function intersectRects(a: Rect, b: Rect): Rect | null {
-  const result = {
-    left: Math.max(a.left, b.left),
-    top: Math.max(a.top, b.top),
-    right: Math.min(a.right, b.right),
-    bottom: Math.min(a.bottom, b.bottom),
-  };
-  return result.right > result.left && result.bottom > result.top
-    ? result
-    : null;
 }
 
 function edgeForPaper(
@@ -327,7 +266,7 @@ function endpointPoints(
 
 function worldPointForLocal(point: Point, viewport: DOMRect): GeometryPoint {
   return screenToWorld(
-    point,
+    screenPoint(point.x, point.y),
     { x: 0, y: 0, yaw: 0, pitch: 0, zoom: 1 },
     viewport,
   );
@@ -410,7 +349,8 @@ function bandLabel(band: EdgeBand): string {
 }
 
 function rangeStatusLabel(visibility: Beam["visibility"]): string {
-  if (visibility.includes("unavailable")) return "关系不可用 · 打开原文";
+  // Missing range or edge measurements do not establish that a relation is unavailable.
+  if (visibility.includes("unavailable")) return "查看另一端";
   if (visibility.includes("peripheral")) return "展开原文";
   if (visibility.includes("unmounted-range")) return "范围待定位";
   if (visibility.includes("partial-range")) return "部分正文待定位";
@@ -749,8 +689,21 @@ const SurfacePaper = React.memo(function SurfacePaper({
           }
         }}
       >
+        <button
+          type="button"
+          className="spatial-paper-grip"
+          data-paper-grip={surface.surfaceId}
+          data-hit-role="paper-grip"
+          aria-label={`移动纸页：${surface.document.title}`}
+          title="移动纸页；Enter 开始键盘移动，方向键调整，Enter 确认，Escape 取消"
+        >
+          ⠿
+        </button>
         <div className="spatial-paper-heading">
           <span className="spatial-paper-attention" aria-hidden="true" />
+          <span className="spatial-paper-identity">
+            {role === "current" ? "当前" : "旁读"}
+          </span>
           <strong
             title={`${surface.document.title} · ${surface.document.path} · v${surface.document.sequence}`}
           >
@@ -1235,7 +1188,7 @@ export function SpatialScene({
   current,
   companion,
   previous,
-  camera,
+  view,
   documents,
   catalogue,
   neighborhood,
@@ -1250,7 +1203,8 @@ export function SpatialScene({
   presentation,
   onHistory,
   onScroll,
-  onCameraCheckpoint,
+  onViewCheckpoint,
+  onReturnToReading,
   renderDocument,
   renderDocumentMenu,
   loadPreview,
@@ -1272,13 +1226,38 @@ export function SpatialScene({
     documents,
     neighborhood,
   });
-  const livePose = useRef<Pose>(clampPose(camera));
-  const targetPose = useRef<Pose>(clampPose(camera));
-  const cameraGestureActive = useRef(false);
+  useLayoutEffect(() => {
+    inputRef.current = {
+      current,
+      companion,
+      previous,
+      connections,
+      selectedConnectionId,
+      selectedEndpoint,
+      documents,
+      neighborhood,
+    };
+  }, [
+    current,
+    companion,
+    previous,
+    connections,
+    selectedConnectionId,
+    selectedEndpoint,
+    documents,
+    neighborhood,
+  ]);
+  const liveView = useRef(view);
+  const renderedLayoutKey = useRef("");
+  const livePose = useRef<Pose>(cameraForView(view));
+  const targetPose = useRef<Pose>(cameraForView(view));
+  const [interaction] = useState(() => new SceneInteraction());
+  const [draftKind, setDraftKind] = useState<SpaceView["kind"] | null>(null);
+  const viewKind = draftKind ?? view.kind;
+  const zoomInput = useRef<HTMLInputElement>(null);
   const paperMotionPose = useRef<PaperMotion>(new Map());
   const paperTargets = useRef<PaperMotion>(new Map());
-  const surfaceLayouts = useRef(new Map<SurfaceInstanceId, SurfaceLayout>());
-  const edgeRects = useRef(new Map<string, Rect>());
+  const sceneGeometry = useRef(new SceneGeometry());
   const rebuildBeamGeometry = useRef<(() => void) | null>(null);
   const presentationFrame = useRef<number | null>(null);
   const presentationScheduleFrame = useRef<number | null>(null);
@@ -1330,31 +1309,9 @@ export function SpatialScene({
   const viewportSize = useRef<{ width: number; height: number } | null>(null);
   const measureFrame = useRef<number | null>(null);
   const scheduleMeasureRef = useRef<(() => void) | null>(null);
-  const rangeGeometryCache = useRef(new Map<string, CachedAnchorGeometry>());
-  const rangeGeometryDirty = useRef(true);
-  const rangeGeometryEpoch = useRef(0);
-  const rangeContextKey = useRef("");
-  const pointers = useRef(new Map<number, PointerPoint>());
-  const pinch = useRef<{ distance: number; center: Point } | null>(null);
-  const gestureDelta = useRef({
-    panX: 0,
-    panY: 0,
-    orbitX: 0,
-    orbitY: 0,
-    zoom: 0,
-    anchor: null as Point | null,
-  });
-  const gestureFrame = useRef<number | null>(null);
-  const drag = useRef<DragState>(null);
-  const spacePressed = useRef(false);
-  const wheelAccum = useRef({ x: 0, y: 0, zoom: 0, anchor: { x: 0, y: 0 } });
-  const wheelFrame = useRef<number | null>(null);
-  const wheelCheckpoint = useRef<number | null>(null);
   const reducedMotion = useReducedMotion();
   const [narrow, setNarrow] = useState(false);
-  const [cameraDisplaced, setCameraDisplaced] = useState(false);
-  const [mobileSurfaceId, setMobileSurfaceId] =
-    useState<SurfaceInstanceId | null>(null);
+
   const [sceneSize, setSceneSize] = useState({ width: 0, height: 0 });
   const hasCompanion = companion !== null;
   const sceneLayout = useMemo(() => {
@@ -1371,7 +1328,10 @@ export function SpatialScene({
       for (const beam of beams) {
         const node = beamLabelNodes.current.get(beam.id);
         const width = node?.getBoundingClientRect().width ?? 0;
-        if (width > 0) measured[beam.id] = Math.ceil(width);
+        if (width > 0) {
+          measured[beam.id] = Math.ceil(width);
+          node!.dataset.measuredWidth = String(Math.ceil(width));
+        }
       }
       setBeamLabelWidths((previous) => {
         const previousKeys = Object.keys(previous);
@@ -1426,9 +1386,7 @@ export function SpatialScene({
     (surfaceId: SurfaceInstanceId, handle: PassageHandle | null) => {
       if (handle) passageHandles.current.set(surfaceId, handle);
       else passageHandles.current.delete(surfaceId);
-      rangeGeometryCache.current.clear();
-      rangeGeometryDirty.current = true;
-      rangeGeometryEpoch.current += 1;
+      sceneGeometry.current.invalidate();
       window.requestAnimationFrame(() => scheduleMeasureRef.current?.());
     },
     [],
@@ -1452,34 +1410,46 @@ export function SpatialScene({
     if (!viewport) return;
     rebuildBeamGeometry.current?.();
     for (const beam of beamWorldCache.current) {
-      if (beam.worldPolygon.length) {
-        const polygon = beam.worldPolygon.map((point) =>
-          worldToScreen(point, livePose.current, viewport),
-        );
-        beamPathNodes.current
-          .get(beam.id)
-          ?.setAttribute("d", polygonToPath(polygon));
-      }
+      const polygon = projectScenePoints(
+        beam.worldPolygon,
+        livePose.current,
+        viewport,
+      );
+      beamPathNodes.current
+        .get(beam.id)
+        ?.setAttribute("d", polygonToPath(polygon));
       beam.worldRangeContours.forEach((contour, index) => {
-        const projected = contour.map((point) =>
-          worldToScreen(point, livePose.current, viewport),
+        const projected = projectScenePoints(
+          contour,
+          livePose.current,
+          viewport,
         );
         beamRangeNodes.current
           .get(`${beam.id}:${index}`)
           ?.setAttribute("d", polygonToPath(projected));
       });
-      const labelScreen = worldToScreen(
-        beam.labelWorld,
+      const labelScreen = projectScenePoints(
+        [beam.labelWorld],
         livePose.current,
         viewport,
-      );
+      )[0];
       const paperEdgeLabel = beamPaperEdgeLabelNodes.current.get(beam.id);
+      const label = beamLabelNodes.current.get(beam.id);
+      if (paperEdgeLabel)
+        paperEdgeLabel.style.visibility = labelScreen ? "" : "hidden";
+      if (label) label.style.visibility = labelScreen ? "" : "hidden";
+      if (!labelScreen) continue;
       if (paperEdgeLabel) {
         paperEdgeLabel.setAttribute("x", `${labelScreen.x}`);
         paperEdgeLabel.setAttribute("y", `${labelScreen.y - 8}`);
       }
-      const label = beamLabelNodes.current.get(beam.id);
       if (label) {
+        const width = Number(label.dataset.measuredWidth ?? 0);
+        label.classList.toggle(
+          "is-omitted",
+          beam.labelGap !== null &&
+            width + 12 > beam.labelGap * livePose.current.zoom,
+        );
         label.style.transform = `translate3d(${labelScreen.x}px, ${labelScreen.y}px, 0) translate(-50%, -50%)`;
       }
     }
@@ -1509,28 +1479,6 @@ export function SpatialScene({
     activePresentationScrollTargets.current.clear();
   }, []);
 
-  const cancelPoseAnimation = useCallback(() => {
-    cameraGestureActive.current = true;
-    // An input gesture takes over the pose that was actually painted.  The
-    // next gesture frame/checkpoint will replace this target with its latest
-    // desired pose.
-    targetPose.current = clampPose(livePose.current);
-  }, []);
-
-  const writePose = useCallback(
-    (pose: Pose) => {
-      livePose.current = clampPose(pose);
-      const displaced = !poseIsHome(livePose.current);
-      setCameraDisplaced((previous) =>
-        previous === displaced ? previous : displaced,
-      );
-      if (worldRef.current)
-        worldRef.current.style.transform = cameraTransform(livePose.current);
-      renderCachedBeams();
-    },
-    [renderCachedBeams],
-  );
-
   const writePaperMotion = useCallback((poses: PaperMotion) => {
     paperMotionPose.current = poses;
     for (const [id, pose] of poses) {
@@ -1542,6 +1490,165 @@ export function SpatialScene({
       node.style.opacity = String(pose.opacity);
     }
   }, []);
+
+  const currentSurfaceId = current?.surfaceId;
+  const companionSurfaceId = companion?.surfaceId;
+  const resolveViewPapers = useCallback(
+    (value: SpaceView): PaperMotion => {
+      if (!currentSurfaceId) return new Map();
+      const measurement = (id: SurfaceInstanceId, fallbackWidth: number) => ({
+        surfaceId: id,
+        width: sceneGeometry.current.layouts.get(id)?.width ?? fallbackWidth,
+        height:
+          sceneGeometry.current.layouts.get(id)?.height ??
+          sceneLayout.paperMaxHeight,
+      });
+      const plan = planSpacePresentation({
+        width: sceneSize.width,
+        height: sceneSize.height,
+        view: value,
+        current: measurement(currentSurfaceId, sceneLayout.paperWidth),
+        companion: companionSurfaceId
+          ? measurement(
+              companionSurfaceId,
+              sceneLayout.companionWidth ?? sceneLayout.paperWidth,
+            )
+          : null,
+      });
+      return value.kind === "reading" && sceneLayout.framing.kind === "paired"
+        ? alignPaperReadingLines(
+            plan.poses,
+            sceneGeometry.current.layouts,
+            currentSurfaceId,
+            sceneLayout.paperMaxHeight,
+          )
+        : plan.poses;
+    },
+    [
+      currentSurfaceId,
+      companionSurfaceId,
+      sceneLayout,
+      sceneSize.width,
+      sceneSize.height,
+    ],
+  );
+
+  const paperCorners = useCallback(
+    (poses: PaperMotion): readonly WorldPoint[] => {
+      const corners: WorldPoint[] = [];
+      for (const surfaceId of [currentSurfaceId, companionSurfaceId]) {
+        if (!surfaceId) continue;
+        const pose = poses.get(surfaceId);
+        const layout = sceneGeometry.current.layouts.get(surfaceId);
+        if (!pose || !layout) continue;
+        for (const x of [-layout.width / 2, layout.width / 2])
+          for (const y of [-layout.height / 2, layout.height / 2])
+            corners.push(
+              worldPoint(pose.x + x * pose.scale, pose.y + y * pose.scale),
+            );
+      }
+      return corners;
+    },
+    [currentSurfaceId, companionSurfaceId],
+  );
+
+  const paintView = useCallback(
+    (value: SpaceView) => {
+      const poses = resolveViewPapers(value);
+      const camera = constrainCameraPose(
+        cameraForView(value),
+        livePose.current,
+        { safetyCorners: paperCorners(poses) },
+      );
+      liveView.current = value.kind === "free" ? { ...value, camera } : value;
+      livePose.current = camera;
+      targetPose.current = camera;
+      paperTargets.current = poses;
+      writePaperMotion(poses);
+      if (worldRef.current)
+        worldRef.current.style.transform = cameraTransform(camera);
+      if (zoomInput.current)
+        zoomInput.current.value = String(Math.round(camera.zoom * 100));
+      setDraftKind(value.kind);
+      setCameraMoving(true);
+      renderCachedBeams();
+    },
+    [
+      paperCorners,
+      renderCachedBeams,
+      resolveViewPapers,
+      setCameraMoving,
+      writePaperMotion,
+    ],
+  );
+
+  useLayoutEffect(() => {
+    interaction.configure({
+      context: () => ({
+        generation: presentation.id,
+        view,
+        viewport: viewportSize.current ?? sceneSize,
+        offset: sceneGeometry.current.viewportOffset,
+        element: viewportRef.current,
+      }),
+      enterFree: () => {
+        if (liveView.current.kind === "free")
+          return { ...liveView.current, camera: livePose.current };
+        const next: Extract<SpaceView, { kind: "free" }> = {
+          kind: "free",
+          camera: livePose.current,
+          placements: new Map(),
+        };
+        const nextPapers = resolveViewPapers(next);
+        const visibleId =
+          view.kind === "reading"
+            ? (view.exposedSurfaceId ?? current?.surfaceId)
+            : current?.surfaceId;
+        const before = visibleId
+          ? paperMotionPose.current.get(visibleId)
+          : null;
+        const after = visibleId ? nextPapers.get(visibleId) : null;
+        let camera =
+          before && after
+            ? compensateCameraForPaperReflow(
+                livePose.current,
+                worldPoint(before.x, before.y),
+                worldPoint(after.x, after.y),
+              )
+            : livePose.current;
+        if (before && after && before.scale > 0 && before.scale !== 1) {
+          camera = {
+            ...camera,
+            x: after.x + (livePose.current.x - before.x) / before.scale,
+            y: after.y + (livePose.current.y - before.y) / before.scale,
+            zoom: livePose.current.zoom * before.scale,
+          };
+        }
+        return {
+          ...next,
+          camera: constrainCameraPose(camera, livePose.current, {
+            safetyCorners: paperCorners(nextPapers),
+          }),
+        };
+      },
+      center: (value, id) => {
+        const pose = resolveViewPapers(value).get(id);
+        return worldPoint(pose?.x ?? 0, pose?.y ?? 0);
+      },
+      corners: (value) => paperCorners(resolveViewPapers(value)),
+      stopPresentation: cancelPresentationClock,
+      paint: paintView,
+      checkpoint: onViewCheckpoint,
+      settled: () => {
+        setDraftKind(null);
+        settleCameraMotion();
+      },
+    });
+  });
+
+  useLayoutEffect(() => {
+    interaction.synchronize();
+  }, [interaction, presentation.id, sceneSize.width, sceneSize.height]);
 
   const startPresentationClock = useCallback(
     (pending: {
@@ -1572,8 +1679,11 @@ export function SpatialScene({
         const finalScrollTargets = new Map(
           activePresentationScrollTargets.current,
         );
-        if (!cameraGestureActive.current) livePose.current = pending.camera;
-        setCameraDisplaced(!poseIsHome(livePose.current));
+        livePose.current = constrainCameraPose(
+          pending.camera,
+          livePose.current,
+          { safetyCorners: paperCorners(pending.paper) },
+        );
         writePaperMotion(pending.paper);
         if (worldRef.current)
           worldRef.current.style.transform = cameraTransform(livePose.current);
@@ -1597,7 +1707,7 @@ export function SpatialScene({
         for (const [id, retained] of retainedSurfaceMap.current) {
           if (!retained.departing) continue;
           retainedSurfaceMap.current.delete(id);
-          surfaceLayouts.current.delete(id);
+          sceneGeometry.current.layouts.delete(id);
           removed = true;
         }
         if (removed) setRetainedSurfaceVersion((version) => version + 1);
@@ -1616,12 +1726,12 @@ export function SpatialScene({
         if (generation !== presentationGeneration.current) return;
         const amount = clamp((now - started) / pending.duration, 0, 1);
         const eased = easeAttention(amount);
-        const camera = cameraGestureActive.current
-          ? livePose.current
-          : interpolate(fromCamera, pending.camera, eased);
+        const requestedCamera = interpolate(fromCamera, pending.camera, eased);
         const paper = interpolatePaperMotion(fromPaper, pending.paper, eased);
+        const camera = constrainCameraPose(requestedCamera, livePose.current, {
+          safetyCorners: paperCorners(paper),
+        });
         livePose.current = camera;
-        setCameraDisplaced(!poseIsHome(camera));
         writePaperMotion(paper);
         if (worldRef.current)
           worldRef.current.style.transform = cameraTransform(camera);
@@ -1651,11 +1761,11 @@ export function SpatialScene({
     },
     [
       beginCameraMotion,
+      paperCorners,
       presentation.id,
       reducedMotion,
       renderCachedBeams,
       settleCameraMotion,
-      setCameraDisplaced,
       writePaperMotion,
     ],
   );
@@ -1667,7 +1777,7 @@ export function SpatialScene({
       scrollTargets?: ReadonlyMap<SurfaceInstanceId, number>,
       duration = 400,
     ) => {
-      if (cameraTarget) cameraGestureActive.current = false;
+      if (interaction.active) return;
       if (!presentationPending.current) {
         const continuedScroll = new Map(
           activePresentationScrollTargets.current,
@@ -1694,33 +1804,8 @@ export function SpatialScene({
         if (pending) startPresentationClock(pending);
       });
     },
-    [cancelPresentationClock, startPresentationClock],
+    [cancelPresentationClock, startPresentationClock, interaction],
   );
-
-  const animateTo = useCallback(
-    (next: Pose, duration = 400) => {
-      const target = clampPose(next);
-      targetPose.current = target;
-      requestPresentation(target, undefined, undefined, duration);
-    },
-    [requestPresentation],
-  );
-
-  const checkpoint = useCallback(() => {
-    const settled = clampPose(livePose.current);
-    targetPose.current = settled;
-    settleCameraMotion();
-    onCameraCheckpoint(settled);
-  }, [onCameraCheckpoint, settleCameraMotion]);
-
-  const scheduleCheckpoint = useCallback(() => {
-    if (wheelCheckpoint.current !== null)
-      window.clearTimeout(wheelCheckpoint.current);
-    wheelCheckpoint.current = window.setTimeout(() => {
-      wheelCheckpoint.current = null;
-      checkpoint();
-    }, 100);
-  }, [checkpoint]);
 
   const measureBeams = useCallback(
     (layoutPass = true) => {
@@ -1741,63 +1826,28 @@ export function SpatialScene({
         right: viewport.width,
         bottom: viewport.height,
       };
-      const previousWorldTransform = worldNode?.style.transform ?? "";
-      const previousPaperTransforms = layoutPass
-        ? [...surfaceNodes.current.values()].map(
-            (node) => [node, node.style.transform] as const,
+      const restoreLayout = layoutPass
+        ? sceneGeometry.current.measureLayout(
+            viewport,
+            worldNode,
+            surfaceNodes.current,
+            edgeNodes.current,
           )
-        : [];
-      const resolveRanges = layoutPass && rangeGeometryDirty.current;
-      let measurementCount = 0;
+        : () => {};
+      const previousMeasurements = sceneGeometry.current.rangeMeasurements;
       try {
-        // A single neutral layout pass makes range coordinates local to the
-        // reading plane.  Camera-only frames consume the resulting cache.
-        if (layoutPass) {
-          if (worldNode) worldNode.style.transform = "none";
-          for (const node of surfaceNodes.current.values())
-            node.style.transform = "none";
+        if (layoutPass)
           viewportSize.current = {
             width: viewport.width,
             height: viewport.height,
           };
-          for (const [id, node] of surfaceNodes.current) {
-            const scroll = node.querySelector<HTMLElement>(
-              "[data-document-scroll]",
-            );
-            if (!scroll) continue;
-            const rect = node.getBoundingClientRect();
-            const body = scroll.getBoundingClientRect();
-            if (!rect.width || !rect.height) continue;
-            surfaceLayouts.current.set(id, {
-              width: rect.width,
-              height: rect.height,
-              scroll: {
-                left: body.left - rect.left,
-                top: body.top - rect.top,
-                right: body.right - rect.left,
-                bottom: body.bottom - rect.top,
-              },
-              maxScroll: Math.max(0, scroll.scrollHeight - scroll.clientHeight),
-            });
-          }
-          edgeRects.current.clear();
-          for (const [key, node] of edgeNodes.current) {
-            const rect = node.getBoundingClientRect();
-            edgeRects.current.set(key, {
-              left: rect.left - viewport.left,
-              top: rect.top - viewport.top,
-              right: rect.right - viewport.left,
-              bottom: rect.bottom - viewport.top,
-            });
-          }
-        }
         const surfaceEntries = [
           inputRef.current.current,
           inputRef.current.companion,
         ].filter((surface): surface is ReadingSurface => Boolean(surface));
         const paperBySurface = new Map<SurfaceInstanceId, Rect>();
         for (const surface of surfaceEntries) {
-          const layout = surfaceLayouts.current.get(surface.surfaceId);
+          const layout = sceneGeometry.current.layouts.get(surface.surfaceId);
           const pose = paperMotionPose.current.get(surface.surfaceId);
           if (layout && pose)
             paperBySurface.set(
@@ -1810,54 +1860,26 @@ export function SpatialScene({
           surface: ReadingSurface,
           anchor: Anchor,
         ): CachedAnchorGeometry | undefined => {
-          const key = [
-            rangeGeometryEpoch.current,
+          return sceneGeometry.current.resolveAnchor(
             surface.surfaceId,
-            anchor.documentId,
-            anchor.revisionId,
-            anchor.start,
-            anchor.end,
-          ].join(":");
-          let cached = rangeGeometryCache.current.get(key);
-          const handle = passageHandles.current.get(surface.surfaceId);
-          const scroll = surfaceNodes.current
-            .get(surface.surfaceId)
-            ?.querySelector<HTMLElement>("[data-document-scroll]");
-          // Hidden mobile papers retain their last measurable content coordinates.
-          if (
-            layoutPass &&
-            handle &&
-            scroll &&
-            scroll.clientWidth &&
-            (resolveRanges || !cached)
-          ) {
-            const rect = scroll.getBoundingClientRect();
-            const resolved = handle.resolveAnchor(anchor);
-            measurementCount += resolved.ranges.length;
-            cached = {
-              coverage: resolved.coverage,
-              missing: resolved.missing,
-              fragments: resolved.ranges.flatMap((range) =>
-                Array.from(range.getClientRects())
-                  .filter((part) => part.width > 0 && part.height > 0)
-                  .map((part) => ({
-                    left: part.left - rect.left + scroll.scrollLeft,
-                    top: part.top - rect.top + scroll.scrollTop,
-                    right: part.right - rect.left + scroll.scrollLeft,
-                    bottom: part.bottom - rect.top + scroll.scrollTop,
-                  })),
-              ),
-            };
-            rangeGeometryCache.current.set(key, cached);
-          }
-          return cached;
+            anchor,
+            passageHandles.current.get(surface.surfaceId),
+            surfaceNodes.current
+              .get(surface.surfaceId)
+              ?.querySelector<HTMLElement>("[data-document-scroll]"),
+            layoutPass,
+          );
         };
         const alignmentTargets = new Map<SurfaceInstanceId, number>();
         let correctedPaperTargets: PaperMotion | undefined;
-        if (layoutPass && sceneLayout.framing.kind === "paired") {
+        if (
+          layoutPass &&
+          liveView.current.kind === "reading" &&
+          sceneLayout.framing.kind === "paired"
+        ) {
           const aligned = alignPaperReadingLines(
             paperTargets.current,
-            surfaceLayouts.current,
+            sceneGeometry.current.layouts,
             inputRef.current.current?.surfaceId,
             sceneLayout.paperMaxHeight,
           );
@@ -1866,7 +1888,30 @@ export function SpatialScene({
             correctedPaperTargets = aligned;
           }
         }
-        if (layoutPass && presentation.kind === "align-ranges") {
+        if (
+          layoutPass &&
+          !interaction.active &&
+          liveView.current.kind === "free"
+        ) {
+          const resolved = resolveViewPapers(liveView.current);
+          if (
+            [...resolved].some(([id, pose]) => {
+              const previous = paperTargets.current.get(id);
+              return (
+                !previous || previous.x !== pose.x || previous.y !== pose.y
+              );
+            })
+          ) {
+            paperTargets.current = resolved;
+            correctedPaperTargets = resolved;
+          }
+        }
+        if (
+          layoutPass &&
+          !interaction.active &&
+          liveView.current.kind === "reading" &&
+          presentation.kind === "align-ranges"
+        ) {
           for (const surface of surfaceEntries) {
             if (
               !presentation.surfaces.includes(surface.surfaceId) ||
@@ -1874,7 +1919,7 @@ export function SpatialScene({
               interruptedScroll.current.has(surface.surfaceId)
             )
               continue;
-            const layout = surfaceLayouts.current.get(surface.surfaceId);
+            const layout = sceneGeometry.current.layouts.get(surface.surfaceId);
             const cached = cachedAnchor(surface, {
               ...surface.position.focus,
               documentId: surface.position.documentId,
@@ -1939,7 +1984,7 @@ export function SpatialScene({
             "[data-document-scroll]",
           );
           const layout =
-            surface && surfaceLayouts.current.get(surface.surfaceId);
+            surface && sceneGeometry.current.layouts.get(surface.surfaceId);
           const pose =
             surface && paperMotionPose.current.get(surface.surfaceId);
           const scrollLocal =
@@ -1951,8 +1996,9 @@ export function SpatialScene({
                   bottom: paper.top + layout.scroll.bottom * pose.scale,
                 }
               : viewportLocal;
-          const clip =
-            intersectRects(viewportLocal, scrollLocal) ?? viewportLocal;
+          // Clip content to its paper before projection. A paper outside the
+          // neutral viewport can still be visible through the live camera.
+          const clip = scrollLocal;
           const proxy = proxyAtPaperEdge(paper, clip, edge);
           const handle = surface
             ? passageHandles.current.get(surface.surfaceId)
@@ -2003,7 +2049,8 @@ export function SpatialScene({
                 candidate.dataset.documentId === anchor.documentId &&
                 candidate.dataset.revisionId === anchor.revisionId,
             );
-            const edgePaper = edgeEntry && edgeRects.current.get(edgeEntry[0]);
+            const edgePaper =
+              edgeEntry && sceneGeometry.current.edgeRects.get(edgeEntry[0]);
             if (edgePaper) {
               geometry = buildRangeGeometry({
                 coverage: "unmounted",
@@ -2163,9 +2210,9 @@ export function SpatialScene({
           const toDoc = labelFor(connection.to);
           measured.push({
             id: connection.id,
+            relation: connection.relation,
             label: connection.label || RELATION_LABELS[connection.relation],
             endpointLabel: endpointLabel(fromDoc, toDoc),
-            color: RELATION_COLORS[connection.relation],
             visibility: `${from.geometry.visibility}:${to.geometry.visibility}`,
             worldPolygon,
             worldRangeContours: [...from.worldContours, ...to.worldContours],
@@ -2180,7 +2227,7 @@ export function SpatialScene({
               : { kind: "bridge" },
           });
         }
-        if (layoutPass) rangeGeometryDirty.current = false;
+        if (layoutPass) sceneGeometry.current.dirty = false;
         beamWorldCache.current = measured;
         const previous = beamDescriptors.current;
         const descriptionsChanged =
@@ -2192,11 +2239,10 @@ export function SpatialScene({
               old.id !== beam.id ||
               old.label !== beam.label ||
               old.endpointLabel !== beam.endpointLabel ||
-              old.color !== beam.color ||
+              old.relation !== beam.relation ||
               old.visibility !== beam.visibility ||
               old.selected !== beam.selected ||
               old.exact !== beam.exact ||
-              old.labelGap !== beam.labelGap ||
               old.origin.kind !== beam.origin.kind ||
               (old.origin.kind === "surface" &&
                 beam.origin.kind === "surface" &&
@@ -2214,7 +2260,8 @@ export function SpatialScene({
           (layoutPass ? 1 : 0);
         const measurements =
           Number(viewportNode.dataset.rangeMeasurements ?? "0") +
-          measurementCount;
+          sceneGeometry.current.rangeMeasurements -
+          previousMeasurements;
         viewportNode.dataset.rangeMeasureBatches = String(batches);
         viewportNode.dataset.rangeMeasurements = String(measurements);
         viewportNode.dataset.rangeSurfaceCount = String(measured.length);
@@ -2241,13 +2288,17 @@ export function SpatialScene({
             400,
           );
       } finally {
-        if (layoutPass && worldNode)
-          worldNode.style.transform = previousWorldTransform;
-        for (const [node, transform] of previousPaperTransforms)
-          node.style.transform = transform;
+        restoreLayout();
       }
     },
-    [narrow, presentation, requestPresentation, sceneLayout],
+    [
+      narrow,
+      presentation,
+      requestPresentation,
+      sceneLayout,
+      interaction,
+      resolveViewPapers,
+    ],
   );
 
   useLayoutEffect(() => {
@@ -2293,9 +2344,7 @@ export function SpatialScene({
   );
 
   const invalidateGeometry = useCallback(() => {
-    rangeGeometryCache.current.clear();
-    rangeGeometryDirty.current = true;
-    rangeGeometryEpoch.current += 1;
+    sceneGeometry.current.invalidate();
     scheduleMeasure();
   }, [scheduleMeasure]);
 
@@ -2315,12 +2364,7 @@ export function SpatialScene({
       companion?.position.revisionId ?? "",
       connections.map((connection) => connection.id).join(","),
     ].join("|");
-    if (rangeContextKey.current !== nextRangeContextKey) {
-      rangeContextKey.current = nextRangeContextKey;
-      rangeGeometryCache.current.clear();
-      rangeGeometryDirty.current = true;
-      rangeGeometryEpoch.current += 1;
-    }
+    sceneGeometry.current.setContext(nextRangeContextKey);
     inputRef.current = {
       current,
       companion,
@@ -2331,7 +2375,7 @@ export function SpatialScene({
       documents,
       neighborhood,
     };
-    if (rangeGeometryDirty.current) scheduleMeasure();
+    if (sceneGeometry.current.dirty) scheduleMeasure();
     else renderCachedBeams();
   }, [
     companion,
@@ -2349,14 +2393,10 @@ export function SpatialScene({
   ]);
 
   useEffect(() => {
-    rangeGeometryCache.current.clear();
-    rangeGeometryDirty.current = true;
-    rangeGeometryEpoch.current += 1;
     const newPresentation = handledPresentationId.current !== presentation.id;
     if (newPresentation) {
       handledPresentationId.current = presentation.id;
       interruptedScroll.current.clear();
-      cameraGestureActive.current = false;
     }
     if (newPresentation && presentation.kind === "restore") {
       const restoreTargets = new Map<SurfaceInstanceId, number>();
@@ -2377,12 +2417,6 @@ export function SpatialScene({
     scheduleMeasure,
   ]);
 
-  useEffect(() => {
-    targetPose.current = clampPose(camera);
-    if (!samePose(livePose.current, targetPose.current))
-      animateTo(targetPose.current);
-  }, [animateTo, camera]);
-
   useLayoutEffect(() => {
     if (worldRef.current)
       worldRef.current.style.transform = cameraTransform(livePose.current);
@@ -2391,7 +2425,7 @@ export function SpatialScene({
 
   useLayoutEffect(() => {
     renderCachedBeams();
-  }, [beams, mobileSurfaceId, narrow, renderCachedBeams]);
+  }, [beams, viewKind, narrow, renderCachedBeams]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -2424,31 +2458,28 @@ export function SpatialScene({
       settleCameraMotion();
       if (measureFrame.current !== null)
         window.cancelAnimationFrame(measureFrame.current);
-      if (gestureFrame.current !== null)
-        window.cancelAnimationFrame(gestureFrame.current);
-      if (wheelFrame.current !== null)
-        window.cancelAnimationFrame(wheelFrame.current);
-      if (wheelCheckpoint.current !== null)
-        window.clearTimeout(wheelCheckpoint.current);
+      interaction.cancel();
       if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
       if (previewTimer.current !== null)
         window.clearTimeout(previewTimer.current);
       if (previewCloseTimer.current !== null)
         window.clearTimeout(previewCloseTimer.current);
     };
-  }, [cancelPresentationClock, settleCameraMotion]);
+  }, [cancelPresentationClock, settleCameraMotion, interaction]);
 
   const resetCamera = useCallback(() => {
-    const home = { x: 0, y: 0, yaw: 0, pitch: 0, zoom: 1 };
-    setCameraDisplaced(false);
-    animateTo(home);
-    onCameraCheckpoint(home);
-  }, [animateTo, onCameraCheckpoint]);
+    interaction.cancel();
+    onReturnToReading();
+  }, [interaction, onReturnToReading]);
 
   useImperativeHandle(
     controllerRef,
-    () => ({ resetCamera, measure: scheduleMeasure }),
-    [resetCamera, scheduleMeasure],
+    () => ({
+      resetCamera,
+      measure: invalidateGeometry,
+      cancelInput: () => interaction.cancel(),
+    }),
+    [resetCamera, invalidateGeometry, interaction],
   );
 
   const activateConnection = useCallback(
@@ -2456,10 +2487,11 @@ export function SpatialScene({
       connectionId: ConnectionId,
       origin: ConnectionActivation["origin"] = { kind: "bridge" },
     ) => {
+      interaction.cancel();
       setRelationMenu(null);
       onFollow({ connectionId, origin });
     },
-    [onFollow, setRelationMenu],
+    [onFollow, setRelationMenu, interaction],
   );
 
   const closePreview = useCallback(() => {
@@ -2548,8 +2580,10 @@ export function SpatialScene({
         candidates
           .map((beam) => ({
             id: beam.id,
-            polygon: beam.worldPolygon.map((worldPoint) =>
-              worldToScreen(worldPoint, livePose.current, view),
+            polygon: projectScenePoints(
+              beam.worldPolygon,
+              livePose.current,
+              view,
             ),
           }))
           .filter((candidate) => candidate.polygon.length > 2),
@@ -2620,6 +2654,7 @@ export function SpatialScene({
 
   const activateEdge = useCallback(
     (item: EdgeItem) => {
+      interaction.cancel();
       closeFan();
       const activation = resolveEdgeActivation(
         item,
@@ -2639,6 +2674,7 @@ export function SpatialScene({
       current?.position.revisionId,
       onFollow,
       onReadBeside,
+      interaction,
     ],
   );
 
@@ -2715,6 +2751,7 @@ export function SpatialScene({
       const active = Boolean(selection && !selection.isCollapsed);
       setSelectionActive(active);
       if (active) {
+        interaction.cancel();
         if (hoverTimer.current !== null) {
           window.clearTimeout(hoverTimer.current);
           hoverTimer.current = null;
@@ -2725,307 +2762,11 @@ export function SpatialScene({
     document.addEventListener("selectionchange", onSelectionChange);
     return () =>
       document.removeEventListener("selectionchange", onSelectionChange);
-  }, []);
-
-  const applyPan = useCallback(
-    (dx: number, dy: number) => {
-      const viewport = viewportSize.current;
-      if (!viewport) return;
-      cancelPoseAnimation();
-      beginCameraMotion();
-      const center = { x: viewport.width / 2, y: viewport.height / 2 };
-      const world = screenToWorld(center, livePose.current, viewport);
-      writePose(
-        poseForScreenAnchor(
-          world,
-          { x: center.x + dx, y: center.y + dy },
-          livePose.current,
-          viewport,
-        ),
-      );
-    },
-    [beginCameraMotion, cancelPoseAnimation, writePose],
-  );
-
-  const applyZoom = useCallback(
-    (delta: number, anchor: Point | null) => {
-      const viewport = viewportSize.current;
-      if (!viewport) return;
-      cancelPoseAnimation();
-      beginCameraMotion();
-      const before = livePose.current;
-      const nextZoom = clamp(
-        before.zoom * Math.exp(-delta * 0.001),
-        CAMERA_LIMITS.zoomMin,
-        CAMERA_LIMITS.zoomMax,
-      );
-      const point = anchor ?? { x: viewport.width / 2, y: viewport.height / 2 };
-      const world = screenToWorld(point, before, viewport);
-      const next = poseForScreenAnchor(
-        world,
-        point,
-        {
-          ...before,
-          zoom: nextZoom,
-        },
-        viewport,
-      );
-      writePose(next);
-    },
-    [beginCameraMotion, cancelPoseAnimation, writePose],
-  );
-
-  const flushGesture = useCallback(() => {
-    gestureFrame.current = null;
-    const delta = gestureDelta.current;
-    gestureDelta.current = {
-      panX: 0,
-      panY: 0,
-      orbitX: 0,
-      orbitY: 0,
-      zoom: 0,
-      anchor: null,
-    };
-    if (
-      delta.panX === 0 &&
-      delta.panY === 0 &&
-      delta.orbitX === 0 &&
-      delta.orbitY === 0 &&
-      delta.zoom === 0
-    )
-      return;
-    beginCameraMotion();
-    const viewport = viewportSize.current;
-    let next = { ...livePose.current };
-    if (delta.panX !== 0 || delta.panY !== 0) {
-      if (viewport) {
-        const center = { x: viewport.width / 2, y: viewport.height / 2 };
-        const world = screenToWorld(center, next, viewport);
-        next = poseForScreenAnchor(
-          world,
-          { x: center.x + delta.panX, y: center.y + delta.panY },
-          next,
-          viewport,
-        );
-      }
-    }
-    if (delta.orbitX !== 0 || delta.orbitY !== 0) {
-      next = {
-        ...next,
-        yaw: next.yaw + delta.orbitX * 0.18,
-        pitch: next.pitch + delta.orbitY * 0.12,
-      };
-    }
-    if (delta.zoom !== 0 && viewport) {
-      const anchor = delta.anchor ?? {
-        x: viewport.width / 2,
-        y: viewport.height / 2,
-      };
-      const nextZoom = clamp(
-        next.zoom * Math.exp(-delta.zoom * 0.001),
-        CAMERA_LIMITS.zoomMin,
-        CAMERA_LIMITS.zoomMax,
-      );
-      const world = screenToWorld(anchor, next, viewport);
-      next = poseForScreenAnchor(
-        world,
-        anchor,
-        { ...next, zoom: nextZoom },
-        viewport,
-      );
-    }
-    writePose(next);
-  }, [beginCameraMotion, writePose]);
-
-  const scheduleGesture = useCallback(() => {
-    if (gestureFrame.current !== null) return;
-    gestureFrame.current = window.requestAnimationFrame(flushGesture);
-  }, [flushGesture]);
-
-  const onPointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (narrow) return;
-      const target = event.target as HTMLElement;
-      const role =
-        target.closest<HTMLElement>("[data-hit-role]")?.dataset.hitRole;
-      const explicitPan = spacePressed.current && !isControlTarget(target);
-      if (!explicitPan && role && role !== "stage") {
-        if (role === "text") {
-          cancelPoseAnimation();
-          settleCameraMotion();
-        }
-        return;
-      }
-      if (event.button !== 0 && event.pointerType !== "touch") return;
-      if (explicitPan) event.preventDefault();
-      pointers.current.set(event.pointerId, {
-        x: event.clientX,
-        y: event.clientY,
-        pointerType: event.pointerType,
-      });
-      if (pointers.current.size >= 2 && event.pointerType === "touch") {
-        cancelPoseAnimation();
-        beginCameraMotion();
-        drag.current = { kind: "pinch", pointerId: event.pointerId };
-        const points = [...pointers.current.values()];
-        const [first, second] = points;
-        const viewport = viewportRef.current?.getBoundingClientRect();
-        pinch.current = {
-          distance: Math.max(
-            1,
-            Math.hypot(first.x - second.x, first.y - second.y),
-          ),
-          center: viewport
-            ? {
-                x: (first.x + second.x) / 2 - viewport.left,
-                y: (first.y + second.y) / 2 - viewport.top,
-              }
-            : { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
-        };
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        return;
-      }
-      drag.current = {
-        kind: "pending",
-        pointerId: event.pointerId,
-        pointerType: event.pointerType,
-        x: event.clientX,
-        y: event.clientY,
-        startX: event.clientX,
-        startY: event.clientY,
-        spaceOverride: explicitPan,
-        // Capture the modifier at pointerdown.  Once the movement crosses
-        // the threshold, changing Shift must not switch an in-flight pan to
-        // orbit (or vice versa).
-        orbitRequested: event.shiftKey && !explicitPan,
-      };
-    },
-    [beginCameraMotion, cancelPoseAnimation, narrow, settleCameraMotion],
-  );
-
-  const onPointerMove = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const point = pointers.current.get(event.pointerId);
-      if (point) {
-        point.x = event.clientX;
-        point.y = event.clientY;
-      }
-      const active = drag.current;
-      if (
-        !active ||
-        (active.kind !== "pinch" && active.pointerId !== event.pointerId)
-      )
-        return;
-      if (active.kind === "pinch") {
-        const points = [...pointers.current.values()];
-        if (points.length < 2 || !pinch.current) return;
-        const [a, b] = points;
-        const distance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
-        const viewport = viewportRef.current?.getBoundingClientRect();
-        const center = viewport
-          ? {
-              x: (a.x + b.x) / 2 - viewport.left,
-              y: (a.y + b.y) / 2 - viewport.top,
-            }
-          : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-        gestureDelta.current.panX += center.x - pinch.current.center.x;
-        gestureDelta.current.panY += center.y - pinch.current.center.y;
-        gestureDelta.current.zoom += (pinch.current.distance - distance) * 2;
-        gestureDelta.current.anchor = center;
-        pinch.current = { distance, center };
-        scheduleGesture();
-        return;
-      }
-      const dx = event.clientX - active.x;
-      const dy = event.clientY - active.y;
-      const moved = Math.hypot(
-        event.clientX - active.startX,
-        event.clientY - active.startY,
-      );
-      const threshold = active.pointerType === "touch" ? 8 : 4;
-      if (active.kind === "pending") {
-        if (moved < threshold) return;
-        active.kind = active.orbitRequested ? "orbit" : "pan";
-        cancelPoseAnimation();
-        beginCameraMotion();
-        event.preventDefault();
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-      }
-      event.preventDefault();
-      active.x = event.clientX;
-      active.y = event.clientY;
-      if (active.kind === "orbit") {
-        gestureDelta.current.orbitX += dx;
-        gestureDelta.current.orbitY += dy;
-      } else {
-        gestureDelta.current.panX += dx;
-        gestureDelta.current.panY += dy;
-      }
-      scheduleGesture();
-    },
-    [beginCameraMotion, cancelPoseAnimation, scheduleGesture],
-  );
-
-  const finishPointer = useCallback(
-    (event?: React.PointerEvent<HTMLDivElement>) => {
-      if (event) pointers.current.delete(event.pointerId);
-      const active = drag.current;
-      if (active?.kind === "pending") {
-        drag.current = null;
-        return;
-      }
-      if (pointers.current.size < 2) drag.current = null;
-      if (pointers.current.size < 2) pinch.current = null;
-      if (active) {
-        if (gestureFrame.current !== null) {
-          window.cancelAnimationFrame(gestureFrame.current);
-          flushGesture();
-        }
-        checkpoint();
-        if (event) event.currentTarget.releasePointerCapture?.(event.pointerId);
-      }
-    },
-    [checkpoint, flushGesture],
-  );
-
-  const onWheel = useCallback(
-    (event: React.WheelEvent<HTMLDivElement>) => {
-      if (narrow) return;
-      const target = event.target as HTMLElement;
-      const role =
-        target.closest<HTMLElement>("[data-hit-role]")?.dataset.hitRole;
-      const inText = Boolean(target.closest("[data-document-scroll]"));
-      if (inText || (role && role !== "stage")) return;
-      event.preventDefault();
-      wheelAccum.current.x += event.shiftKey ? event.deltaY : event.deltaX;
-      wheelAccum.current.y += event.shiftKey ? 0 : event.deltaY;
-      if (event.ctrlKey || event.metaKey)
-        wheelAccum.current.zoom += event.deltaY;
-      wheelAccum.current.anchor = {
-        x: event.nativeEvent.offsetX,
-        y: event.nativeEvent.offsetY,
-      };
-      if (wheelFrame.current !== null) return;
-      wheelFrame.current = window.requestAnimationFrame(() => {
-        wheelFrame.current = null;
-        const pendingWheel = wheelAccum.current;
-        wheelAccum.current = {
-          x: 0,
-          y: 0,
-          zoom: 0,
-          anchor: pendingWheel.anchor,
-        };
-        if (pendingWheel.zoom !== 0)
-          applyZoom(pendingWheel.zoom, pendingWheel.anchor);
-        else applyPan(-pendingWheel.x, -pendingWheel.y);
-        scheduleCheckpoint();
-      });
-    },
-    [applyPan, applyZoom, scheduleCheckpoint, narrow],
-  );
+  }, [interaction]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (interaction.keyDown(event.nativeEvent)) return;
       const target = event.target as HTMLElement;
       if (event.key === "Escape" && relationMenu) {
         event.preventDefault();
@@ -3038,107 +2779,56 @@ export function SpatialScene({
         closeFan();
         return;
       }
-      const selection = window.getSelection?.();
-      const hasSelection = Boolean(selection && !selection.isCollapsed);
-      const inReadingSurface = Boolean(
-        target.closest("[data-document-scroll]"),
-      );
+      const selected = window.getSelection();
+      if (selected && !selected.isCollapsed) return;
       if (
         event.altKey &&
         !event.nativeEvent.isComposing &&
-        !hasSelection &&
-        inReadingSurface &&
+        target.closest("[data-document-scroll]") &&
         (event.key === "ArrowUp" || event.key === "ArrowDown")
       ) {
         event.preventDefault();
         onStepConnection(event.key === "ArrowUp" ? -1 : 1);
         return;
       }
-      if (narrow || isControlTarget(target)) return;
-      if (event.code === "Space") {
-        spacePressed.current = true;
-        if (!target.closest("[data-document-scroll]")) event.preventDefault();
-        return;
-      }
-      if (target.closest("[data-document-scroll]")) return;
+      if (target !== viewportRef.current || isControlTarget(target)) return;
       if (event.key === "0") {
         event.preventDefault();
         resetCamera();
       } else if (event.key === "+" || event.key === "=") {
         event.preventDefault();
-        applyZoom(-80, null);
-        checkpoint();
+        interaction.zoom(livePose.current.zoom * 1.1);
       } else if (event.key === "-" || event.key === "_") {
         event.preventDefault();
-        applyZoom(80, null);
-        checkpoint();
-      } else if (event.shiftKey && event.key.startsWith("Arrow")) {
-        event.preventDefault();
-        const delta = {
-          ArrowLeft: { x: -36, y: 0 },
-          ArrowRight: { x: 36, y: 0 },
-          ArrowUp: { x: 0, y: -36 },
-          ArrowDown: { x: 0, y: 36 },
-        }[event.key];
-        if (delta) {
-          applyPan(delta.x, delta.y);
-          checkpoint();
-        }
+        interaction.zoom(livePose.current.zoom / 1.1);
       }
     },
     [
-      applyPan,
-      applyZoom,
-      checkpoint,
-      resetCamera,
-      narrow,
+      interaction,
+      relationMenu,
       fanOpen,
       closeFan,
       onStepConnection,
-      relationMenu,
-      setRelationMenu,
+      resetCamera,
     ],
   );
 
-  const onKeyUp = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.code === "Space") spacePressed.current = false;
-  }, []);
-
   useEffect(() => {
-    const releaseInput = () => {
-      spacePressed.current = false;
-      drag.current = null;
-      pinch.current = null;
-      const viewport = viewportRef.current;
-      for (const id of pointers.current.keys())
-        if (viewport?.hasPointerCapture(id)) viewport.releasePointerCapture(id);
-      pointers.current.clear();
-      if (gestureFrame.current !== null) {
-        window.cancelAnimationFrame(gestureFrame.current);
-        flushGesture();
-      }
-      if (wheelFrame.current !== null) {
-        window.cancelAnimationFrame(wheelFrame.current);
-        wheelFrame.current = null;
-      }
-      wheelAccum.current = { x: 0, y: 0, zoom: 0, anchor: { x: 0, y: 0 } };
-      if (wheelCheckpoint.current !== null) {
-        window.clearTimeout(wheelCheckpoint.current);
-        wheelCheckpoint.current = null;
-      }
-      cancelPoseAnimation();
-      checkpoint();
+    const viewport = viewportRef.current;
+    const wheel = (event: WheelEvent) => interaction.wheel(event);
+    const cancel = () => interaction.cancel();
+    const visibility = () => {
+      if (document.hidden) cancel();
     };
-    const onVisibility = () => {
-      if (document.hidden) releaseInput();
-    };
-    window.addEventListener("blur", releaseInput);
-    document.addEventListener("visibilitychange", onVisibility);
+    viewport?.addEventListener("wheel", wheel, { passive: false });
+    window.addEventListener("blur", cancel);
+    document.addEventListener("visibilitychange", visibility);
     return () => {
-      window.removeEventListener("blur", releaseInput);
-      document.removeEventListener("visibilitychange", onVisibility);
+      viewport?.removeEventListener("wheel", wheel);
+      window.removeEventListener("blur", cancel);
+      document.removeEventListener("visibilitychange", visibility);
     };
-  }, [cancelPoseAnimation, checkpoint, flushGesture]);
+  }, [interaction]);
 
   const individualEdges: readonly EdgeItem[] = [];
   const groupSlots = Math.max(
@@ -3153,11 +2843,13 @@ export function SpatialScene({
   );
 
   const visibleMobileSurfaceId =
-    mobileSurfaceId === current?.surfaceId ||
-    mobileSurfaceId === companion?.surfaceId
-      ? mobileSurfaceId
+    view.kind === "reading" &&
+    (view.exposedSurfaceId === current?.surfaceId ||
+      view.exposedSurfaceId === companion?.surfaceId)
+      ? view.exposedSurfaceId
       : (current?.surfaceId ?? companion?.surfaceId ?? null);
-  const recessed = sceneLayout.framing.kind === "recessed-companion";
+  const recessed =
+    viewKind === "reading" && sceneLayout.framing.kind === "recessed-companion";
   const showCurrentSurface =
     !!current && (!recessed || visibleMobileSurfaceId === current.surfaceId);
   const showCompanionSurface =
@@ -3197,7 +2889,7 @@ export function SpatialScene({
         ([, node]) =>
           node.dataset.documentId === record.surface.position.documentId,
       );
-      const edgeRect = edge && edgeRects.current.get(edge[0]);
+      const edgeRect = edge && sceneGeometry.current.edgeRects.get(edge[0]);
       const entry = edgeRect
         ? {
             x: (edgeRect.left + edgeRect.right - sceneSize.width) / 2,
@@ -3231,7 +2923,7 @@ export function SpatialScene({
     const oldest = departures.shift();
     if (oldest) {
       retainedSurfaceMap.current.delete(oldest.surface.surfaceId);
-      surfaceLayouts.current.delete(oldest.surface.surfaceId);
+      sceneGeometry.current.layouts.delete(oldest.surface.surfaceId);
     }
   }
   const retainedSurfaces = Array.from(retainedSurfaceMap.current.values()).map(
@@ -3246,65 +2938,88 @@ export function SpatialScene({
     }),
   );
   useLayoutEffect(() => {
-    const targets = new Map<SurfaceInstanceId, PaperPose>();
+    if (interaction.active) return;
+    const layoutKey = [
+      presentation.id,
+      current?.surfaceId,
+      companion?.surfaceId,
+      sceneSize.width,
+      sceneSize.height,
+    ].join(":");
+    if (
+      renderedLayoutKey.current === layoutKey &&
+      sameSpaceView(liveView.current, view)
+    )
+      return;
+    renderedLayoutKey.current = layoutKey;
+    liveView.current = view;
+    const targets = new Map(resolveViewPapers(view));
     for (const retained of retainedSurfaceMap.current.values()) {
-      const position = retained.departing
-        ? retained.peripheralPosition
-        : retained.role === "current"
-          ? sceneLayout.currentPosition
-          : sceneLayout.companionPosition;
-      targets.set(retained.surface.surfaceId, {
-        ...position,
-        scale: retained.departing ? 0.55 : 1,
-        opacity: retained.departing ? 0.16 : 1,
-      });
+      if (retained.departing)
+        targets.set(retained.surface.surfaceId, {
+          ...retained.peripheralPosition,
+          scale: 0.55,
+          opacity: 0.16,
+        });
     }
-    const aligned =
-      sceneLayout.framing.kind === "paired"
-        ? alignPaperReadingLines(
-            targets,
-            surfaceLayouts.current,
-            current?.surfaceId,
-            sceneLayout.paperMaxHeight,
-          )
-        : targets;
-    paperTargets.current = aligned;
+    paperTargets.current = targets;
+    const camera = constrainCameraPose(cameraForView(view), livePose.current, {
+      safetyCorners: paperCorners(targets),
+    });
+    targetPose.current = camera;
+    if (zoomInput.current)
+      zoomInput.current.value = String(Math.round(camera.zoom * 100));
     const initial = initialScrollTargets.current.size
       ? new Map(initialScrollTargets.current)
       : undefined;
     initialScrollTargets.current.clear();
-    requestPresentation(undefined, aligned, initial, 400);
+    requestPresentation(camera, targets, initial, 400);
   }, [
+    view,
     current?.surfaceId,
     companion?.surfaceId,
-    sceneLayout,
     sceneSize.width,
+    sceneSize.height,
+    resolveViewPapers,
+    paperCorners,
     requestPresentation,
+    interaction,
+    presentation.id,
   ]);
   /* eslint-enable react-hooks/refs, react-hooks/purity */
 
   const showOtherSurface = useCallback(() => {
     if (!current || !companion) return;
-    // The initial visible occurrence comes from the fallback above, not from
-    // mobileSurfaceId, which can still be null or belong to a previous pair.
-    setMobileSurfaceId(
-      visibleMobileSurfaceId === current.surfaceId
-        ? companion.surfaceId
-        : current.surfaceId,
-    );
-  }, [companion, current, setMobileSurfaceId, visibleMobileSurfaceId]);
+    interaction.cancel();
+    onViewCheckpoint({
+      generation: presentation.id,
+      view: readingView(
+        visibleMobileSurfaceId === current.surfaceId
+          ? companion.surfaceId
+          : current.surfaceId,
+      ),
+    });
+  }, [
+    companion,
+    current,
+    interaction,
+    onViewCheckpoint,
+    presentation.id,
+    visibleMobileSurfaceId,
+  ]);
 
   useLayoutEffect(() => {
-    if (!recessed || !mobileSurfaceId) return;
-    const visible = surfaceNodes.current.get(mobileSurfaceId);
-    visible
+    if (!recessed || !visibleMobileSurfaceId) return;
+    surfaceNodes.current
+      .get(visibleMobileSurfaceId)
       ?.querySelector<HTMLElement>("[data-document-scroll]")
       ?.focus({ preventScroll: true });
-  }, [mobileSurfaceId, recessed]);
+  }, [visibleMobileSurfaceId, recessed]);
 
   return (
     <section
       className={`spatial-scene ${selectionActive ? "selection-active" : ""}`}
+      data-space-view={viewKind}
       aria-label="连续文档空间"
       data-retained-surfaces={retainedSurfaceVersion}
     >
@@ -3313,14 +3028,23 @@ export function SpatialScene({
         className="spatial-scene-viewport"
         data-hit-role="stage"
         tabIndex={0}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={finishPointer}
-        onPointerCancel={finishPointer}
-        onLostPointerCapture={finishPointer}
-        onWheel={onWheel}
+        onPointerDown={(event) => interaction.pointerDown(event.nativeEvent)}
+        onPointerMove={(event) => interaction.pointerMove(event.nativeEvent)}
+        onPointerUp={(event) => interaction.pointerUp(event.nativeEvent)}
+        onPointerCancel={(event) =>
+          interaction.pointerCancel(event.nativeEvent)
+        }
+        onLostPointerCapture={(event) =>
+          interaction.pointerCancel(event.nativeEvent)
+        }
+        onKeyDownCapture={(event) => {
+          if (event.key === "Escape" && interaction.active) {
+            interaction.keyDown(event.nativeEvent);
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
         onKeyDown={onKeyDown}
-        onKeyUp={onKeyUp}
       >
         <div
           className="spatial-stage-input"
@@ -3353,8 +3077,14 @@ export function SpatialScene({
                 onScroll={onSurfaceScroll}
                 onLayoutDirty={invalidateGeometry}
                 onUserScroll={interruptSurfaceScroll}
-                onPromote={onPromote}
-                onFollow={onFollow}
+                onPromote={() => {
+                  interaction.cancel();
+                  onPromote();
+                }}
+                onFollow={(activation) => {
+                  interaction.cancel();
+                  onFollow(activation);
+                }}
                 onStepConnection={onStepConnection}
                 relationNavigation={relationNavigation}
                 mobileHidden={hidden}
@@ -3648,6 +3378,7 @@ export function SpatialScene({
           {beams.map((beam) => (
             <g
               key={beam.id}
+              style={relationStyle(beam.relation)}
               data-beam-connection-id={beam.id}
               data-range-visibility={beam.visibility}
             >
@@ -3659,13 +3390,13 @@ export function SpatialScene({
                   }}
                   d={beam.path}
                   className={`spatial-beam ${beam.selected ? "is-selected" : ""} ${beam.exact ? "is-exact" : "is-proxy"}`}
-                  stroke={beam.color}
-                  fill={beam.color}
+                  stroke="var(--relation-ink)"
+                  fill="var(--relation-signal)"
                   pointerEvents="fill"
                   data-hit-role="relation"
                   onMouseEnter={() => setHoveredBeamId(beam.id)}
                   onMouseLeave={() => setHoveredBeamId(null)}
-                  aria-label={`激活${beam.label}连接；${beam.endpointLabel}${beam.exact ? "" : `；${rangeStatusLabel(beam.visibility)}`}`}
+                  aria-label={`激活${RELATION_LABELS[beam.relation]}${beam.label !== RELATION_LABELS[beam.relation] ? `：${beam.label}` : ""}连接；${beam.endpointLabel}${beam.exact ? "" : `；${rangeStatusLabel(beam.visibility)}`}`}
                 >
                   <title>{beam.endpointLabel}</title>
                 </path>
@@ -3692,8 +3423,8 @@ export function SpatialScene({
                     }}
                     d={beam.path ?? ""}
                     className={`spatial-range-contour ${beam.selected ? "is-selected" : ""}`}
-                    fill={beam.color}
-                    stroke={beam.color}
+                    fill="none"
+                    stroke="var(--relation-ink)"
                     data-hit-role="relation-geometry"
                     pointerEvents="none"
                   />
@@ -3774,37 +3505,80 @@ export function SpatialScene({
                 tabIndex={labelFits ? 0 : -1}
                 style={
                   {
+                    ...relationStyle(beam.relation),
                     left: 0,
                     top: 0,
                     transform: `translate3d(${beam.labelPoint.x}px, ${beam.labelPoint.y}px, 0) translate(-50%, -50%)`,
-                    "--beam-color": beam.color,
                   } as React.CSSProperties
                 }
                 onClick={() => activateConnection(beam.id, beam.origin)}
                 onMouseEnter={() => setHoveredBeamId(beam.id)}
                 onMouseLeave={() => setHoveredBeamId(null)}
-                aria-label={`${beam.label}：${beam.endpointLabel}`}
-                title={`${beam.label}：${beam.endpointLabel}`}
+                aria-label={`${RELATION_LABELS[beam.relation]}${beam.label !== RELATION_LABELS[beam.relation] ? `：${beam.label}` : ""}：${beam.endpointLabel}${beam.selected ? "，已选" : ""}`}
+                title={`${RELATION_LABELS[beam.relation]}${beam.label !== RELATION_LABELS[beam.relation] ? `：${beam.label}` : ""}：${beam.endpointLabel}`}
               >
                 <span className="spatial-beam-label-short" aria-hidden="true">
-                  {beam.selected || hoveredBeamId === beam.id
-                    ? beam.exact
-                      ? beam.label
-                      : rangeStatusLabel(beam.visibility)
-                    : "关系"}
+                  <span className="spatial-beam-label-symbol" />
+                  <span>{RELATION_LABELS[beam.relation]}</span>
+                  {beam.selected &&
+                  beam.label !== RELATION_LABELS[beam.relation]
+                    ? ` · ${beam.label}`
+                    : null}
+                  {!beam.exact
+                    ? ` · ${rangeStatusLabel(beam.visibility)}`
+                    : null}
                 </span>
               </button>
             );
           })}
         </div>
         <div className="spatial-scene-actions" data-hit-role="control">
+          <div className="spatial-zoom" aria-label="空间缩放">
+            <button
+              type="button"
+              aria-label="缩小空间"
+              onClick={() => interaction.zoom(livePose.current.zoom / 1.2)}
+            >
+              −
+            </button>
+            <label>
+              <input
+                ref={zoomInput}
+                type="number"
+                min={20}
+                max={300}
+                step={10}
+                aria-label="空间缩放百分比"
+                defaultValue={Math.round(cameraForView(view).zoom * 100)}
+                onBlur={(event) => {
+                  const zoom = event.currentTarget.valueAsNumber / 100;
+                  if (Math.abs(zoom - livePose.current.zoom) > 0.005)
+                    interaction.zoom(zoom);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              %
+            </label>
+            <button
+              type="button"
+              aria-label="放大空间"
+              onClick={() => interaction.zoom(livePose.current.zoom * 1.2)}
+            >
+              +
+            </button>
+          </div>
           <span className="spatial-gesture-hint spatial-gesture-hint-desktop">
-            空白处拖动移动 · Shift+拖动旋转 · +/- 或 Ctrl/⌘+滚轮缩放
+            缩放浏览空间 · 拖动标题移动纸页
           </span>
           <span className="spatial-gesture-hint spatial-gesture-hint-mobile">
-            轻触折页浏览 · 相关文档可切换
+            缩放浏览空间 · 拖动标题移动纸页
           </span>
-          {cameraDisplaced && (
+          {viewKind === "free" && (
             <button
               type="button"
               className="spatial-restore-action"

@@ -8,11 +8,13 @@ import {
   type AnchorInput,
   type DocumentRevision,
 } from "../lib/domain/model";
+import { readerPaletteStyle } from "../lib/reader/semantic-palette";
 import { longMarkdown } from "./benchmark-fixture";
 import { observeReaderPerformance } from "./ui-performance";
 import { QaPerformancePanel } from "./qa-performance-panel";
 import "../app/globals.css";
 import "../components/reader/reader.css";
+import "../components/reader/reader-palette.css";
 observeReaderPerformance();
 const content = longMarkdown();
 const documentRevision: DocumentRevision = {
@@ -42,8 +44,8 @@ function anchorAt(section: number): AnchorInput {
   };
 }
 const marks = [
-  { id: "first", anchor: anchorAt(1), color: "#c7926366" },
-  { id: "last", anchor: anchorAt(990), color: "#709fbb66" },
+  { id: "first", anchor: anchorAt(1), relation: "reference" as const },
+  { id: "last", anchor: anchorAt(990), relation: "explanation" as const },
 ];
 function RendererHarness() {
   const [selection, setSelection] = useState<AnchorInput | null>(null);
@@ -55,10 +57,12 @@ function RendererHarness() {
   );
   return (
     <main
+      className="reader-palette"
       style={{
+        ...readerPaletteStyle,
         height: "100vh",
-        background: "#171c23",
-        color: "#eee",
+        background: "var(--sb-chrome-bg)",
+        color: "var(--sb-chrome-text)",
         padding: 20,
       }}
     >
@@ -96,8 +100,8 @@ function RendererHarness() {
             width: 660,
             height: "100%",
             padding: "24px 38px",
-            background: "#f1ede4",
-            color: "#2d2d2b",
+            background: "var(--sb-paper-current)",
+            color: "var(--sb-text)",
             transform: transformed ? "rotateY(16deg) scale(.86)" : "none",
             transformOrigin: "left center",
           }}
@@ -118,8 +122,8 @@ function RendererHarness() {
                 display: "block",
                 width: "100%",
                 height: 120,
-                background: "white",
-                color: "#222",
+                background: "var(--sb-paper-current)",
+                color: "var(--sb-text)",
               }}
             />
           </label>

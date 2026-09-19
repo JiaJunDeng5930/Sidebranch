@@ -5,7 +5,6 @@ import type {
   Connection,
   DocumentRevision,
 } from "../../lib/domain/model";
-import { relationInkColors } from "../../lib/reader/relations";
 import {
   formatConnectionLabel,
   relationNavigationItems,
@@ -57,7 +56,7 @@ export const DocumentPassage = memo(function DocumentPassage({
                   id: item.connectionId,
                   anchor: item.anchor,
                   endpoint: item.endpoint,
-                  color: relationInkColors[connection.relation],
+                  relation: connection.relation,
                   label: formatConnectionLabel(connection, item.endpoint),
                 },
               ]

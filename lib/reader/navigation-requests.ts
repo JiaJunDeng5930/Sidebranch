@@ -1,6 +1,9 @@
 import type { AttentionAction } from "./attention";
 import type { DocumentId, RevisionId } from "../domain/model";
-import type { ConnectionActivation, SurfaceInstanceId } from "./spatial-contract";
+import type {
+  ConnectionActivation,
+  SurfaceInstanceId,
+} from "./spatial-contract";
 
 /** A token for work that is only valid in one reading context. */
 export interface NavigationRequestToken {
@@ -48,7 +51,8 @@ export function changesReadingContext(action: AttentionAction): boolean {
       return true;
     case "scroll":
     case "focus":
-    case "camera":
+    case "view":
+    case "return-to-reading":
       return false;
   }
 }

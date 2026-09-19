@@ -1,16 +1,6 @@
 @import "tailwindcss";
 @custom-variant dark (&:is(.dark *));
 :root {
-  --space-stage: #151a20;
-  --space-stage-raised: #1b222b;
-  --space-paper: #f3f0e8;
-  --space-paper-near: #ece9e1;
-  --space-paper-edge: #d8d7d2;
-  --space-ink: #2b3036;
-  --space-muted: #666c72;
-  --space-rule: rgba(43, 48, 54, 0.18);
-  --space-focus: #e7b879;
-  --paper-focus: #7a4b1d;
   --reading-serif:
     ui-serif, "Iowan Old Style", "Source Han Serif SC", "Noto Serif CJK SC",
     "Songti SC", STSong, serif;
@@ -104,10 +94,6 @@ button {
 button:disabled {
   cursor: wait;
   opacity: 0.55;
-}
-::selection {
-  background: #b8d7ee;
-  color: #2b3036;
 }
 h1,
 h2,

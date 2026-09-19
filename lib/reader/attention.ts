@@ -11,6 +11,15 @@ import type {
   ConnectionEndpoint,
   SurfaceInstanceId,
 } from "./spatial-contract";
+import {
+  copySpaceView,
+  normalizeSpaceView,
+  readingView,
+  sameSpaceView,
+  type SpaceView,
+} from "./space-view";
+
+export type { PaperPlacement, SpaceView } from "./space-view";
 
 /** A source-bound occurrence on the reading plane. */
 export interface ReadingPosition {
@@ -60,7 +69,7 @@ export type Attention =
 
 export interface AttentionSnapshot {
   readonly attention: Attention;
-  readonly camera: CameraPose;
+  readonly view: SpaceView;
 }
 
 export interface AttentionState extends AttentionSnapshot {
@@ -140,7 +149,9 @@ export type AttentionAction =
       readonly surfaceId: SurfaceInstanceId;
       readonly position: ReadingPosition;
     }
-  | { readonly type: "camera"; readonly pose: CameraPose };
+  | { readonly type: "view"; readonly view: SpaceView }
+  /** Explicitly append a reading view so a preceding free arrangement is Back-reversible. */
+  | { readonly type: "return-to-reading" };
 
 /** The initial presentation used before a document has been selected. */
 export const DEFAULT_CAMERA: CameraPose = {
@@ -213,37 +224,36 @@ function copyAttention(attention: Attention): Attention {
   };
 }
 
-function normalizeCamera(
-  pose: CameraPose,
-  fallback: CameraPose = DEFAULT_CAMERA,
-): CameraPose {
-  return {
-    x: finiteOr(pose.x, fallback.x),
-    y: finiteOr(pose.y, fallback.y),
-    yaw: finiteOr(pose.yaw, fallback.yaw),
-    pitch: finiteOr(pose.pitch, fallback.pitch),
-    zoom: finiteOr(pose.zoom, fallback.zoom),
-  };
-}
-
-function copyCamera(pose: CameraPose): CameraPose {
-  return normalizeCamera(pose);
+function activeSurfaceIds(attention: Attention): readonly SurfaceInstanceId[] {
+  if (attention.kind === "empty") return [];
+  return [
+    attention.current.surfaceId,
+    ...(attention.companion ? [attention.companion.position.surfaceId] : []),
+  ];
 }
 
 function copySnapshot(snapshot: AttentionSnapshot): AttentionSnapshot {
+  const attention = copyAttention(snapshot.attention);
   return {
-    attention: copyAttention(snapshot.attention),
-    camera: copyCamera(snapshot.camera),
+    attention,
+    view:
+      attention.kind === "empty"
+        ? readingView(null)
+        : copySpaceView(snapshot.view, activeSurfaceIds(attention)),
   };
 }
 
 function snapshotOf(
   attention: Attention,
-  camera: CameraPose,
+  view: SpaceView,
 ): AttentionSnapshot {
+  const copiedAttention = copyAttention(attention);
   return {
-    attention: copyAttention(attention),
-    camera: copyCamera(camera),
+    attention: copiedAttention,
+    view:
+      copiedAttention.kind === "empty"
+        ? readingView(null)
+        : normalizeSpaceView(view, activeSurfaceIds(copiedAttention)),
   };
 }
 
@@ -300,21 +310,11 @@ function sameAttention(left: Attention, right: Attention): boolean {
   );
 }
 
-function sameCamera(left: CameraPose, right: CameraPose): boolean {
-  return (
-    left.x === right.x &&
-    left.y === right.y &&
-    left.yaw === right.yaw &&
-    left.pitch === right.pitch &&
-    left.zoom === right.zoom
-  );
-}
-
 /** Create an empty session with no synthetic document or view identity. */
 export function emptyAttention(): AttentionState {
   return {
     attention: { kind: "empty" },
-    camera: copyCamera(DEFAULT_CAMERA),
+    view: readingView(null),
     history: [],
     historyIndex: -1,
   };
@@ -345,9 +345,9 @@ export function readingPosition(
 function append(
   state: AttentionState,
   attention: Attention,
-  camera: CameraPose,
+  view: SpaceView,
 ): AttentionState {
-  const nextSnapshot = snapshotOf(attention, camera);
+  const nextSnapshot = snapshotOf(attention, view);
   const prefix =
     state.historyIndex >= 0 && state.historyIndex < state.history.length
       ? state.history.slice(0, state.historyIndex + 1)
@@ -355,7 +355,10 @@ function append(
   const history = [...prefix, nextSnapshot];
   return {
     attention: copyAttention(nextSnapshot.attention),
-    camera: copyCamera(nextSnapshot.camera),
+    view: copySpaceView(
+      nextSnapshot.view,
+      activeSurfaceIds(nextSnapshot.attention),
+    ),
     history,
     historyIndex: history.length - 1,
   };
@@ -365,9 +368,9 @@ function append(
 function updateLive(
   state: AttentionState,
   attention: Attention,
-  camera: CameraPose,
+  view: SpaceView,
 ): AttentionState {
-  const nextSnapshot = snapshotOf(attention, camera);
+  const nextSnapshot = snapshotOf(attention, view);
   let history: AttentionSnapshot[];
   let historyIndex = state.historyIndex;
   if (historyIndex >= 0 && historyIndex < state.history.length) {
@@ -379,7 +382,10 @@ function updateLive(
   }
   return {
     attention: copyAttention(nextSnapshot.attention),
-    camera: copyCamera(nextSnapshot.camera),
+    view: copySpaceView(
+      nextSnapshot.view,
+      activeSurfaceIds(nextSnapshot.attention),
+    ),
     history,
     historyIndex,
   };
@@ -389,14 +395,7 @@ function updateAttentionLive(
   state: AttentionState,
   attention: Attention,
 ): AttentionState {
-  return updateLive(state, attention, state.camera);
-}
-
-function updateCameraLive(
-  state: AttentionState,
-  camera: CameraPose,
-): AttentionState {
-  return updateLive(state, state.attention, camera);
+  return updateLive(state, attention, state.view);
 }
 
 function updateRolePosition(
@@ -524,8 +523,13 @@ export function attentionReducer(
         current: normalizePosition(action.position),
         companion: null,
       };
-      if (sameAttention(state.attention, next)) return state;
-      return append(state, next, DEFAULT_CAMERA);
+      if (sameAttention(state.attention, next)) {
+        const nextView = readingView(null);
+        return sameSpaceView(state.view, nextView)
+          ? state
+          : updateLive(state, next, nextView);
+      }
+      return append(state, next, readingView(null));
     }
     case "compare": {
       if (state.attention.kind === "empty") return state;
@@ -537,8 +541,13 @@ export function attentionReducer(
           reason: copyReason(action.reason),
         },
       };
-      if (sameAttention(state.attention, next)) return state;
-      return append(state, next, DEFAULT_CAMERA);
+      if (sameAttention(state.attention, next)) {
+        const nextView = readingView(null);
+        return sameSpaceView(state.view, nextView)
+          ? state
+          : updateLive(state, next, nextView);
+      }
+      return append(state, next, readingView(null));
     }
     case "inspect-connection": {
       const inspection = action.inspection;
@@ -568,9 +577,13 @@ export function attentionReducer(
         state.attention.companion.position.surfaceId ===
           nextCompanion!.position.surfaceId
       )
-        return updateAttentionLive(state, next);
-      if (sameAttention(state.attention, next)) return state;
-      return append(state, next, DEFAULT_CAMERA);
+        return updateLive(state, next, readingView(null));
+      if (sameAttention(state.attention, next)) {
+        return sameSpaceView(state.view, readingView(null))
+          ? state
+          : updateLive(state, next, readingView(null));
+      }
+      return append(state, next, readingView(null));
     }
     case "promote": {
       if (state.attention.kind === "empty" || !state.attention.companion)
@@ -590,14 +603,14 @@ export function attentionReducer(
             },
           },
         };
-        return append(state, next, DEFAULT_CAMERA);
+        return append(state, next, readingView(null));
       }
       const next: Attention = {
         kind: "reading",
         current: copyPosition(companion.position),
         companion: null,
       };
-      return append(state, next, DEFAULT_CAMERA);
+      return append(state, next, readingView(null));
     }
     case "return-to-current": {
       if (state.attention.kind === "empty" || !state.attention.companion)
@@ -607,7 +620,13 @@ export function attentionReducer(
         current: copyPosition(state.attention.current),
         companion: null,
       };
-      return append(state, next, state.camera);
+      return append(state, next, readingView(null));
+    }
+    case "return-to-reading": {
+      if (state.attention.kind === "empty") return state;
+      const nextView = readingView(null);
+      if (sameSpaceView(state.view, nextView)) return state;
+      return append(state, state.attention, nextView);
     }
     case "history": {
       if (
@@ -622,7 +641,7 @@ export function attentionReducer(
       const restored = copySnapshot(snapshot);
       return {
         attention: restored.attention,
-        camera: restored.camera,
+        view: restored.view,
         history: state.history,
         historyIndex: action.index,
       };
@@ -670,10 +689,17 @@ export function attentionReducer(
           : next;
       return updateAttentionLive(state, downgraded);
     }
-    case "camera": {
-      const next = normalizeCamera(action.pose, state.camera);
-      if (sameCamera(next, state.camera)) return state;
-      return updateCameraLive(state, next);
+    case "view": {
+      const next =
+        state.attention.kind === "empty"
+          ? readingView(null)
+          : normalizeSpaceView(
+              action.view,
+              activeSurfaceIds(state.attention),
+              state.view.kind === "free" ? state.view.camera : DEFAULT_CAMERA,
+            );
+      if (sameSpaceView(next, state.view)) return state;
+      return updateLive(state, state.attention, next);
     }
   }
 }

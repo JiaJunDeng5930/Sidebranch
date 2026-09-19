@@ -20,7 +20,6 @@ import {
   readingPosition,
   returnHistoryIndex,
   type AttentionAction,
-  type CameraPose,
 } from "../lib/reader/attention";
 import {
   AnchorId,
@@ -48,8 +47,10 @@ import {
 import type { DocumentTarget } from "../lib/reader/space-index";
 import { observeReaderPerformance } from "./ui-performance";
 import { QaPerformancePanel } from "./qa-performance-panel";
+import { readerPaletteStyle } from "../lib/reader/semantic-palette";
 import "../app/globals.css";
 import "../components/reader/reader.css";
+import "../components/reader/reader-palette.css";
 
 observeReaderPerformance();
 const uuid = (n: number) =>
@@ -192,7 +193,14 @@ function SpaceDesignHarness() {
   const dispatchAttention = useCallback(
     (action: AttentionAction) => {
       const attention = stateRef.current.attention;
-      if (action.type === "history") {
+      if (
+        action.type !== "scroll" &&
+        action.type !== "focus" &&
+        action.type !== "view"
+      )
+        controllerRef.current?.cancelInput();
+      if (action.type === "return-to-reading") requestPresentation("layout");
+      else if (action.type === "history") {
         requestPresentation("restore");
       } else if (
         action.type === "navigate" ||
@@ -203,13 +211,15 @@ function SpaceDesignHarness() {
         action.type === "replace-revision"
       ) {
         const surfaces: SurfaceInstanceId[] = [];
-        if (action.type === "navigate") surfaces.push(action.position.surfaceId);
+        if (action.type === "navigate")
+          surfaces.push(action.position.surfaceId);
         else if (action.type === "compare") {
           if (attention.kind === "reading")
             surfaces.push(attention.current.surfaceId);
           surfaces.push(action.position.surfaceId);
         } else if (action.type === "inspect-connection") {
-          const inspection = "inspection" in action ? action.inspection : action;
+          const inspection =
+            "inspection" in action ? action.inspection : action;
           surfaces.push(
             inspection.current.surfaceId,
             inspection.companion.surfaceId,
@@ -289,10 +299,7 @@ function SpaceDesignHarness() {
       }
 
       const targetEndpoint = endpoint === "from" ? "to" : "from";
-      const existing = [
-        attention.current,
-        attention.companion?.position,
-      ].find(
+      const existing = [attention.current, attention.companion?.position].find(
         (position) =>
           position &&
           position.surfaceId !== origin?.surfaceId &&
@@ -345,14 +352,28 @@ function SpaceDesignHarness() {
     [dispatchAttention],
   );
   const onScroll = useCallback(
-    (surfaceId: SurfaceInstanceId, scrollTop: number, presentationId: number) => {
+    (
+      surfaceId: SurfaceInstanceId,
+      scrollTop: number,
+      presentationId: number,
+    ) => {
       if (presentationId !== presentationRef.current.id) return;
       dispatchAttention({ type: "scroll", surfaceId, scrollTop });
     },
     [dispatchAttention],
   );
-  const onCameraCheckpoint = useCallback(
-    (pose: CameraPose) => dispatchAttention({ type: "camera", pose }),
+  const onViewCheckpoint = useCallback(
+    ({
+      generation,
+      view,
+    }: import("../lib/reader/spatial-contract").ViewCheckpoint) => {
+      if (generation !== presentationRef.current.id) return;
+      dispatchAttention({ type: "view", view });
+    },
+    [dispatchAttention],
+  );
+  const onReturnToReading = useCallback(
+    () => dispatchAttention({ type: "return-to-reading" }),
     [dispatchAttention],
   );
   const onStepConnection = useCallback(
@@ -382,14 +403,14 @@ function SpaceDesignHarness() {
                   !attention.current.focus ||
                   item.anchor.start >= attention.current.focus.start,
               )
-            : [...items]
+            : ([...items]
                 .map((item, index) => ({ item, index }))
                 .reverse()
                 .find(
                   ({ item }) =>
                     !attention.current.focus ||
                     item.anchor.start <= attention.current.focus.start,
-                )?.index ?? -1;
+                )?.index ?? -1);
       const target = items[base];
       if (!target) return;
       onFollow({
@@ -430,7 +451,7 @@ function SpaceDesignHarness() {
         : -1;
     return {
       items,
-      current: itemIndex >= 0 ? items[itemIndex] ?? null : null,
+      current: itemIndex >= 0 ? (items[itemIndex] ?? null) : null,
       ordinal: itemIndex >= 0 ? itemIndex + 1 : null,
       total: items.length,
       canPrevious: itemIndex > 0,
@@ -467,11 +488,11 @@ function SpaceDesignHarness() {
     [],
   );
   return (
-    <main className="space-fixture">
+    <main className="space-fixture reader-palette" style={readerPaletteStyle}>
       <QaPerformancePanel
         surface={framed ? "space document (iframe)" : "space harness"}
       />
-      <style>{`.space-fixture{height:100dvh;background:var(--space-stage);color:var(--space-paper);display:flex;flex-direction:column}.space-fixture-tools{display:flex;gap:20px;align-items:center;padding:10px 18px;font:13px var(--reading-sans)}.space-fixture-tools button{color:inherit;background:transparent;border:1px solid #59616c;padding:5px 10px}.space-fixture-stage{display:flex;flex:1;min-height:0}.space-fixture-article{padding:30px 36px;font:17px/1.78 var(--reading-serif)}.space-fixture-article h1{font:500 27px/1.4 var(--reading-serif)}.space-fixture-article header p{font:12px var(--reading-sans);color:var(--space-muted)}.space-fixture-selection{position:fixed;bottom:8px;left:8px;z-index:200;max-width:440px;background:#1b222b;color:#fff;padding:8px;font-size:12px}`}</style>
+      <style>{`.space-fixture{height:100dvh;background:var(--sb-canvas);color:var(--sb-text);display:flex;flex-direction:column}.space-fixture-tools{display:flex;gap:20px;align-items:center;padding:10px 18px;font:13px var(--reading-sans)}.space-fixture-tools button{color:inherit;background:transparent;border:1px solid var(--sb-control-border);padding:5px 10px}.space-fixture-stage{display:flex;flex:1;min-height:0}.space-fixture-article{padding:30px 36px;font:17px/1.78 var(--reading-serif)}.space-fixture-article h1{font:500 27px/1.4 var(--reading-serif)}.space-fixture-article header p{font:12px var(--reading-sans);color:var(--sb-muted)}.space-fixture-selection{position:fixed;bottom:8px;left:8px;z-index:200;max-width:440px;background:var(--sb-chrome-panel);color:var(--sb-chrome-text);padding:8px;font-size:12px}`}</style>
       {!framed && (
         <div className="space-fixture-tools">
           <strong>空间交互样机</strong>
@@ -527,7 +548,7 @@ function SpaceDesignHarness() {
                   }
                 : null
             }
-            camera={state.camera}
+            view={state.view}
             documents={documents}
             catalogue={{
               activeComplete: true,
@@ -560,7 +581,8 @@ function SpaceDesignHarness() {
             presentation={presentation}
             onHistory={onHistory}
             onScroll={onScroll}
-            onCameraCheckpoint={onCameraCheckpoint}
+            onViewCheckpoint={onViewCheckpoint}
+            onReturnToReading={onReturnToReading}
             renderDocument={renderDocument}
             loadPreview={loadPreview}
           />

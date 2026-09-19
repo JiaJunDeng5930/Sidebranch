@@ -6,22 +6,22 @@ test("crowded and partially overlapping passage links paint once without filling
   const repeated = Array.from({ length: 100 }, () => ({
     start: 10,
     end: 20,
-    color: "#1f716d",
+    relation: "explanation" as const,
   }));
   assert.deepEqual(passageHighlightRuns(repeated), [
-    { start: 10, end: 20, color: "#1f716d" },
+    { start: 10, end: 20, relation: "explanation" },
   ]);
   assert.deepEqual(
     passageHighlightRuns([
       ...repeated,
-      { start: 15, end: 25, color: "#9a5c1f" },
-      { start: 30, end: 35, color: "#9a5c1f" },
+      { start: 15, end: 25, relation: "reference" },
+      { start: 30, end: 35, relation: "reference" },
     ]),
     [
-      { start: 10, end: 15, color: "#1f716d" },
-      { start: 15, end: 20, color: "#62676c" },
-      { start: 20, end: 25, color: "#9a5c1f" },
-      { start: 30, end: 35, color: "#9a5c1f" },
+      { start: 10, end: 15, relation: "explanation" },
+      { start: 15, end: 20, relation: "overlap" },
+      { start: 20, end: 25, relation: "reference" },
+      { start: 30, end: 35, relation: "reference" },
     ],
   );
 });
