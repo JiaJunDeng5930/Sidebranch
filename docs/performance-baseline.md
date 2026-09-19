@@ -1,6 +1,50 @@
-# Performance baseline, before the spatial-reader rebuild
+# Spatial reader performance measurements
 
-## v3 measurements, 2026-09-19 — 60 Hz gate remains open
+## Local continuation, 2026-09-19 — measured warm workloads pass
+
+Measured in the local Codex in-app browser against the built real Reader and
+isolated QA service. The stress fixture contains 260 documents, including three
+1,000-section Markdown documents and 80 passage connections, plus two original QA
+documents. These are visible, warm samples at 1280 × 800, DPR 1. The page remained
+visible and the viewport unchanged throughout each sample.
+
+| Workload | Actual sample | Frame p50 / p95 / p99 / max (ms) | Double-rAF proxy p95 / max (ms) | Tasks >50ms | Bodies / DOM / source spans / chunks |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| One long body; native camera drags throughout sampling | 5001.0ms | 16.7 / 17.6 / 18.5 / 18.6 | 27.2 / 27.8 | 0 | 1 / 1003 / 190 / 2 |
+| Two long bodies and 80 loaded passage connections; 80 native scroll inputs | 5002.2ms | 16.7 / 17.8 / 18.7 / 33.3 | 36.2 / 45.6 | 0 | 2 / 1657 / 470 / 5 |
+| Same two-body scene; native camera drags throughout sampling | 5022.1ms | 16.7 / 17.9 / 18.6 / 18.7 | 30.1 / 30.2 | 0 | 2 / 1657 / 470 / 5 |
+
+The samples contain 299, 298 and 300 frame intervals, respectively, and 32, 80
+and 29 input proxy samples. All three meet the warm frame-interval gate of
+p95 ≤20ms and p99 ≤33ms with no observed task over 50ms. The maximum scroll
+interval is reported rather than hidden by the percentile. The double-rAF value
+measures two scheduled animation frames after input; it is a latency proxy, not
+direct input-to-display latency or a single-frame budget.
+
+`tests/qa-performance-panel.tsx` supplies an explicit five-second sample with an
+independent completion timer, visibility/viewport checks, frame and input sample
+counts, long-task reporting, and mounted DOM/body/span/chunk counts. Its controls
+and results are excluded from those counts. Hidden samples or samples without
+animation frames are invalid. Results and guidance collapse to keep the QA
+controls from obscuring reading. In MCP App mode the outer panel labels itself
+as the QA host shell: those values do not measure the embedded app.
+
+To reproduce, build the app and QA entries as described in `local-handoff.md`,
+open `/__qa` in Website mode, load the stress fixture, open a benchmark document
+through search or the edge fan, and optionally compare a second long document.
+Start the five-second sample, continuously drag the stage or scroll a reading
+body, then expand the results. `/__space` and `/__renderer` expose the same panel
+for their isolated workloads. Use the real Reader for whole-workspace claims.
+
+Camera input now separates cancelling an animation from settling the scene;
+successive inputs do not repeatedly restore all beams/shadows before moving
+again. No geometry-budget slicing was added. These observations establish the
+gate only for the measured local workloads. They are not a hardware-normalized
+before/after comparison with the cloud measurements below, a cold-start budget,
+a physical-touch result, or a measurement inside the actual ChatGPT host.
+No production deployment was made.
+
+## Historical cloud v3 measurements, 2026-09-19 — gate was not met
 
 These are observations from the managed Chromium browser, not a 60 fps claim.
 The current code keeps persistent document membership separate from mounted
@@ -29,7 +73,7 @@ reported long script. Their render-start-to-paint times were approximately 0.5,
 This points to substantial scheduling/presentation delay in this environment;
 it does not prove the application meets its target on a user's device.
 
-The required p95 ≤20ms / p99 ≤33ms gate remains **unmet**. Real touch-device and
+The required p95 ≤20ms / p99 ≤33ms gate was **unmet in these samples**. Real touch-device and
 representative desktop measurements, including presentation/compositing work,
 remain necessary. No v3 production deployment was made. QA telemetry, the
 transparent control layer and synthetic documents are excluded from production.

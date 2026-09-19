@@ -1,5 +1,7 @@
 # Xanadu Sidebranch
 
+Decision rationale: [reading intent ownership and viewport edges](adr/0001-reading-intents-and-viewport-edges.md).
+
 A single-owner document space hosted on ChatGPT Sites (Cloudflare Worker, D1, R2), shared by the website and a ChatGPT MCP App. No model API or external database is required. The owner delegated visual decisions: parallel pages and visible passage connections from Project Xanadu, an ink-colored spatial desk with warm paper, restrained typography, no decorative animation or generated artwork.
 
 ## Entities and invariants

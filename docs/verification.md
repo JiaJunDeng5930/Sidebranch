@@ -1,11 +1,38 @@
 # v3 local verification — not released
 
-Checked on 2026-09-19 in the managed preview and isolated Miniflare D1/R2.
+Checked on 2026-09-19 in the managed preview, then continued locally in the
+Codex in-app browser and isolated Miniflare D1/R2. No production release was made.
 The acceptance requirements remain in [rebuild-acceptance.md](rebuild-acceptance.md).
 The original v2 record is available in Git history; its overview/window workflows
 are not acceptance evidence for this version.
 
-## Observed browser behavior
+## Local continuation
+
+- Edge folds and the return entry stay in viewport coordinates during large
+  native camera pans. In the complete stress fixture, the 102-item fan reaches
+  its final page; selecting a distant long document opens that exact revision
+  beside the current document and restores a readable camera framing.
+- Explicit promotion and the return fold restore the expected current and
+  companion document identities. The desktop return fold exposes a narrow edge
+  until hover/focus; in the 390px layout, edge entries follow the reading bodies
+  and remain reachable by scrolling without covering the text.
+- Native selection in the official AppBridge sends the exact selected text with
+  a synthetic question. An unsent second draft blocks host navigation; discarding
+  it resumes the deferred target. Two separately created answers to one question
+  retain independent entries and do not change the current document.
+- Answer arrival uses the compact top-bar count. In the final 390px AppBridge
+  build, arrival clears the matching waiting message. Escape preserves unread
+  answers and restores launcher focus; “全部稍后阅读” clears the current unread
+  count while retaining the records. Successful preview focuses the companion
+  reading surface without scrolling it or promoting it to current.
+- The final full test run passed 62/62, including 15 Reader session tests.
+  TypeScript and ESLint checks passed, as did `pnpm build`, `pnpm build:qa`,
+  `pnpm build:qa space` and `pnpm build:qa renderer`. No dependencies changed.
+  Branded operation identities and discriminated states constrain late results;
+  tests exercise ownership, cancellation, retries and supersession. These checks
+  are distinct from the browser interaction evidence above.
+
+## Earlier cloud browser observations
 
 - Real Reader and the spatial fixture contain no catalogue sidebar or overview
   switch. Metadata folds retain all documents; current and companion are the only
@@ -48,13 +75,14 @@ These checks do not replace the browser observations above.
 
 ## Outstanding gates
 
-The warm 60 Hz frame gate has **not** passed. Long-document scrolling has no
-observed >50ms task in the latest sample, but frame p95 is approximately 33ms.
-Camera pan/orbit still records approximately 50ms p95 in the managed environment.
-The frozen-scene control is approximately 33ms; detailed samples and presentation
-waits are recorded in [performance-baseline.md](performance-baseline.md). Reduced
-motion is implemented, but physical touch, representative hardware and all
-network interruption combinations have not been certified.
+The local warm workload samples now pass the frame gate: p95 17.6–17.9ms,
+p99 18.5–18.7ms, with no observed >50ms tasks for one/two long-document camera
+movement and two-document scrolling. Exact workloads, counts, measurement scope
+and the earlier failed cloud samples are preserved in
+[performance-baseline.md](performance-baseline.md). Physical touch, cold starts,
+representative hardware, actual ChatGPT iframe performance and all network
+interruption combinations remain unverified. Reduced motion is implemented;
+its presence is not a substitute for those device checks.
 
 Actual ChatGPT account authorization, consent inside the live host, production
 owner-login and host attachment download URLs have not been observed end to end.
