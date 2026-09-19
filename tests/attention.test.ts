@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AnchorInput,
+  AnchorId,
   ConnectionId,
   DocumentId,
   Path,
   RevisionId,
+  type Anchor,
+  type Connection,
   type DocumentSummary,
 } from "../lib/domain/model";
 import {
@@ -18,6 +21,7 @@ import {
 } from "../lib/reader/attention";
 import {
   projectSpaceEdges,
+  resolveEdgeActivation,
   type NeighborhoodKnowledge,
 } from "../lib/reader/space-index";
 
@@ -60,6 +64,29 @@ function position(document: DocumentSummary, start = 0): ReadingPosition {
 
 function connection(seed: number): ConnectionId {
   return ConnectionId.parse(id("30000000", seed));
+}
+
+function connectionBetween(
+  seed: number,
+  fromDocument: DocumentSummary,
+  toDocument: DocumentSummary,
+): Connection {
+  const anchor = (document: DocumentSummary, offset: number): Anchor => ({
+    id: AnchorId.parse(id("40000000", seed * 2 + offset)),
+    documentId: document.id,
+    revisionId: document.revisionId,
+    start: offset,
+    end: offset + 2,
+    quote: "ab",
+  });
+  return {
+    id: connection(seed),
+    from: anchor(fromDocument, 0),
+    to: anchor(toDocument, 2),
+    relation: "reference",
+    label: "",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
 }
 
 test("attention preserves complete A/B reading context through promote and history", () => {
@@ -137,6 +164,77 @@ test("scroll, focus, and camera replace the current history snapshot", () => {
   if (!currentEntry || currentEntry.attention.kind !== "reading") return;
   assert.equal(currentEntry.attention.companion?.position.scrollTop, 120);
   assert.equal(currentEntry.attention.current.focus?.start, 2);
+});
+
+test("intentional destinations use readable home framing and preserve the old pose", () => {
+  const a = summary(30, "Alpha"),
+    b = summary(31, "Beta");
+  let state = attentionReducer(emptyAttention(), {
+    type: "navigate",
+    position: position(a),
+  });
+  const firstPose = { x: 240, y: -90, yaw: 12, pitch: -4, zoom: 0.8 };
+  state = attentionReducer(state, { type: "camera", pose: firstPose });
+  state = attentionReducer(state, {
+    type: "compare",
+    position: position(b),
+    reason: { kind: "document" },
+  });
+  assert.deepEqual(state.camera, {
+    x: 0,
+    y: 0,
+    yaw: 0,
+    pitch: 0,
+    zoom: 1,
+  });
+  assert.deepEqual(state.history[0]?.camera, firstPose);
+
+  const comparePose = { x: -180, y: 64, yaw: -8, pitch: 3, zoom: 1.2 };
+  state = attentionReducer(state, { type: "camera", pose: comparePose });
+  state = attentionReducer(state, { type: "promote" });
+  assert.deepEqual(state.camera, {
+    x: 0,
+    y: 0,
+    yaw: 0,
+    pitch: 0,
+    zoom: 1,
+  });
+  assert.deepEqual(state.history[1]?.camera, comparePose);
+});
+
+test("edge activation follows only an exact loaded current-to-target connection", () => {
+  const a = summary(32, "Alpha"),
+    b = summary(33, "Beta"),
+    c = summary(34, "Gamma");
+  const direct = connectionBetween(32, a, b);
+  const secondHop = connectionBetween(33, b, c);
+  const target = {
+    documentId: c.id,
+    revisionId: c.revisionId,
+    focus: null,
+  } as const;
+
+  assert.deepEqual(
+    resolveEdgeActivation(
+      { connectionId: direct.id, target: { ...target, documentId: b.id, revisionId: b.revisionId } },
+      a.revisionId,
+      [direct],
+    ),
+    { kind: "follow", connectionId: direct.id },
+  );
+  assert.deepEqual(
+    resolveEdgeActivation({ connectionId: secondHop.id, target }, a.revisionId, [
+      secondHop,
+    ]),
+    { kind: "compare", target },
+  );
+  assert.deepEqual(
+    resolveEdgeActivation({ connectionId: direct.id, target: { ...target, documentId: b.id, revisionId: b.revisionId } }, a.revisionId, []),
+    {
+      kind: "compare",
+      target: { documentId: b.id, revisionId: b.revisionId, focus: null },
+    },
+  );
 });
 
 test("return-to-current is reversible and branch navigation drops forward history", () => {

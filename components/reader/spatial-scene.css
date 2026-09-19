@@ -77,6 +77,25 @@
   pointer-events: auto;
 }
 
+/*
+ * Navigation entries belong to the viewport, not to the reading plane.  The
+ * papers can leave the frame while the folded edge remains a reachable route
+ * back into the space.  Children opt back into hit testing individually so
+ * this layer never steals blank-stage gestures.
+ */
+.spatial-scene-edge-layer {
+  position: absolute;
+  z-index: 10;
+  inset: 0;
+  pointer-events: none;
+  transform: none;
+  transform-style: preserve-3d;
+}
+
+.spatial-scene-edge-layer > * {
+  pointer-events: auto;
+}
+
 .spatial-paper {
   position: absolute;
   top: 50%;
@@ -252,15 +271,40 @@
 }
 
 .spatial-return-leaf {
-  --paper-x: -440px;
-  --paper-y: -10px;
+  top: 50%;
+  left: 4px;
+  width: min(236px, calc(100% - 20px));
+  min-height: 110px;
+  transform: translate3d(calc(-100% + 28px), -50%, -24px) rotate(-1.5deg);
+  transform-origin: 100% 50%;
+  border-left-width: 1px;
+  border-right: 3px solid #4c535b;
 }
 
 .spatial-return-leaf:hover,
 .spatial-return-leaf:focus-visible {
+  z-index: 30;
+  transform: translate3d(-12px, -50%, -24px) rotate(-1deg);
   box-shadow: 0 9px 22px rgba(0, 0, 0, 0.28);
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
+}
+
+/* The folded strip has only a small exposed width, so give it its own label. */
+.spatial-return-leaf::before {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  color: var(--paper-muted);
+  content: "返回";
+  font-size: 12px;
+  writing-mode: vertical-rl;
+  transform: translateY(-50%);
+}
+
+.spatial-return-leaf:hover::before,
+.spatial-return-leaf:focus-visible::before {
+  opacity: 0;
 }
 
 .spatial-return-tag {
@@ -943,6 +987,11 @@
     transform: none !important;
   }
 
+  /* The edge layer follows the mobile document flow after the reading plane. */
+  .spatial-scene-edge-layer {
+    display: contents;
+  }
+
   .spatial-paper {
     position: relative;
     top: auto;
@@ -980,6 +1029,16 @@
     left: auto;
     width: 100%;
     min-height: 88px;
+    transform: none;
+  }
+
+  .spatial-return-leaf::before {
+    display: none;
+  }
+
+  .spatial-return-leaf:hover,
+  .spatial-return-leaf:focus-visible {
+    z-index: 6;
     transform: none;
   }
 

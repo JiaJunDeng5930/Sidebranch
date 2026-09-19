@@ -1,5 +1,6 @@
 import type {
   ConnectionId,
+  Connection,
   DocumentId,
   DocumentSummary,
   RevisionId,
@@ -49,6 +50,65 @@ export interface EdgeLeaf {
     readonly revisionId: RevisionId;
     readonly sequence: number;
   }[];
+}
+
+/**
+ * The scene can prove a follow only from the exact connection currently in
+ * its loaded set.  A neighborhood node's connectionId is useful evidence for
+ * discovery, but a distance-two proof (or a stale/missing detail row) must
+ * remain an exact-target comparison.
+ */
+export type EdgeActivation =
+  | { readonly kind: "follow"; readonly connectionId: ConnectionId }
+  | { readonly kind: "compare"; readonly target: DocumentTarget };
+
+function endpointIsTarget(
+  endpoint: Connection["from"],
+  target: DocumentTarget,
+): boolean {
+  return (
+    endpoint.documentId === target.documentId &&
+    endpoint.revisionId === target.revisionId
+  );
+}
+
+function connectionJoinsTarget(
+  connection: Connection,
+  currentRevisionId: RevisionId,
+  target: DocumentTarget,
+): boolean {
+  return (
+    (connection.from.revisionId === currentRevisionId &&
+      endpointIsTarget(connection.to, target)) ||
+    (connection.to.revisionId === currentRevisionId &&
+      endpointIsTarget(connection.from, target))
+  );
+}
+
+/**
+ * Resolve every edge entry through the same semantic boundary.  A connection
+ * id only authorizes follow when its loaded endpoints join the current exact
+ * revision to the leaf's exact target revision.  The fallback deliberately
+ * keeps the target revision so missing detail and second-hop evidence remain
+ * reachable without fabricating a direct connection.
+ */
+export function resolveEdgeActivation(
+  leaf: Pick<EdgeLeaf, "connectionId" | "target">,
+  currentRevisionId: RevisionId | null,
+  connections: readonly Connection[],
+): EdgeActivation {
+  if (leaf.connectionId && currentRevisionId) {
+    const connection = connections.find(
+      (candidate) => candidate.id === leaf.connectionId,
+    );
+    if (
+      connection &&
+      connectionJoinsTarget(connection, currentRevisionId, leaf.target)
+    ) {
+      return { kind: "follow", connectionId: connection.id };
+    }
+  }
+  return { kind: "compare", target: leaf.target };
 }
 
 type RelationCandidate = {

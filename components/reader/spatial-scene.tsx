@@ -15,6 +15,7 @@ import type {
   ConnectionId,
   DocumentRevision,
   DocumentSummary,
+  RevisionId,
 } from "../../lib/domain/model";
 import type {
   CameraPose,
@@ -32,7 +33,10 @@ import {
   screenToWorld,
   worldToScreen,
 } from "../../lib/reader/camera";
-import { projectSpaceEdges } from "../../lib/reader/space-index";
+import {
+  projectSpaceEdges,
+  resolveEdgeActivation,
+} from "../../lib/reader/space-index";
 import {
   relationColors as RELATION_COLORS,
   relationNames as RELATION_LABELS,
@@ -112,10 +116,10 @@ type EdgeGroup = {
 };
 
 type Endpoint = Point & {
+  coordinateSpace: "world" | "viewport";
   clipped: boolean;
   paperEdge: boolean;
-  worldX: number;
-  worldY: number;
+  worldPoint: Point | null;
 };
 
 type Beam = {
@@ -129,7 +133,14 @@ type Beam = {
   exact: boolean;
   path: string;
   labelPoint: Point;
-  labelWorld: Point;
+  labelWorld: Point | null;
+};
+
+type FanState = {
+  readonly centerRevisionId: RevisionId | null;
+  readonly groupId: string;
+  readonly items: readonly EdgeItem[];
+  readonly window: number;
 };
 
 type Pose = CameraPose;
@@ -867,11 +878,11 @@ export function SpatialScene({
   const animationFrame = useRef<number | null>(null);
   const animationGeneration = useRef(0);
   const transitionStarted = useRef(0);
-  const [fanOpen, setFanOpen] = useState<string | null>(null);
-  const [fanWindow, setFanWindow] = useState(0);
-  const [fanSnapshot, setFanSnapshot] =
-    useState<readonly EdgeItem[]>(EMPTY_TARGETS);
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [fan, setFan] = useState<FanState | null>(null);
+  const [hoveredState, setHoveredState] = useState<{
+    readonly key: string;
+    readonly centerRevisionId: RevisionId | null;
+  } | null>(null);
   const [selectionActive, setSelectionActive] = useState(false);
   const hoverTimer = useRef<number | null>(null);
   const [beams, setBeams] = useState<readonly Beam[]>([]);
@@ -953,25 +964,23 @@ export function SpatialScene({
     // rect while the pointer is moving.
     const viewport = viewportSize.current;
     if (!viewport) return;
+    const screenFor = (endpoint: Endpoint): Point => {
+      if (endpoint.coordinateSpace === "viewport" || !endpoint.worldPoint)
+        return { x: endpoint.x, y: endpoint.y };
+      return worldToScreen(endpoint.worldPoint, livePose.current, viewport);
+    };
     for (const beam of beamWorldCache.current) {
       if (cameraMoving.current && !beam.selected) continue;
-      const fromScreen = worldToScreen(
-        { x: beam.from.worldX, y: beam.from.worldY },
-        livePose.current,
-        viewport,
-      );
-      const toScreen = worldToScreen(
-        { x: beam.to.worldX, y: beam.to.worldY },
-        livePose.current,
-        viewport,
-      );
+      const fromScreen = screenFor(beam.from);
+      const toScreen = screenFor(beam.to);
       const path = pathForBeam(fromScreen, toScreen);
       beamPathNodes.current.get(beam.id)?.setAttribute("d", path);
-      const labelScreen = worldToScreen(
-        beam.labelWorld,
-        livePose.current,
-        viewport,
-      );
+      const labelScreen = beam.labelWorld
+        ? worldToScreen(beam.labelWorld, livePose.current, viewport)
+        : {
+            x: (fromScreen.x + toScreen.x) / 2,
+            y: (fromScreen.y + toScreen.y) / 2,
+          };
       const paperEdgeLabel = beamPaperEdgeLabelNodes.current.get(beam.id);
       if (paperEdgeLabel) {
         paperEdgeLabel.setAttribute("x", `${labelScreen.x}`);
@@ -984,39 +993,50 @@ export function SpatialScene({
     }
   }, []);
 
-  const writePose = useCallback(
-    (pose: Pose) => {
-      setCameraMoving(true);
-      livePose.current = clampPose(pose);
-      if (worldRef.current)
-        worldRef.current.style.transform = cameraTransform(livePose.current);
-      renderCachedBeams();
-    },
-    [renderCachedBeams, setCameraMoving],
-  );
+  const beginCameraMotion = useCallback(() => {
+    setCameraMoving(true);
+  }, [setCameraMoving]);
 
-  const cancelPoseTransition = useCallback(() => {
+  const settleCameraMotion = useCallback(() => {
+    setCameraMoving(false);
+    renderCachedBeams();
+  }, [renderCachedBeams, setCameraMoving]);
+
+  const cancelPoseAnimation = useCallback(() => {
     animationGeneration.current += 1;
     if (animationFrame.current !== null) {
       window.cancelAnimationFrame(animationFrame.current);
       animationFrame.current = null;
     }
-    setCameraMoving(false);
-    renderCachedBeams();
-  }, [renderCachedBeams, setCameraMoving]);
+    // An input gesture takes over the pose that was actually painted.  The
+    // next gesture frame/checkpoint will replace this target with its latest
+    // desired pose.
+    targetPose.current = clampPose(livePose.current);
+  }, []);
+
+  const writePose = useCallback(
+    (pose: Pose) => {
+      livePose.current = clampPose(pose);
+      if (worldRef.current)
+        worldRef.current.style.transform = cameraTransform(livePose.current);
+      renderCachedBeams();
+    },
+    [renderCachedBeams],
+  );
 
   const animateTo = useCallback(
     (next: Pose, duration = 400) => {
       const target = clampPose(next);
+      cancelPoseAnimation();
       targetPose.current = target;
-      cancelPoseTransition();
       const from = livePose.current;
       if (reducedMotion || samePose(from, target)) {
+        beginCameraMotion();
         writePose(target);
-        setCameraMoving(false);
-        renderCachedBeams();
+        settleCameraMotion();
         return;
       }
+      beginCameraMotion();
       const generation = animationGeneration.current;
       transitionStarted.current = performance.now();
       const frame = (now: number) => {
@@ -1031,28 +1051,26 @@ export function SpatialScene({
           animationFrame.current = window.requestAnimationFrame(frame);
         else {
           animationFrame.current = null;
-          setCameraMoving(false);
-          renderCachedBeams();
+          settleCameraMotion();
         }
       };
       animationFrame.current = window.requestAnimationFrame(frame);
     },
     [
-      cancelPoseTransition,
+      beginCameraMotion,
+      cancelPoseAnimation,
       reducedMotion,
+      settleCameraMotion,
       writePose,
-      setCameraMoving,
-      renderCachedBeams,
     ],
   );
 
   const checkpoint = useCallback(() => {
     const settled = clampPose(livePose.current);
     targetPose.current = settled;
-    setCameraMoving(false);
-    renderCachedBeams();
+    settleCameraMotion();
     onCameraCheckpoint(settled);
-  }, [onCameraCheckpoint, setCameraMoving, renderCachedBeams]);
+  }, [onCameraCheckpoint, settleCameraMotion]);
 
   const scheduleCheckpoint = useCallback(() => {
     if (wheelCheckpoint.current !== null)
@@ -1062,20 +1080,6 @@ export function SpatialScene({
       checkpoint();
     }, 100);
   }, [checkpoint]);
-
-  const worldPoseFor = useCallback((node: HTMLElement): Point => {
-    const viewport = viewportRef.current?.getBoundingClientRect();
-    if (!viewport) return { x: 0, y: 0 };
-    const rect = node.getBoundingClientRect();
-    return screenToWorld(
-      {
-        x: rect.left + rect.width / 2 - viewport.left,
-        y: rect.top + rect.height / 2 - viewport.top,
-      },
-      livePose.current,
-      viewport,
-    );
-  }, []);
 
   const measureAnchor = useCallback(
     (anchor: Anchor, viewport: DOMRect): Endpoint | null => {
@@ -1125,10 +1129,10 @@ export function SpatialScene({
           return {
             x: point.x - viewport.left,
             y: point.y - viewport.top,
+            coordinateSpace: "world" as const,
             clipped: !visible,
             paperEdge: !visible,
-            worldX: world.x,
-            worldY: world.y,
+            worldPoint: world,
           };
         }
         if (clip) {
@@ -1158,10 +1162,10 @@ export function SpatialScene({
             return {
               x: point.x - viewport.left,
               y: point.y - viewport.top,
+              coordinateSpace: "world" as const,
               clipped: true,
               paperEdge: true,
-              worldX: world.x,
-              worldY: world.y,
+              worldPoint: world,
             };
           }
         }
@@ -1173,18 +1177,30 @@ export function SpatialScene({
           node.dataset.revisionId === anchor.revisionId,
       );
       if (!fallback) return null;
-      const point = worldPoseFor(fallback);
-      const screen = worldToScreen(point, livePose.current, viewport);
+      const fallbackRect = rectFromDomRect(fallback.getBoundingClientRect());
+      const visible = intersectRects(fallbackRect, viewport);
+      const point = visible
+        ? {
+            x: (visible.left + visible.right) / 2,
+            y: (visible.top + visible.bottom) / 2,
+          }
+        : clampPoint(
+            {
+              x: (fallbackRect.left + fallbackRect.right) / 2,
+              y: (fallbackRect.top + fallbackRect.bottom) / 2,
+            },
+            viewport,
+          );
       return {
-        x: screen.x,
-        y: screen.y,
+        x: point.x - viewport.left,
+        y: point.y - viewport.top,
+        coordinateSpace: "viewport" as const,
         clipped: true,
         paperEdge: true,
-        worldX: point.x,
-        worldY: point.y,
+        worldPoint: null,
       };
     },
-    [worldPoseFor],
+    [],
   );
 
   const measureBeams = useCallback(() => {
@@ -1272,26 +1288,15 @@ export function SpatialScene({
       const from = measureAnchor(connection.from, viewport);
       const to = measureAnchor(connection.to, viewport);
       if (!from || !to) continue;
-      const fromWorld = screenToWorld(
-        { x: from.x, y: from.y },
-        livePose.current,
-        viewport,
-      );
-      const toWorld = screenToWorld(
-        { x: to.x, y: to.y },
-        livePose.current,
-        viewport,
-      );
-      from.worldX = fromWorld.x;
-      from.worldY = fromWorld.y;
-      to.worldX = toWorld.x;
-      to.worldY = toWorld.y;
       const fromDoc = labelFor(connection.from);
       const toDoc = labelFor(connection.to);
       const fromScreen = { x: from.x, y: from.y };
       const toScreen = { x: to.x, y: to.y };
       const labelPoint = beamLabelPoint(fromScreen, toScreen, paperRects);
-      const labelWorld = screenToWorld(labelPoint, livePose.current, viewport);
+      const labelWorld =
+        from.coordinateSpace === "world" && to.coordinateSpace === "world"
+          ? screenToWorld(labelPoint, livePose.current, viewport)
+          : null;
       measured.push({
         id: connection.id,
         label: connection.label || RELATION_LABELS[connection.relation],
@@ -1402,7 +1407,8 @@ export function SpatialScene({
 
   useEffect(() => {
     return () => {
-      cancelPoseTransition();
+      cancelPoseAnimation();
+      settleCameraMotion();
       if (measureFrame.current !== null)
         window.cancelAnimationFrame(measureFrame.current);
       if (gestureFrame.current !== null)
@@ -1413,7 +1419,7 @@ export function SpatialScene({
         window.clearTimeout(wheelCheckpoint.current);
       if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
     };
-  }, [cancelPoseTransition]);
+  }, [cancelPoseAnimation, settleCameraMotion]);
 
   const resetCamera = useCallback(() => {
     const home = { x: 0, y: 0, yaw: 0, pitch: 0, zoom: 1 };
@@ -1435,33 +1441,59 @@ export function SpatialScene({
     [companion?.position, current?.position, previous?.position],
   );
   const edgeGroups = useMemo(
-    () => projectEdges(documents, neighborhood, excludedPositions),
-    [documents, excludedPositions, neighborhood],
+    () => {
+      const currentRevisionId = current?.position.revisionId ?? null;
+      const centeredKnowledge =
+        currentRevisionId &&
+        neighborhood.kind !== "idle" &&
+        neighborhood.centerRevisionId !== currentRevisionId
+          ? ({ kind: "idle" } as const)
+          : neighborhood;
+      return projectEdges(documents, centeredKnowledge, excludedPositions);
+    },
+    [current?.position.revisionId, documents, excludedPositions, neighborhood],
   );
   const [frontByGroup, setFrontByGroup] = useState<Record<string, string>>({});
+  const currentRevisionId = current?.position.revisionId ?? null;
+  const activeFan =
+    fan &&
+    fan.centerRevisionId === currentRevisionId &&
+    edgeGroups.some((group) => group.id === fan.groupId)
+      ? fan
+      : null;
+  const fanOpen = activeFan?.groupId ?? null;
+  const fanWindow = activeFan?.window ?? 0;
+  const fanSnapshot = activeFan?.items ?? EMPTY_TARGETS;
+  const renderedHovered =
+    hoveredState?.centerRevisionId === currentRevisionId
+      ? hoveredState.key
+      : null;
   const fanLimit = narrow ? NARROW_FAN_LIMIT : DESKTOP_FAN_LIMIT;
   const completeCatalogue =
     catalogue.activeComplete && catalogue.archivedComplete;
 
   const closeFan = useCallback(() => {
-    if (fanOpen && fanSnapshot[fanWindow]) {
+    if (activeFan && activeFan.items[activeFan.window]) {
       setFrontByGroup((previousFront) => ({
         ...previousFront,
-        [fanOpen]: fanSnapshot[fanWindow].key,
+        [activeFan.groupId]: activeFan.items[activeFan.window].key,
       }));
     }
-    setFanOpen(null);
-    setFanSnapshot(EMPTY_TARGETS);
-    setFanWindow(0);
-  }, [fanOpen, fanSnapshot, fanWindow]);
+    setFan(null);
+  }, [activeFan]);
 
   const activateEdge = useCallback(
     (item: EdgeItem) => {
       closeFan();
-      if (item.connectionId) onFollow(item.connectionId);
-      else onReadBeside(item.target);
+      const activation = resolveEdgeActivation(
+        item,
+        current?.position.revisionId ?? null,
+        connections,
+      );
+      if (activation.kind === "follow") onFollow(activation.connectionId);
+      else onReadBeside(activation.target);
     },
-    [closeFan, onFollow, onReadBeside],
+    [closeFan, connections, current?.position.revisionId, onFollow, onReadBeside],
   );
 
   const toggleFan = useCallback(
@@ -1470,25 +1502,63 @@ export function SpatialScene({
         closeFan();
         return;
       }
-      setFanOpen(group.id);
-      setFanSnapshot(group.leaves.slice());
-      setFanWindow(0);
+      setFan({
+        centerRevisionId: current?.position.revisionId ?? null,
+        groupId: group.id,
+        items: group.leaves.slice(),
+        window: 0,
+      });
     },
-    [closeFan, fanOpen],
+    [closeFan, current?.position.revisionId, fanOpen],
   );
+
+  useLayoutEffect(() => {
+    if (!fan || activeFan) return;
+    if (hoverTimer.current !== null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    const invalidate = window.setTimeout(() => {
+      setFan((currentFan) => (currentFan === fan ? null : currentFan));
+      setHoveredState(null);
+    }, 0);
+    return () => window.clearTimeout(invalidate);
+  }, [activeFan, currentRevisionId, fan]);
+
+  useLayoutEffect(() => {
+    if (hoverTimer.current !== null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    if (
+      !hoveredState ||
+      hoveredState.centerRevisionId === currentRevisionId
+    )
+      return;
+    const clear = window.setTimeout(() => setHoveredState(null), 0);
+    return () => window.clearTimeout(clear);
+  }, [currentRevisionId, hoveredState]);
 
   const updateHover = useCallback((key: string | null) => {
     if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    const centerRevisionId = current?.position.revisionId ?? null;
     if (key === null) {
-      hoverTimer.current = window.setTimeout(() => setHovered(null), 120);
+      hoverTimer.current = window.setTimeout(() => setHoveredState(null), 120);
       return;
     }
     if (typeof window.getSelection === "function") {
       const selection = window.getSelection();
       if (selection && !selection.isCollapsed) return;
     }
-    hoverTimer.current = window.setTimeout(() => setHovered(key), 160);
-  }, []);
+    hoverTimer.current = window.setTimeout(() => {
+      if (
+        (inputRef.current.current?.position.revisionId ?? null) !==
+        centerRevisionId
+      )
+        return;
+      setHoveredState({ key, centerRevisionId });
+    }, 160);
+  }, [current?.position.revisionId]);
 
   useEffect(() => {
     const onSelectionChange = () => {
@@ -1500,7 +1570,7 @@ export function SpatialScene({
           window.clearTimeout(hoverTimer.current);
           hoverTimer.current = null;
         }
-        setHovered(null);
+        setHoveredState(null);
       }
     };
     document.addEventListener("selectionchange", onSelectionChange);
@@ -1510,9 +1580,10 @@ export function SpatialScene({
 
   const applyPan = useCallback(
     (dx: number, dy: number) => {
-      cancelPoseTransition();
       const viewport = viewportSize.current;
       if (!viewport) return;
+      cancelPoseAnimation();
+      beginCameraMotion();
       const center = { x: viewport.width / 2, y: viewport.height / 2 };
       const world = screenToWorld(center, livePose.current, viewport);
       writePose(
@@ -1524,14 +1595,15 @@ export function SpatialScene({
         ),
       );
     },
-    [cancelPoseTransition, writePose],
+    [beginCameraMotion, cancelPoseAnimation, writePose],
   );
 
   const applyZoom = useCallback(
     (delta: number, anchor: Point | null) => {
       const viewport = viewportSize.current;
       if (!viewport) return;
-      cancelPoseTransition();
+      cancelPoseAnimation();
+      beginCameraMotion();
       const before = livePose.current;
       const nextZoom = clamp(
         before.zoom * Math.exp(-delta * 0.001),
@@ -1551,7 +1623,7 @@ export function SpatialScene({
       );
       writePose(next);
     },
-    [cancelPoseTransition, writePose],
+    [beginCameraMotion, cancelPoseAnimation, writePose],
   );
 
   const flushGesture = useCallback(() => {
@@ -1573,6 +1645,7 @@ export function SpatialScene({
       delta.zoom === 0
     )
       return;
+    beginCameraMotion();
     const viewport = viewportSize.current;
     let next = { ...livePose.current };
     if (delta.panX !== 0 || delta.panY !== 0) {
@@ -1613,7 +1686,7 @@ export function SpatialScene({
       );
     }
     writePose(next);
-  }, [writePose]);
+  }, [beginCameraMotion, writePose]);
 
   const scheduleGesture = useCallback(() => {
     if (gestureFrame.current !== null) return;
@@ -1628,7 +1701,10 @@ export function SpatialScene({
         target.closest<HTMLElement>("[data-hit-role]")?.dataset.hitRole;
       const explicitPan = spacePressed.current && !isControlTarget(target);
       if (!explicitPan && role && role !== "stage") {
-        if (role === "text") cancelPoseTransition();
+        if (role === "text") {
+          cancelPoseAnimation();
+          settleCameraMotion();
+        }
         return;
       }
       if (event.button !== 0 && event.pointerType !== "touch") return;
@@ -1639,7 +1715,8 @@ export function SpatialScene({
         pointerType: event.pointerType,
       });
       if (pointers.current.size >= 2 && event.pointerType === "touch") {
-        cancelPoseTransition();
+        cancelPoseAnimation();
+        beginCameraMotion();
         drag.current = { kind: "pinch", pointerId: event.pointerId };
         const points = [...pointers.current.values()];
         const [first, second] = points;
@@ -1674,7 +1751,7 @@ export function SpatialScene({
         orbitRequested: event.shiftKey && !explicitPan,
       };
     },
-    [cancelPoseTransition, narrow],
+    [beginCameraMotion, cancelPoseAnimation, narrow, settleCameraMotion],
   );
 
   const onPointerMove = useCallback(
@@ -1720,7 +1797,8 @@ export function SpatialScene({
       if (active.kind === "pending") {
         if (moved < threshold) return;
         active.kind = active.orbitRequested ? "orbit" : "pan";
-        cancelPoseTransition();
+        cancelPoseAnimation();
+        beginCameraMotion();
         event.preventDefault();
         event.currentTarget.setPointerCapture?.(event.pointerId);
       }
@@ -1736,7 +1814,7 @@ export function SpatialScene({
       }
       scheduleGesture();
     },
-    [cancelPoseTransition, scheduleGesture],
+    [beginCameraMotion, cancelPoseAnimation, scheduleGesture],
   );
 
   const finishPointer = useCallback(
@@ -1867,7 +1945,7 @@ export function SpatialScene({
         window.clearTimeout(wheelCheckpoint.current);
         wheelCheckpoint.current = null;
       }
-      cancelPoseTransition();
+      cancelPoseAnimation();
       checkpoint();
     };
     const onVisibility = () => {
@@ -1879,7 +1957,7 @@ export function SpatialScene({
       window.removeEventListener("blur", releaseInput);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [cancelPoseTransition, checkpoint, flushGesture]);
+  }, [cancelPoseAnimation, checkpoint, flushGesture]);
 
   const currentSurfaceKey = current ? surfaceIdentity(current.position) : null;
   const companionSurfaceKey = companion
@@ -2002,23 +2080,6 @@ export function SpatialScene({
               renderDocument={renderDocument}
             />
           )}
-          {previous && (
-            <button
-              type="button"
-              className="spatial-return-leaf"
-              data-hit-role="document-affordance"
-              data-document-id={previous.document.id}
-              data-revision-id={previous.position.revisionId}
-              onClick={() => {
-                onHistory(previous.historyIndex);
-              }}
-              aria-label={`返回到${previous.document.title}，v${previous.document.sequence}`}
-            >
-              <span className="spatial-return-tag">返回</span>
-              <strong>{previous.document.title}</strong>
-              <small>v{previous.document.sequence} · 回到原段落</small>
-            </button>
-          )}
           {!companion && pending && (
             <article
               className="spatial-pending-surface"
@@ -2050,6 +2111,31 @@ export function SpatialScene({
               </div>
             </article>
           )}
+          {!current && !pending && (
+            <div className="spatial-empty-state" data-hit-role="stage">
+              <strong>空间还是空的。</strong>
+              <span>打开一篇文档，纸场会从这里开始。</span>
+            </div>
+          )}
+        </div>
+        <div className="spatial-scene-edge-layer" aria-label="空间边缘入口">
+          {previous && (
+            <button
+              type="button"
+              className="spatial-return-leaf"
+              data-hit-role="document-affordance"
+              data-document-id={previous.document.id}
+              data-revision-id={previous.position.revisionId}
+              onClick={() => {
+                onHistory(previous.historyIndex);
+              }}
+              aria-label={`返回到${previous.document.title}，v${previous.document.sequence}`}
+            >
+              <span className="spatial-return-tag">返回</span>
+              <strong>{previous.document.title}</strong>
+              <small>v{previous.document.sequence} · 回到原段落</small>
+            </button>
+          )}
           {individualEdges.map((item, index) => (
             <EdgeShell
               key={item.key}
@@ -2062,7 +2148,7 @@ export function SpatialScene({
                 onReadBeside(target);
               }}
               onHover={updateHover}
-              hovered={hovered === `edge:${item.key}`}
+              hovered={renderedHovered === `edge:${item.key}`}
             />
           ))}
           {shellGroups.map((group) => {
@@ -2082,7 +2168,7 @@ export function SpatialScene({
                     scheduleMeasure();
                   }}
                   onHover={updateHover}
-                  hovered={hovered === group.id}
+                  hovered={renderedHovered === group.id}
                 />
                 {fanOpen === group.id && (
                   <Fan
@@ -2090,7 +2176,7 @@ export function SpatialScene({
                     group={group}
                     start={fanWindow}
                     limit={fanLimit}
-                    hovered={hovered}
+                    hovered={renderedHovered}
                     onActivate={activateEdge}
                     onReadBeside={(target) => {
                       closeFan();
@@ -2098,14 +2184,26 @@ export function SpatialScene({
                     }}
                     onHover={updateHover}
                     onPrevious={() =>
-                      setFanWindow((value) => Math.max(0, value - fanLimit))
+                      setFan((currentFan) =>
+                        currentFan
+                          ? {
+                              ...currentFan,
+                              window: Math.max(0, currentFan.window - fanLimit),
+                            }
+                          : currentFan,
+                      )
                     }
                     onNext={() =>
-                      setFanWindow((value) =>
-                        Math.min(
-                          Math.max(0, fanSnapshot.length - fanLimit),
-                          value + fanLimit,
-                        ),
+                      setFan((currentFan) =>
+                        currentFan
+                          ? {
+                              ...currentFan,
+                              window: Math.min(
+                                Math.max(0, currentFan.items.length - fanLimit),
+                                currentFan.window + fanLimit,
+                              ),
+                            }
+                          : currentFan,
                       )
                     }
                     onClose={closeFan}
@@ -2114,12 +2212,6 @@ export function SpatialScene({
               </React.Fragment>
             );
           })}
-          {!current && !pending && (
-            <div className="spatial-empty-state" data-hit-role="stage">
-              <strong>空间还是空的。</strong>
-              <span>打开一篇文档，纸场会从这里开始。</span>
-            </div>
-          )}
         </div>
         <svg
           className="spatial-scene-beams"

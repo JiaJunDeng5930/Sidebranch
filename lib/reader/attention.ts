@@ -424,7 +424,10 @@ export function attentionReducer(
         companion: null,
       };
       if (sameAttention(state.attention, next)) return state;
-      return append(state, next, state.camera);
+      // An intentional root navigation gets the readable home framing.  The
+      // prefix history still contains the previous live pose, so Back can
+      // restore the camera together with its reading position.
+      return append(state, next, DEFAULT_CAMERA);
     }
     case "compare": {
       if (state.attention.kind === "empty") return state;
@@ -438,7 +441,9 @@ export function attentionReducer(
         },
       };
       if (sameAttention(state.attention, next)) return state;
-      return append(state, next, state.camera);
+      // Comparison is an intentional destination.  Keep the current pose in
+      // the previous snapshot and let the new companion settle at home.
+      return append(state, next, DEFAULT_CAMERA);
     }
     case "promote": {
       if (
@@ -451,7 +456,9 @@ export function attentionReducer(
         current: copyPosition(state.attention.companion.position),
         companion: null,
       };
-      return append(state, next, state.camera);
+      // Promotion changes the reading root, so it follows the same framing
+      // rule as navigate/compare while preserving the compare pose in history.
+      return append(state, next, DEFAULT_CAMERA);
     }
     case "return-to-current": {
       if (
