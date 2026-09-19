@@ -1,5 +1,9 @@
 # v3 local verification — not released
 
+This is the pre-range-surface baseline. The subsequent implementation has its
+own [range reading verification record](range-reading-verification.md); the
+results below must not be applied to that changed reader.
+
 Checked on 2026-09-19 in the managed preview, then continued locally in the
 Codex in-app browser and isolated Miniflare D1/R2. No production release was made.
 The acceptance requirements remain in [rebuild-acceptance.md](rebuild-acceptance.md).

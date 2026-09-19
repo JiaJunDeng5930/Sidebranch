@@ -25,6 +25,13 @@ import {
   type ReaderSession,
 } from "../lib/reader/session";
 import { readingPosition, returnHistoryIndex } from "../lib/reader/attention";
+import { surfaceInstanceId } from "../lib/reader/spatial-contract";
+
+let nextSurface = 0;
+function occurrenceId(prefix = "session"): ReturnType<typeof surfaceInstanceId> {
+  nextSurface += 1;
+  return surfaceInstanceId(`${prefix}-${nextSurface}`);
+}
 
 function revision(seed: string, sequence = 1): DocumentRevision {
   const id = DocumentId.parse(
@@ -92,7 +99,10 @@ function questionFor(document: DocumentRevision, body: string): Question {
 function startReading(state: ReaderSession, document: DocumentRevision) {
   return readerSessionReducer(state, {
     type: "attention",
-    action: { type: "navigate", position: readingPosition(document) },
+    action: {
+      type: "navigate",
+      position: readingPosition(document, occurrenceId("current")),
+    },
   });
 }
 
@@ -104,7 +114,12 @@ test("attention owns current, companion, promote, and return history", () => {
     type: "attention",
     action: {
       type: "compare",
-      position: readingPosition(second, anchor(second), 420),
+      position: readingPosition(
+        second,
+        occurrenceId("companion"),
+        anchor(second),
+        420,
+      ),
       reason: { kind: "document" },
     },
   });
@@ -138,11 +153,23 @@ test("scroll and focus update the live history entry without adding navigation",
   const before = state.attention.history.length;
   state = readerSessionReducer(state, {
     type: "attention",
-    action: { type: "scroll", role: "current", scrollTop: 180 },
+    action: {
+      type: "scroll",
+      surfaceId: state.attention.attention.kind === "reading"
+        ? state.attention.attention.current.surfaceId
+        : occurrenceId("missing"),
+      scrollTop: 180,
+    },
   });
   state = readerSessionReducer(state, {
     type: "attention",
-    action: { type: "focus", role: "current", focus: anchor(document) },
+    action: {
+      type: "focus",
+      surfaceId: state.attention.attention.kind === "reading"
+        ? state.attention.attention.current.surfaceId
+        : occurrenceId("missing"),
+      focus: anchor(document),
+    },
   });
   assert.equal(state.attention.history.length, before);
   assert.equal(state.attention.attention.kind, "reading");
@@ -483,7 +510,7 @@ test("dirty editor and question drafts are protected from deferred navigation", 
   state = readerSessionReducer(state, {
     type: "editor/open-edit",
     document: first,
-    owner: readingPosition(first),
+    owner: readingPosition(first, occurrenceId("owner")),
   });
   state = readerSessionReducer(state, {
     type: "editor/content",
@@ -726,7 +753,12 @@ test("late editor failure cannot replace a changed draft", () => {
   state = readerSessionReducer(state, {
     type: "editor/open-edit",
     document,
-    owner: readingPosition(document, anchor(document), 240),
+    owner: readingPosition(
+      document,
+      occurrenceId("owner"),
+      anchor(document),
+      240,
+    ),
   });
   state = readerSessionReducer(state, {
     type: "editor/content",
@@ -759,7 +791,7 @@ test("editing an existing title is read only and question close clears the draft
   state = readerSessionReducer(state, {
     type: "editor/open-edit",
     document,
-    owner: readingPosition(document),
+    owner: readingPosition(document, occurrenceId("owner")),
   });
   state = readerSessionReducer(state, {
     type: "editor/title",

@@ -46,6 +46,7 @@ import {
 } from "../../lib/reader/session";
 import { SpatialScene } from "./spatial-scene";
 import { DocumentPassage } from "./document-passage";
+import { firstVisibleSourceOffset } from "./passage";
 import { registerReadingTools } from "../../lib/client/webmcp";
 import {
   questionPrompt,
@@ -66,7 +67,9 @@ import {
 import {
   readingPosition,
   returnHistoryIndex,
+  createConnectionInspection,
   type AttentionAction,
+  type OrdinaryComparisonReason,
   type ReadingPosition,
   type SurfaceRole,
 } from "../../lib/reader/attention";
@@ -78,11 +81,23 @@ import {
 } from "../../lib/reader/navigation-requests";
 import type { DocumentTarget } from "../../lib/reader/space-index";
 import type {
-  PendingSurface,
-  ReadingSurface,
-  ReturnLeaf,
   SpatialSceneController,
 } from "./spatial-scene";
+import type {
+  ConnectionActivation,
+  ConnectionEndpoint,
+  DocumentRenderContext,
+  PendingSurface,
+  PresentationRequest,
+  ReadingSurface,
+  RelationNavigationState,
+  ReturnLeaf,
+  SurfaceInstanceId,
+} from "../../lib/reader/spatial-contract";
+import {
+  createSurfaceInstanceId,
+  relationNavigationItems,
+} from "../../lib/reader/spatial-contract";
 import type { NavigationRequestToken } from "../../lib/reader/navigation-requests";
 import {
   answerArrival,
@@ -131,9 +146,15 @@ export function Reader({
   const [importInputKey, setImportInputKey] = useState(0);
   const [composing, setComposing] = useState(false);
   const [pointerSelecting, setPointerSelecting] = useState(false);
+  const [presentation, setPresentation] = useState<PresentationRequest>({
+    id: 0,
+    kind: "layout",
+  });
 
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const presentationRef = useRef(presentation);
+  presentationRef.current = presentation;
   const composingRef = useRef(false);
   const pointerSelectingRef = useRef(false);
   const interactionState = composing || pointerSelecting;
@@ -147,6 +168,11 @@ export function Reader({
   const catalogueRequestRef = useRef({ active: 0, archived: 0 });
   const openRequestRef = useRef(0);
   const compareRequestRef = useRef(0);
+  const pendingConnectionRef = useRef<{
+    readonly inspection: import("../../lib/reader/attention").ConnectionInspection;
+    readonly request: NavigationRequestToken;
+  } | null>(null);
+  const presentationSequenceRef = useRef(0);
   const navigationIntentRef = useRef(0);
   const navigationAttemptRef = useRef(0);
   const connectionRequestRef = useRef(0);
@@ -167,6 +193,20 @@ export function Reader({
   const dispatch = useCallback((action: ReaderSessionAction) => {
     dispatchSession(action);
   }, []);
+
+  const requestPresentation = useCallback(
+    (kind: PresentationRequest["kind"], surfaces: readonly SurfaceInstanceId[] = []) => {
+      const id = nextRequest(presentationSequenceRef.current);
+      presentationSequenceRef.current = id;
+      const next: PresentationRequest =
+        kind === "align-ranges"
+          ? { id, kind, surfaces: [...new Set(surfaces)] }
+          : { id, kind };
+      presentationRef.current = next;
+      setPresentation(next);
+    },
+    [],
+  );
 
   const retireCancelledNavigation = useCallback(() => {
     const pending = sessionRef.current.pendingNavigation;
@@ -189,16 +229,42 @@ export function Reader({
   const dispatchAttention = useCallback((action: AttentionAction) => {
     if (changesReadingContext(action)) {
       attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+      pendingConnectionRef.current = null;
       setPendingSurface(null);
       retireCancelledNavigation();
     }
+    const current = sessionRef.current.attention.attention;
+    if (action.type === "history") requestPresentation("restore");
+    else if (
+      action.type === "navigate" ||
+      action.type === "compare" ||
+      action.type === "inspect-connection" ||
+      action.type === "promote" ||
+      action.type === "return-to-current" ||
+      action.type === "replace-revision"
+    ) {
+      const surfaces: SurfaceInstanceId[] = [];
+      if (action.type === "navigate") surfaces.push(action.position.surfaceId);
+      else if (action.type === "compare") {
+        if (current.kind === "reading") surfaces.push(current.current.surfaceId);
+        surfaces.push(action.position.surfaceId);
+      } else if (action.type === "inspect-connection") {
+        const inspection = action.inspection;
+        surfaces.push(inspection.current.surfaceId, inspection.companion.surfaceId);
+      } else if (current.kind === "reading") {
+        surfaces.push(current.current.surfaceId);
+        if (current.companion) surfaces.push(current.companion.position.surfaceId);
+      }
+      requestPresentation("align-ranges", surfaces);
+    }
     dispatchSession({ type: "attention", action });
-  }, [retireCancelledNavigation]);
+  }, [requestPresentation, retireCancelledNavigation]);
 
   const cancelLocalNavigation = useCallback(() => {
     openRequestRef.current = nextRequest(openRequestRef.current);
     compareRequestRef.current = nextRequest(compareRequestRef.current);
     attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+    pendingConnectionRef.current = null;
     setPendingSurface(null);
     retireCancelledNavigation();
   }, [retireCancelledNavigation]);
@@ -442,13 +508,14 @@ export function Reader({
       view: ReadingView,
       mode: "navigate" | "compare",
       focus: AnchorInput | null = null,
-      reason: Extract<
-        import("../../lib/reader/attention").ComparisonReason,
-        { kind: "connection" | "document" | "revision" | "answer" }
-      > = { kind: "document" },
+      reason: OrdinaryComparisonReason = { kind: "document" },
     ) => {
       dispatch({ type: "cache/revision", revision: view.document });
-      const position = readingPosition(view.document, focus);
+      const position = readingPosition(
+        view.document,
+        createSurfaceInstanceId(mode === "navigate" ? "current" : "companion"),
+        focus,
+      );
       if (mode === "navigate")
         dispatchAttention({ type: "navigate", position });
       else dispatchAttention({ type: "compare", position, reason });
@@ -558,6 +625,7 @@ export function Reader({
         return false;
       }
       attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+      pendingConnectionRef.current = null;
       const requestId = nextRequest(openRequestRef.current);
       openRequestRef.current = requestId;
       const request = requestToken(attentionEpochRef.current, requestId);
@@ -711,6 +779,7 @@ export function Reader({
 
   const openLatest = useCallback(async (): Promise<void> => {
     attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+    pendingConnectionRef.current = null;
     const requestId = nextRequest(openRequestRef.current);
     openRequestRef.current = requestId;
     const request = requestToken(attentionEpochRef.current, requestId);
@@ -899,13 +968,11 @@ export function Reader({
   const readBeside = useCallback(
     async (
       target: DocumentTarget,
-      reason: Extract<
-        import("../../lib/reader/attention").ComparisonReason,
-        { kind: "connection" | "document" | "revision" | "answer" }
-      > = { kind: "document" },
+      reason: OrdinaryComparisonReason = { kind: "document" },
     ): Promise<boolean> => {
       const attention = sessionRef.current.attention.attention;
       if (attention.kind !== "reading") return false;
+      pendingConnectionRef.current = null;
       const requestId = nextRequest(compareRequestRef.current);
       compareRequestRef.current = requestId;
       const request = requestToken(attentionEpochRef.current, requestId);
@@ -982,32 +1049,264 @@ export function Reader({
   );
 
   const onFollow = useCallback(
-    (connectionId: Connection["id"]): void => {
+    (activation: ConnectionActivation): void => {
       const attention = sessionRef.current.attention.attention;
-      if (attention.kind !== "reading") return;
+      if (hasInteractionProtection()) {
+        dispatch({
+          type: "status",
+          message: "当前有未完成的阅读操作；保存或关闭后再定位关系。",
+        });
+        return;
+      }
       const connection = sessionRef.current.connections.find(
-        (item) => item.id === connectionId,
+        (item) => item.id === activation.connectionId,
       );
-      if (!connection) return;
-      const currentRevision = attention.current.revisionId;
-      const endpoint =
-        connection.from.revisionId === currentRevision
-          ? connection.to
-          : connection.to.revisionId === currentRevision
-            ? connection.from
-            : null;
-      if (!endpoint) return;
-      dispatch({ type: "connection/select", connectionId });
-      void readBeside(
-        {
-          documentId: endpoint.documentId,
-          revisionId: endpoint.revisionId,
-          focus: endpoint,
+      if (!connection) {
+        dispatch({ type: "status", message: "关系资料正在读取。" });
+        return;
+      }
+
+      const endpointMatches = (position: ReadingPosition, endpoint: ConnectionEndpoint) => {
+        const anchor = connection[endpoint];
+        return (
+          position.documentId === anchor.documentId &&
+          position.revisionId === anchor.revisionId
+        );
+      };
+      const otherEndpoint = (endpoint: ConnectionEndpoint): ConnectionEndpoint =>
+        endpoint === "from" ? "to" : "from";
+
+      let origin: ReadingPosition | null = null;
+      let endpoint: ConnectionEndpoint | null = null;
+      const pending = pendingConnectionRef.current;
+      const pendingPositions = pending
+        ? [pending.inspection.current, pending.inspection.companion]
+        : [];
+      const initialAttentionKind = attention.kind;
+      let originWasPresent = false;
+      if (activation.origin.kind === "surface") {
+        if (attention.kind !== "reading") {
+          dispatch({
+            type: "status",
+            message: "该阅读纸页已变化，无法定位这条关系。",
+          });
+          return;
+        }
+        const originSurfaceId = activation.origin.surfaceId;
+        if (attention.current.surfaceId === activation.origin.surfaceId) {
+          origin = attention.current;
+          originWasPresent = true;
+        } else if (
+          attention.companion?.position.surfaceId === activation.origin.surfaceId
+        ) {
+          origin = attention.companion.position;
+          originWasPresent = true;
+        }
+        endpoint = activation.origin.endpoint;
+        if (!origin)
+          origin = pendingPositions.find(
+            (position) => position.surfaceId === originSurfaceId,
+          ) ?? null;
+        if (!origin || !endpointMatches(origin, endpoint)) {
+          dispatch({
+            type: "status",
+            message: "该关系的正文版本或阅读纸页已变化。",
+          });
+          return;
+        }
+      } else {
+        for (const candidate of [
+          ...(attention.kind === "reading"
+            ? [
+                { position: attention.current },
+                attention.companion
+                  ? { position: attention.companion.position }
+                  : null,
+              ]
+            : []),
+        ]) {
+          if (!candidate) continue;
+          const matching = (["from", "to"] as const).find((item) =>
+            endpointMatches(candidate.position, item),
+          );
+          if (matching) {
+            origin = candidate.position;
+            endpoint = matching;
+            break;
+          }
+        }
+        if (!origin || !endpoint) {
+          const anchor = connection.from;
+          origin = readingPosition(
+            { id: anchor.documentId, revisionId: anchor.revisionId },
+            createSurfaceInstanceId("connection-current"),
+            anchor,
+            0,
+          );
+          endpoint = "from";
+        }
+      }
+
+      const targetEndpoint = otherEndpoint(endpoint);
+      const current = {
+        ...origin,
+        focus: { ...connection[endpoint] },
+      };
+      const existing = [
+        ...(attention.kind === "reading"
+          ? [attention.current, attention.companion?.position]
+          : []),
+        ...pendingPositions,
+      ]
+        .filter((candidate): candidate is ReadingPosition => Boolean(candidate))
+        .find(
+          (candidate) =>
+            candidate.surfaceId !== origin?.surfaceId &&
+            endpointMatches(candidate, targetEndpoint),
+        );
+      const companion = existing
+        ? { ...existing, focus: { ...connection[targetEndpoint] } }
+        : readingPosition(
+            {
+              id: connection[targetEndpoint].documentId,
+              revisionId: connection[targetEndpoint].revisionId,
+            },
+            createSurfaceInstanceId("connection"),
+            connection[targetEndpoint],
+            0,
+          );
+      const inspection = createConnectionInspection(
+        connection,
+        current,
+        companion,
+        endpoint,
+      );
+      if (!inspection) {
+        dispatch({
+          type: "status",
+          message: "该关系的两个端点无法与当前阅读纸页对齐。",
+        });
+        return;
+      }
+
+      const requestId = nextRequest(compareRequestRef.current);
+      compareRequestRef.current = requestId;
+      const request = requestToken(attentionEpochRef.current, requestId, {
+        origin: {
+          surfaceId: origin!.surfaceId,
+          documentId: origin!.documentId,
+          revisionId: origin!.revisionId,
         },
-        { kind: "connection", connectionId },
+        activation,
+      });
+      pendingConnectionRef.current = { inspection, request };
+      const target = {
+        documentId: companion.documentId,
+        revisionId: companion.revisionId,
+        focus: companion.focus,
+      };
+      const summary = sessionRef.current.documents.find(
+        (document) => document.id === target.documentId,
       );
+      setPendingSurface({
+        target,
+        title: summary?.title ?? "正在读取…",
+        error: null,
+        request,
+      });
+      void (async () => {
+        try {
+          const currentCached = sessionRef.current.revisionCache.get(
+            inspection.current.revisionId,
+          )?.document;
+          const companionCached = sessionRef.current.revisionCache.get(
+            inspection.companion.revisionId,
+          )?.document;
+          const [currentView, companionView] = await Promise.all([
+            currentCached
+              ? Promise.resolve(null)
+              : readOpenResult({
+                  documentId: inspection.current.documentId,
+                  revisionId: inspection.current.revisionId,
+                }),
+            companionCached
+              ? Promise.resolve(null)
+              : readOpenResult({
+                  documentId: inspection.companion.documentId,
+                  revisionId: inspection.companion.revisionId,
+                }),
+          ]);
+          const latest = sessionRef.current.attention.attention;
+          const originStillValid =
+            originWasPresent
+              ? latest.kind === "reading" &&
+                [latest.current, latest.companion?.position].some(
+                  (position) => position?.surfaceId === origin?.surfaceId,
+                )
+              : latest.kind === initialAttentionKind;
+          if (
+            !isCurrentRequest(
+              request,
+              attentionEpochRef.current,
+              compareRequestRef.current,
+            ) ||
+            !originStillValid
+          )
+            return;
+          const views = [currentView, companionView].filter(
+            (view): view is ReadingView => Boolean(view),
+          );
+          const currentDocument =
+            currentCached ?? currentView?.document ?? null;
+          const companionDocument =
+            companionCached ?? companionView?.document ?? null;
+          if (
+            !currentDocument ||
+            !companionDocument ||
+            currentDocument.id !== inspection.current.documentId ||
+            currentDocument.revisionId !== inspection.current.revisionId ||
+            companionDocument.id !== inspection.companion.documentId ||
+            companionDocument.revisionId !== inspection.companion.revisionId
+          ) {
+            setPendingSurface((pending) =>
+              pending?.request === request
+                ? { ...pending, error: "目标文档当前不可用。" }
+                : pending,
+            );
+            return;
+          }
+          for (const view of views) {
+            dispatch({ type: "cache/revision", revision: view.document });
+            dispatch({
+              type: "data/merge",
+              connections: view.connections,
+              questions: view.questions,
+            });
+          }
+          dispatchAttention({ type: "inspect-connection", inspection });
+          if (pendingConnectionRef.current?.request === request)
+            pendingConnectionRef.current = null;
+          setPendingSurface((pending) =>
+            pending?.request === request ? null : pending,
+          );
+          dispatch({ type: "status", message: null });
+        } catch (error) {
+          if (
+            isCurrentRequest(
+              request,
+              attentionEpochRef.current,
+              compareRequestRef.current,
+            )
+          )
+            setPendingSurface((pending) =>
+              pending?.request === request
+                ? { ...pending, error: errorMessage(error) }
+                : pending,
+            );
+        }
+      })();
     },
-    [dispatch, readBeside],
+    [dispatch, dispatchAttention, hasInteractionProtection, readOpenResult],
   );
 
   const onPromote = useCallback(() => {
@@ -1031,8 +1330,9 @@ export function Reader({
   );
 
   const onScroll = useCallback(
-    (role: SurfaceRole, scrollTop: number) => {
-      dispatchAttention({ type: "scroll", role, scrollTop });
+    (surfaceId: SurfaceInstanceId, scrollTop: number, presentationId: number) => {
+      if (presentationId !== presentationRef.current.id) return;
+      dispatchAttention({ type: "scroll", surfaceId, scrollTop });
     },
     [dispatchAttention],
   );
@@ -1461,10 +1761,15 @@ export function Reader({
           if (role)
             dispatchAttention({
               type: "replace-revision",
-              role,
+              surfaceId: draft.owner.surfaceId,
               // The old revision's focus is not valid in the new revision;
               // retain the reader's sensible scroll position instead.
-              position: readingPosition(document, null, draft.owner.scrollTop),
+              position: readingPosition(
+                document,
+                draft.owner.surfaceId,
+                null,
+                draft.owner.scrollTop,
+              ),
             });
         }
       }
@@ -1689,7 +1994,11 @@ export function Reader({
   );
 
   const renderDocument = useCallback(
-    (surface: ReadingSurface, role: SurfaceRole): React.ReactNode => {
+    (
+      surface: ReadingSurface,
+      role: SurfaceRole,
+      context: DocumentRenderContext,
+    ): React.ReactNode => {
       const document = surface.document;
       return (
         <article
@@ -1750,12 +2059,13 @@ export function Reader({
           </header>
           <DocumentPassage
             document={document}
+            surfaceId={surface.surfaceId}
+            context={context}
             focus={surface.position.focus}
             connections={
               session.connections.length ? session.connections : NO_CONNECTIONS
             }
             onActivateConnection={onFollow}
-            onGeometryChange={() => controllerRef.current?.measure()}
             onSelectText={selectText}
           />
         </article>
@@ -1772,12 +2082,32 @@ export function Reader({
     ],
   );
 
+  const loadPreview = useCallback(
+    async (target: DocumentTarget): Promise<DocumentRevision | null> => {
+      const cached = sessionRef.current.revisionCache.get(target.revisionId)
+        ?.document;
+      if (cached) return cached;
+      const view = await readOpenResult({
+        documentId: target.documentId,
+        revisionId: target.revisionId,
+      });
+      if (!view) return null;
+      dispatch({ type: "cache/revision", revision: view.document });
+      return view.document;
+    },
+    [dispatch, readOpenResult],
+  );
+
   const currentSurface = useMemo<ReadingSurface | null>(() => {
     const attention = session.attention.attention;
     if (attention.kind !== "reading") return null;
     const cached = session.revisionCache.get(attention.current.revisionId);
     return cached
-      ? { position: attention.current, document: cached.document }
+      ? {
+          surfaceId: attention.current.surfaceId,
+          position: attention.current,
+          document: cached.document,
+        }
       : null;
   }, [session.attention.attention, session.revisionCache]);
 
@@ -1788,7 +2118,11 @@ export function Reader({
       attention.companion.position.revisionId,
     );
     return cached
-      ? { position: attention.companion.position, document: cached.document }
+      ? {
+          surfaceId: attention.companion.position.surfaceId,
+          position: attention.companion.position,
+          document: cached.document,
+        }
       : null;
   }, [session.attention.attention, session.revisionCache]);
 
@@ -1828,6 +2162,161 @@ export function Reader({
     session.attention.attention.kind === "reading"
       ? session.attention.attention.current
       : null;
+  const selectedConnectionId =
+    session.attention.attention.kind === "reading" &&
+    session.attention.attention.companion?.reason.kind === "connection"
+      ? session.attention.attention.companion.reason.connectionId
+      : null;
+
+  const relationNavigation = useMemo<RelationNavigationState>(() => {
+    if (!currentAttention)
+      return {
+        items: [],
+        current: null,
+        ordinal: null,
+        total: 0,
+        canPrevious: false,
+        canNext: false,
+        loading: false,
+        error: null,
+      };
+    const items = relationNavigationItems(
+      session.connections,
+      currentAttention.revisionId,
+    );
+    const attention = session.attention.attention;
+    const currentEndpoint =
+      attention.kind === "reading" &&
+      attention.companion?.reason.kind === "connection"
+        ? attention.companion.reason.currentEndpoint
+        : null;
+    const itemIndex =
+      selectedConnectionId && currentEndpoint
+        ? items.findIndex(
+            (item) =>
+              item.connectionId === selectedConnectionId &&
+              item.endpoint === currentEndpoint,
+          )
+        : -1;
+    const error =
+      session.neighborhood.kind === "failed"
+        ? session.neighborhood.message
+        : null;
+    return {
+      items,
+      current: itemIndex >= 0 ? items[itemIndex] ?? null : null,
+      ordinal: itemIndex >= 0 ? itemIndex + 1 : null,
+      total: items.length,
+      canPrevious: items.length > 0 && (itemIndex < 0 || itemIndex > 0),
+      canNext:
+        items.length > 0 &&
+        (itemIndex < 0 || itemIndex < items.length - 1),
+      loading: session.neighborhood.kind === "loading",
+      error,
+    };
+  }, [
+    currentAttention,
+    selectedConnectionId,
+    session.connections,
+    session.neighborhood,
+    session.attention.attention,
+  ]);
+
+  const onStepConnection = useCallback(
+    (direction: -1 | 1): void => {
+      const attention = sessionRef.current.attention.attention;
+      if (attention.kind !== "reading") return;
+      const pending = pendingConnectionRef.current;
+      const pendingOriginId = pending?.request.origin?.surfaceId;
+      const pendingOrigin =
+        pendingOriginId &&
+        [attention.current, attention.companion?.position].find(
+          (position): position is ReadingPosition =>
+            Boolean(position && position.surfaceId === pendingOriginId),
+        );
+      const basePosition = pendingOrigin ?? attention.current;
+      const items = relationNavigationItems(
+        sessionRef.current.connections,
+        basePosition.revisionId,
+      );
+      if (!items.length) {
+        dispatch({
+          type: "status",
+          message: direction < 0 ? "已是第一条关系。" : "已是最后一条关系。",
+        });
+        return;
+      }
+      let selected = -1;
+      if (pending && pendingOrigin) {
+        selected = items.findIndex(
+          (item) =>
+            item.connectionId === pending.inspection.connectionId &&
+            item.endpoint === pending.inspection.currentEndpoint,
+        );
+      } else if (
+        attention.current.surfaceId === basePosition.surfaceId &&
+        attention.companion?.reason.kind === "connection"
+      ) {
+        const reason = attention.companion.reason;
+        selected = items.findIndex(
+          (item) =>
+            item.connectionId === reason.connectionId &&
+            item.endpoint === reason.currentEndpoint,
+        );
+      }
+      const visibleOffset =
+        basePosition.focus?.start ??
+        (() => {
+          if (typeof document === "undefined") return null;
+          const roots = document.querySelectorAll<HTMLElement>(
+            "[data-surface-id][data-revision-id]",
+          );
+          for (const root of roots) {
+            if (
+              root.dataset.surfaceId === basePosition.surfaceId &&
+              root.dataset.revisionId === basePosition.revisionId
+            )
+              return firstVisibleSourceOffset(root, basePosition.revisionId);
+          }
+          return null;
+        })();
+      const base =
+        selected >= 0
+          ? selected
+            : direction > 0
+              ? items.findIndex(
+                  (item) =>
+                    visibleOffset === null ||
+                    item.anchor.start >= visibleOffset,
+                )
+            : [...items]
+                .map((item, index) => ({ item, index }))
+                .reverse()
+                .find(
+                  ({ item }) =>
+                    visibleOffset === null || item.anchor.start <= visibleOffset,
+                )?.index ?? -1;
+      const targetIndex =
+        selected >= 0 ? base + direction : base;
+      const target = items[targetIndex];
+      if (!target) {
+        dispatch({
+          type: "status",
+          message: direction < 0 ? "已是第一条关系。" : "已是最后一条关系。",
+        });
+        return;
+      }
+      onFollow({
+        connectionId: target.connectionId,
+        origin: {
+          kind: "surface",
+          surfaceId: basePosition.surfaceId,
+          endpoint: target.endpoint,
+        },
+      });
+    },
+    [dispatch, onFollow],
+  );
 
   function downloadDocument(document: DocumentRevision): void {
     const blob = new Blob([document.content], {
@@ -2056,16 +2545,20 @@ export function Reader({
               catalogue={session.catalogue}
               neighborhood={session.neighborhood}
               connections={session.connections}
-              selectedConnectionId={session.selectedConnectionId}
+              selectedConnectionId={selectedConnectionId}
               pending={pendingSurface}
               onReadBeside={(target: DocumentTarget) => void readBeside(target)}
               onPromote={onPromote}
               onReturnToCurrent={onReturnToCurrent}
               onFollow={onFollow}
+              onStepConnection={onStepConnection}
+              relationNavigation={relationNavigation}
+              presentation={presentation}
               onHistory={onHistory}
               onScroll={onScroll}
               onCameraCheckpoint={onCameraCheckpoint}
               renderDocument={renderDocument}
+              loadPreview={loadPreview}
               controllerRef={controllerRef}
             />
           ) : (
@@ -2110,7 +2603,9 @@ export function Reader({
         onFlushPendingNavigation={flushPendingNavigation}
         onSaveEditor={saveEditor}
         onOpenAnswer={openAnswer}
-        onFollow={onFollow}
+        onFollow={(connectionId) =>
+          onFollow({ connectionId, origin: { kind: "bridge" } })
+        }
         onOpenDocument={openDocument}
       />
     </main>

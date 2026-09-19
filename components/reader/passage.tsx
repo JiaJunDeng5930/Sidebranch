@@ -2,6 +2,7 @@
 
 import React, {
   memo,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -12,11 +13,19 @@ import React, {
 import { createPortal } from "react-dom";
 import "./passage.css";
 import type { AnchorInput, DocumentRevision } from "../../lib/domain/model";
+import type {
+  ConnectionEndpoint,
+  DocumentRenderContext,
+  PassageHandle,
+  ResolvedAnchor,
+  SurfaceInstanceId,
+} from "../../lib/reader/spatial-contract";
 import { isValidRenderedTextOffsets } from "../../lib/domain/text-offsets";
 import {
   assertRendererAnchor,
   createRenderPlan,
   RendererMappingError,
+  type RenderPlan,
 } from "../../lib/reader/render-markdown";
 import { DocumentBody } from "./document-virtualizer";
 import { sourceRanges } from "../../lib/reader/render-dom";
@@ -25,16 +34,19 @@ import { passageHighlightRuns } from "../../lib/reader/passage-highlights";
 export interface PassageMark {
   id: string;
   anchor: AnchorInput;
+  endpoint?: ConnectionEndpoint;
   color: string;
   label?: string;
 }
 
 export interface PassageProps {
   doc: DocumentRevision;
+  surfaceId?: SurfaceInstanceId;
+  context?: DocumentRenderContext;
   onSelect: (anchor: AnchorInput, rect: DOMRect) => void;
   focus?: AnchorInput | null;
   marks?: readonly PassageMark[];
-  onActivateMark?: (id: string) => void;
+  onActivateMark?: (id: string, endpoint?: ConnectionEndpoint) => void;
   onGeometryChange?: () => void;
 }
 
@@ -258,43 +270,6 @@ export function selectionPreview(root: HTMLElement): string {
   return root.contains(range.commonAncestorContainer) ? range.toString() : "";
 }
 
-function findOwnerScroller(root: HTMLElement): HTMLElement | null {
-  const explicit = root.closest<HTMLElement>("[data-document-scroll]");
-  if (explicit) return explicit;
-  let parent = root.parentElement;
-  while (parent && parent !== document.body) {
-    if (parent.classList.contains("reading-area")) {
-      parent.dataset.documentScroll = "";
-      return parent;
-    }
-    const style = window.getComputedStyle(parent);
-    if (/(auto|scroll|overlay)/.test(style.overflowY)) {
-      parent.dataset.documentScroll = "";
-      return parent;
-    }
-    parent = parent.parentElement;
-  }
-  return null;
-}
-
-function scrollRangeWithinDocument(root: HTMLElement, range: Range): void {
-  const scroller = findOwnerScroller(root);
-  if (!scroller) return;
-  const rect = range.getBoundingClientRect(),
-    container = scroller.getBoundingClientRect();
-  const scale = container.height / scroller.offsetHeight || 1;
-  const delta =
-    (rect.top - container.top) / scale -
-    (scroller.clientHeight - rect.height / scale) / 2;
-  scroller.scrollTop = Math.max(
-    0,
-    Math.min(
-      scroller.scrollHeight - scroller.clientHeight,
-      scroller.scrollTop + delta,
-    ),
-  );
-}
-
 function validateMarks(
   content: string,
   revisionId: string,
@@ -312,6 +287,144 @@ function validateMarks(
     assertRendererAnchor(content, mark.anchor, revisionId);
   }
   return localMarks;
+}
+
+function mergeMissingSpans(
+  spans: readonly { start: number; end: number }[],
+): readonly { start: number; end: number }[] {
+  const ordered = spans
+    .filter((span) => span.end > span.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: { start: number; end: number }[] = [];
+  for (const span of ordered) {
+    const previous = merged[merged.length - 1];
+    if (previous && span.start <= previous.end)
+      previous.end = Math.max(previous.end, span.end);
+    else merged.push({ ...span });
+  }
+  return merged;
+}
+
+function sourceIntersection(
+  start: number,
+  end: number,
+  anchor: AnchorInput,
+): { start: number; end: number } | null {
+  const from = Math.max(start, anchor.start);
+  const to = Math.min(end, anchor.end);
+  return to > from ? { start: from, end: to } : null;
+}
+
+function hasCheckedSourceMapping(span: HTMLElement): boolean {
+  if (span.dataset.sourceMapState === "unmapped") return false;
+  const start = Number(span.dataset.sourceStart);
+  const end = Number(span.dataset.sourceEnd);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || end < start)
+    return false;
+  const renderedLength = span.textContent?.length ?? 0;
+  const encoded = span.dataset.sourceMap;
+  if (!encoded) return end - start === renderedLength;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(encoded);
+  } catch {
+    return false;
+  }
+  return (
+    Array.isArray(decoded) &&
+    isValidRenderedTextOffsets(decoded, renderedLength, end - start)
+  );
+}
+
+/** Resolve DOM ranges and coverage from the same source projection as marks. */
+function resolveAnchorAtRoot(
+  root: HTMLElement,
+  plan: RenderPlan,
+  anchor: AnchorInput,
+  revisionId: string,
+): ResolvedAnchor {
+  if (anchor.revisionId !== revisionId)
+    return { ranges: [], coverage: "unmapped", missing: [] };
+  const ranges = sourceRanges(root, {
+    revisionId,
+    start: anchor.start,
+    end: anchor.end,
+  });
+  const missing: { start: number; end: number }[] = [];
+  let unmapped = false;
+  for (const gap of root.querySelectorAll<HTMLElement>(
+    "[data-source-gap-start][data-source-gap-end]",
+  )) {
+    const start = Number(gap.dataset.sourceGapStart);
+    const end = Number(gap.dataset.sourceGapEnd);
+    const intersection = sourceIntersection(start, end, anchor);
+    if (intersection) missing.push(intersection);
+  }
+  for (const span of root.querySelectorAll<HTMLElement>(
+    "span[data-source-start][data-source-end]",
+  )) {
+    const start = Number(span.dataset.sourceStart);
+    const end = Number(span.dataset.sourceEnd);
+    const intersection = sourceIntersection(start, end, anchor);
+    if (!intersection) continue;
+    if (!hasCheckedSourceMapping(span)) {
+      missing.push(intersection);
+      unmapped = true;
+    }
+  }
+  // Render plans contain all source chunks. A source gap is therefore the
+  // authoritative indication of an unmounted chunk; a syntax-only anchor can
+  // legitimately have no visible Range and is still complete.
+  const normalized = mergeMissingSpans(missing);
+  const coverage = unmapped
+    ? "unmapped"
+    : normalized.length
+      ? ranges.length
+        ? "partial"
+        : "unmounted"
+      : ranges.length || plan.sourceLength >= anchor.end
+        ? "complete"
+        : "unmapped";
+  return { ranges, coverage, missing: normalized };
+}
+
+export function firstVisibleSourceOffset(
+  root: HTMLElement,
+  revisionId: string,
+): number | null {
+  const scroller =
+    root.closest<HTMLElement>("[data-document-scroll]") ??
+    root.closest<HTMLElement>(".reading-area");
+  const viewport = scroller?.getBoundingClientRect() ?? root.getBoundingClientRect();
+  let first: number | null = null;
+  for (const span of root.querySelectorAll<HTMLElement>(
+    "span[data-source-start][data-source-end]",
+  )) {
+    if (span.dataset.sourceMapState === "unmapped") continue;
+    const start = Number(span.dataset.sourceStart);
+    const end = Number(span.dataset.sourceEnd);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+    const ranges = sourceRanges(root, { revisionId, start, end });
+    let firstMapped = start;
+    try {
+      firstMapped = sourceOffsetAt(
+        span,
+        span.textContent?.length ?? 0,
+        0,
+      );
+    } catch {
+      continue;
+    }
+    if (
+      ranges.some((range) =>
+        Array.from(range.getClientRects()).some(
+          (rect) => rect.bottom >= viewport.top && rect.top <= viewport.bottom,
+        ),
+      )
+    )
+      first = first === null ? firstMapped : Math.min(first, firstMapped);
+  }
+  return first;
 }
 
 function sameAnchor(
@@ -339,6 +452,7 @@ function sameMarks(
     const other = b[index];
     return (
       mark.id === other.id &&
+      mark.endpoint === other.endpoint &&
       mark.color === other.color &&
       mark.label === other.label &&
       sameAnchor(mark.anchor, other.anchor)
@@ -348,6 +462,8 @@ function sameMarks(
 
 function PassageImpl({
   doc,
+  surfaceId,
+  context,
   onSelect,
   focus,
   marks,
@@ -421,15 +537,30 @@ function PassageImpl({
     assertRendererAnchor(doc.content, currentFocus, doc.revisionId);
 
   const highlightId = `xanadu-${useId().replace(/[^a-z0-9]/gi, "")}`;
-  const markRanges = useRef<Array<{ id: string; ranges: Range[] }>>([]);
-  const focusKey = currentFocus
-    ? `${doc.revisionId}:${currentFocus.start}:${currentFocus.end}`
-    : null;
-  const navigatedFocus = useRef<string | null>(null);
+  const markRanges = useRef<
+    Array<{ id: string; endpoint?: ConnectionEndpoint; ranges: Range[] }>
+  >([]);
+  const geometryChanged = useCallback(() => {
+    onGeometryChange?.();
+    context?.onGeometryChange();
+  }, [context, onGeometryChange]);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!context || !root) return;
+    const handle: PassageHandle = {
+      resolveAnchor: (anchor) =>
+        resolveAnchorAtRoot(root, plan, anchor, doc.revisionId),
+      firstVisibleSourceOffset: () =>
+        firstVisibleSourceOffset(root, doc.revisionId),
+    };
+    context.registerPassage(handle);
+    return () => context.registerPassage(null);
+  }, [context, doc.revisionId, plan]);
+
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-    if (!focusKey) navigatedFocus.current = null;
     const style = document.createElement("style");
     const names: string[] = [];
     const clear = () => {
@@ -479,7 +610,7 @@ function PassageImpl({
       };
       markRanges.current = checkedMarks.map((mark) => {
         const ranges = rangesFor(mark.anchor);
-        return { id: mark.id, ranges };
+        return { id: mark.id, endpoint: mark.endpoint, ranges };
       });
       highlightRuns.forEach((run, index) => {
         const ranges = rangesFor(run);
@@ -493,10 +624,6 @@ function PassageImpl({
       if (currentFocus) {
         const ranges = rangesFor(currentFocus);
         register("focus", ranges, "#d6b36a29");
-        if (ranges[0] && navigatedFocus.current !== focusKey) {
-          scrollRangeWithinDocument(root, ranges[0]);
-          navigatedFocus.current = focusKey;
-        }
       }
       style.textContent = rules.join("\n");
     };
@@ -523,7 +650,6 @@ function PassageImpl({
     highlightRuns,
     currentFocus,
     doc.revisionId,
-    focusKey,
     highlightId,
   ]);
 
@@ -573,19 +699,29 @@ function PassageImpl({
     const hits = markRanges.current.filter((mark) =>
       mark.ranges.some((range) => hitRange(range)),
     );
-    const unique = [...new Set(hits.map((mark) => mark.id))];
+    const unique = [
+      ...new Set(hits.map((mark) => `${mark.id}:${mark.endpoint ?? ""}`)),
+    ];
     if (unique.length && onActivateMarkRef.current) {
       event.preventDefault();
-      if (unique.length === 1) onActivateMarkRef.current(unique[0]);
+      const markFor = (key: string) => {
+        const separator = key.lastIndexOf(":");
+        const id = separator < 0 ? key : key.slice(0, separator);
+        const endpoint = separator < 0 ? undefined : key.slice(separator + 1);
+        return checkedMarks.find(
+          (mark) =>
+            mark.id === id && (mark.endpoint ?? "") === (endpoint ?? ""),
+        );
+      };
+      if (unique.length === 1) {
+        const mark = markFor(unique[0]);
+        if (mark)
+          onActivateMarkRef.current(mark.id, mark.endpoint);
+      }
       else {
         setChoiceQuery("");
         setChoicePage(0);
-        setChoices(
-          unique.flatMap((id) => {
-            const mark = checkedMarks.find((item) => item.id === id);
-            return mark ? [mark] : [];
-          }),
-        );
+        setChoices(unique.flatMap((key) => (markFor(key) ? [markFor(key)!] : [])));
       }
     }
   }
@@ -601,6 +737,7 @@ function PassageImpl({
       key={doc.revisionId}
       ref={rootRef}
       className="document-content"
+      data-surface-id={surfaceId}
       data-revision-id={doc.revisionId}
       data-hit-role="text"
       onPointerUp={captureSelection}
@@ -622,7 +759,7 @@ function PassageImpl({
         plan={plan}
         rootRef={rootRef}
         focus={currentFocus}
-        onGeometryChange={onGeometryChange}
+        onGeometryChange={geometryChanged}
       />
       {selectionError &&
         createPortal(
@@ -660,10 +797,10 @@ function PassageImpl({
                 .slice(choicePage * 8, choicePage * 8 + 8)
                 .map((mark) => (
                   <button
-                    key={mark.id}
+                    key={`${mark.id}:${mark.endpoint ?? ""}`}
                     onClick={() => {
                       setChoices([]);
-                      onActivateMarkRef.current?.(mark.id);
+                      onActivateMarkRef.current?.(mark.id, mark.endpoint);
                     }}
                   >
                     {mark.label ?? mark.anchor.quote}
@@ -704,6 +841,8 @@ export const Passage = memo(
   PassageImpl,
   (previous, next) =>
     previous.doc === next.doc &&
+    previous.surfaceId === next.surfaceId &&
+    previous.context === next.context &&
     sameAnchor(previous.focus, next.focus) &&
     sameMarks(previous.marks, next.marks) &&
     previous.onSelect === next.onSelect &&

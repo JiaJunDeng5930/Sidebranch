@@ -1,14 +1,20 @@
 import type {
   AnchorInput,
-  DocumentRevision,
-  RevisionId,
-  DocumentId,
+  Connection,
   ConnectionId,
+  DocumentRevision,
+  DocumentId,
   QuestionId,
+  RevisionId,
 } from "../domain/model";
+import type {
+  ConnectionEndpoint,
+  SurfaceInstanceId,
+} from "./spatial-contract";
 
-/** A source-bound position in a document revision. */
+/** A source-bound occurrence on the reading plane. */
 export interface ReadingPosition {
+  readonly surfaceId: SurfaceInstanceId;
   readonly documentId: DocumentId;
   readonly revisionId: RevisionId;
   readonly focus: AnchorInput | null;
@@ -26,10 +32,20 @@ export interface CameraPose {
 }
 
 export type ComparisonReason =
-  | { readonly kind: "connection"; readonly connectionId: ConnectionId }
+  | {
+      readonly kind: "connection";
+      readonly connectionId: ConnectionId;
+      readonly currentEndpoint: ConnectionEndpoint;
+    }
   | { readonly kind: "document" }
   | { readonly kind: "revision" }
   | { readonly kind: "answer"; readonly questionId: QuestionId };
+
+/** Reasons reserved for ordinary document/revision/answer comparison. */
+export type OrdinaryComparisonReason = Exclude<
+  ComparisonReason,
+  { readonly kind: "connection" }
+>;
 
 export type Attention =
   | { readonly kind: "empty" }
@@ -52,29 +68,76 @@ export interface AttentionState extends AttentionSnapshot {
   readonly historyIndex: number;
 }
 
+/** A validated, complete two-end destination for an inspect action. */
+export interface ConnectionInspection {
+  readonly connectionId: ConnectionId;
+  readonly currentEndpoint: ConnectionEndpoint;
+  readonly current: ReadingPosition;
+  readonly companion: ReadingPosition;
+}
+
+/**
+ * Verify both page identities before constructing an atomic connection
+ * destination. The reducer accepts only the resulting positions; it never
+ * guesses an endpoint from a revision or connection id.
+ */
+export function createConnectionInspection(
+  connection: Connection,
+  current: ReadingPosition,
+  companion: ReadingPosition,
+  currentEndpoint: ConnectionEndpoint,
+): ConnectionInspection | null {
+  if (current.surfaceId === companion.surfaceId) return null;
+  const currentAnchor = connection[currentEndpoint];
+  const companionAnchor = connection[currentEndpoint === "from" ? "to" : "from"];
+  if (
+    current.documentId !== currentAnchor.documentId ||
+    current.revisionId !== currentAnchor.revisionId ||
+    companion.documentId !== companionAnchor.documentId ||
+    companion.revisionId !== companionAnchor.revisionId
+  )
+    return null;
+  return {
+    connectionId: connection.id,
+    currentEndpoint,
+    current: normalizePosition({
+      ...current,
+      focus: { ...currentAnchor },
+    }),
+    companion: normalizePosition({
+      ...companion,
+      focus: { ...companionAnchor },
+    }),
+  };
+}
+
 export type AttentionAction =
   | { readonly type: "navigate"; readonly position: ReadingPosition }
   | {
       readonly type: "compare";
       readonly position: ReadingPosition;
-      readonly reason: ComparisonReason;
+      readonly reason: OrdinaryComparisonReason;
+    }
+  | {
+      readonly type: "inspect-connection";
+      readonly inspection: ConnectionInspection;
     }
   | { readonly type: "promote" }
   | { readonly type: "return-to-current" }
   | { readonly type: "history"; readonly index: number }
   | {
       readonly type: "scroll";
-      readonly role: SurfaceRole;
+      readonly surfaceId: SurfaceInstanceId;
       readonly scrollTop: number;
     }
   | {
       readonly type: "focus";
-      readonly role: SurfaceRole;
+      readonly surfaceId: SurfaceInstanceId;
       readonly focus: AnchorInput | null;
     }
   | {
       readonly type: "replace-revision";
-      readonly role: SurfaceRole;
+      readonly surfaceId: SurfaceInstanceId;
       readonly position: ReadingPosition;
     }
   | { readonly type: "camera"; readonly pose: CameraPose };
@@ -102,10 +165,11 @@ function copyFocus(focus: AnchorInput | null): AnchorInput | null {
 
 function normalizePosition(position: ReadingPosition): ReadingPosition {
   return {
+    surfaceId: position.surfaceId,
     documentId: position.documentId,
     revisionId: position.revisionId,
     // A focus for another immutable revision cannot safely be restored on
-    // this surface.  Clearing it preserves the revision-bound invariant.
+    // this occurrence. Clearing it preserves the revision-bound invariant.
     focus:
       position.focus && position.focus.revisionId === position.revisionId
         ? copyFocus(position.focus)
@@ -121,7 +185,11 @@ function copyPosition(position: ReadingPosition): ReadingPosition {
 function copyReason(reason: ComparisonReason): ComparisonReason {
   switch (reason.kind) {
     case "connection":
-      return { kind: "connection", connectionId: reason.connectionId };
+      return {
+        kind: "connection",
+        connectionId: reason.connectionId,
+        currentEndpoint: reason.currentEndpoint,
+      };
     case "answer":
       return { kind: "answer", questionId: reason.questionId };
     case "document":
@@ -195,6 +263,7 @@ function sameFocus(
 
 function samePosition(left: ReadingPosition, right: ReadingPosition): boolean {
   return (
+    left.surfaceId === right.surfaceId &&
     left.documentId === right.documentId &&
     left.revisionId === right.revisionId &&
     left.scrollTop === right.scrollTop &&
@@ -207,7 +276,9 @@ function sameReason(left: ComparisonReason, right: ComparisonReason): boolean {
   switch (left.kind) {
     case "connection":
       return (
-        right.kind === "connection" && left.connectionId === right.connectionId
+        right.kind === "connection" &&
+        left.connectionId === right.connectionId &&
+        left.currentEndpoint === right.currentEndpoint
       );
     case "answer":
       return right.kind === "answer" && left.questionId === right.questionId;
@@ -249,16 +320,21 @@ export function emptyAttention(): AttentionState {
   };
 }
 
-/**
- * Construct a revision-bound reading position from either a full revision or
- * a metadata summary carrying the same identity fields.
- */
+/** Construct a source-bound occurrence at a Reader/navigation boundary. */
 export function readingPosition(
   document: Pick<DocumentRevision, "id" | "revisionId">,
+  surfaceId: SurfaceInstanceId,
+  focus?: AnchorInput | null,
+  scrollTop?: number,
+): ReadingPosition;
+export function readingPosition(
+  document: Pick<DocumentRevision, "id" | "revisionId">,
+  surfaceId: SurfaceInstanceId,
   focus: AnchorInput | null = null,
   scrollTop = 0,
 ): ReadingPosition {
   return normalizePosition({
+    surfaceId,
     documentId: document.id,
     revisionId: document.revisionId,
     focus,
@@ -285,7 +361,7 @@ function append(
   };
 }
 
-/** Update the live snapshot in place in the logical history, without append. */
+/** Update the live snapshot in place in logical history, without append. */
 function updateLive(
   state: AttentionState,
   attention: Attention,
@@ -352,26 +428,46 @@ function updateRolePosition(
   };
 }
 
+function roleForSurface(
+  attention: Extract<Attention, { kind: "reading" }>,
+  surfaceId: SurfaceInstanceId,
+): SurfaceRole | null {
+  if (attention.current.surfaceId === surfaceId) return "current";
+  if (attention.companion?.position.surfaceId === surfaceId) return "companion";
+  return null;
+}
+
+function updateSurfacePosition(
+  attention: Extract<Attention, { kind: "reading" }>,
+  surfaceId: SurfaceInstanceId,
+  position: ReadingPosition,
+): Attention {
+  const role = roleForSurface(attention, surfaceId);
+  return role ? updateRolePosition(attention, role, position) : attention;
+}
+
 function updateRoleScroll(
   attention: Extract<Attention, { kind: "reading" }>,
   role: SurfaceRole,
   scrollTop: number,
 ): Attention {
   const nextScrollTop = normalizeScrollTop(scrollTop);
-  if (role === "current") {
-    if (attention.current.scrollTop === nextScrollTop) return attention;
-    return updateRolePosition(attention, role, {
-      ...attention.current,
-      scrollTop: nextScrollTop,
-    });
-  }
-  if (!attention.companion) return attention;
-  if (attention.companion.position.scrollTop === nextScrollTop)
-    return attention;
+  const position =
+    role === "current" ? attention.current : attention.companion?.position;
+  if (!position || position.scrollTop === nextScrollTop) return attention;
   return updateRolePosition(attention, role, {
-    ...attention.companion.position,
+    ...position,
     scrollTop: nextScrollTop,
   });
+}
+
+function updateSurfaceScroll(
+  attention: Extract<Attention, { kind: "reading" }>,
+  surfaceId: SurfaceInstanceId,
+  scrollTop: number,
+): Attention {
+  const role = roleForSurface(attention, surfaceId);
+  return role ? updateRoleScroll(attention, role, scrollTop) : attention;
 }
 
 function updateRoleFocus(
@@ -391,11 +487,16 @@ function updateRoleFocus(
   });
 }
 
-/**
- * Return the nearest earlier entry whose current document or immutable
- * revision differs from the current attention.  Companion-only changes do
- * not count as a different current destination.
- */
+function updateSurfaceFocus(
+  attention: Extract<Attention, { kind: "reading" }>,
+  surfaceId: SurfaceInstanceId,
+  focus: AnchorInput | null,
+): Attention {
+  const role = roleForSurface(attention, surfaceId);
+  return role ? updateRoleFocus(attention, role, focus) : attention;
+}
+
+/** Return the nearest earlier entry with a different current destination. */
 export function returnHistoryIndex(state: AttentionState): number | null {
   const current =
     state.attention.kind === "reading" ? state.attention.current : null;
@@ -424,47 +525,82 @@ export function attentionReducer(
         companion: null,
       };
       if (sameAttention(state.attention, next)) return state;
-      // An intentional root navigation gets the readable home framing.  The
-      // prefix history still contains the previous live pose, so Back can
-      // restore the camera together with its reading position.
       return append(state, next, DEFAULT_CAMERA);
     }
     case "compare": {
       if (state.attention.kind === "empty") return state;
-      const position = normalizePosition(action.position);
       const next: Attention = {
         kind: "reading",
         current: copyPosition(state.attention.current),
         companion: {
-          position,
+          position: normalizePosition(action.position),
           reason: copyReason(action.reason),
         },
       };
       if (sameAttention(state.attention, next)) return state;
-      // Comparison is an intentional destination.  Keep the current pose in
-      // the previous snapshot and let the new companion settle at home.
+      return append(state, next, DEFAULT_CAMERA);
+    }
+    case "inspect-connection": {
+      const inspection = action.inspection;
+      const next: Attention = {
+        kind: "reading",
+        current: normalizePosition(inspection.current),
+        companion: {
+          position: normalizePosition(inspection.companion),
+          reason: {
+            kind: "connection",
+            connectionId: inspection.connectionId,
+            currentEndpoint: inspection.currentEndpoint,
+          },
+        },
+      };
+      const nextCompanion = next.companion;
+      // Repositioning an already selected connection is an alignment update,
+      // not another readable destination in history.
+      if (
+        state.attention.kind === "reading" &&
+        state.attention.companion?.reason.kind === "connection" &&
+        sameReason(
+          state.attention.companion.reason,
+          nextCompanion!.reason,
+        ) &&
+        state.attention.current.surfaceId === next.current.surfaceId &&
+        state.attention.companion.position.surfaceId ===
+          nextCompanion!.position.surfaceId
+      )
+        return updateAttentionLive(state, next);
+      if (sameAttention(state.attention, next)) return state;
       return append(state, next, DEFAULT_CAMERA);
     }
     case "promote": {
-      if (
-        state.attention.kind === "empty" ||
-        state.attention.companion === null
-      )
+      if (state.attention.kind === "empty" || !state.attention.companion)
         return state;
+      const companion = state.attention.companion;
+      if (companion.reason.kind === "connection") {
+        const next: Attention = {
+          kind: "reading",
+          current: copyPosition(companion.position),
+          companion: {
+            position: copyPosition(state.attention.current),
+            reason: {
+              kind: "connection",
+              connectionId: companion.reason.connectionId,
+              currentEndpoint:
+                companion.reason.currentEndpoint === "from" ? "to" : "from",
+            },
+          },
+        };
+        return append(state, next, DEFAULT_CAMERA);
+      }
       const next: Attention = {
         kind: "reading",
-        current: copyPosition(state.attention.companion.position),
+        current: copyPosition(companion.position),
         companion: null,
       };
-      // Promotion changes the reading root, so it follows the same framing
-      // rule as navigate/compare while preserving the compare pose in history.
       return append(state, next, DEFAULT_CAMERA);
     }
     case "return-to-current": {
-      if (
-        state.attention.kind === "empty" ||
-        state.attention.companion === null
-      )
+      if (state.attention.kind === "empty" || !state.attention.companion)
         return state;
       const next: Attention = {
         kind: "reading",
@@ -493,9 +629,9 @@ export function attentionReducer(
     }
     case "scroll": {
       if (state.attention.kind === "empty") return state;
-      const next = updateRoleScroll(
+      const next = updateSurfaceScroll(
         state.attention,
-        action.role,
+        action.surfaceId,
         action.scrollTop,
       );
       if (next === state.attention || sameAttention(next, state.attention))
@@ -504,21 +640,35 @@ export function attentionReducer(
     }
     case "focus": {
       if (state.attention.kind === "empty") return state;
-      const next = updateRoleFocus(state.attention, action.role, action.focus);
+      const next = updateSurfaceFocus(
+        state.attention,
+        action.surfaceId,
+        action.focus,
+      );
       if (next === state.attention || sameAttention(next, state.attention))
         return state;
       return updateAttentionLive(state, next);
     }
     case "replace-revision": {
       if (state.attention.kind === "empty") return state;
-      const next = updateRolePosition(
+      const next = updateSurfacePosition(
         state.attention,
-        action.role,
+        action.surfaceId,
         action.position,
       );
       if (next === state.attention || sameAttention(next, state.attention))
         return state;
-      return updateAttentionLive(state, next);
+      const downgraded: Attention =
+        next.kind === "reading" && next.companion?.reason.kind === "connection"
+          ? {
+              ...next,
+              companion: {
+                position: next.companion.position,
+                reason: { kind: "revision" },
+              },
+            }
+          : next;
+      return updateAttentionLive(state, downgraded);
     }
     case "camera": {
       const next = normalizeCamera(action.pose, state.camera);

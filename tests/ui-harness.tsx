@@ -229,6 +229,26 @@ function Harness() {
           Load stress fixture
         </button>
         <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const response = await fetch("/__qa-api", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: "__reading_fixture" }),
+              });
+              if (!response.ok) throw new Error(await response.text());
+              window.location.reload();
+            } catch (error) {
+              setHostStatus(String(error));
+              setBusy(false);
+            }
+          }}
+        >
+          Load reading fixture
+        </button>
+        <button
           onClick={() =>
             document.dispatchEvent(new Event("qa-reset-performance"))
           }

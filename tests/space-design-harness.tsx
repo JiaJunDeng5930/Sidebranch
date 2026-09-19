@@ -15,11 +15,12 @@ import {
 import { DocumentPassage } from "../components/reader/document-passage";
 import {
   attentionReducer,
+  createConnectionInspection,
   emptyAttention,
   readingPosition,
   returnHistoryIndex,
+  type AttentionAction,
   type CameraPose,
-  type SurfaceRole,
 } from "../lib/reader/attention";
 import {
   AnchorId,
@@ -32,6 +33,18 @@ import {
   type DocumentRevision,
 } from "../lib/domain/model";
 import type { NeighborhoodNode } from "../lib/domain/space";
+import type {
+  ConnectionActivation,
+  DocumentRenderContext,
+  PresentationRequest,
+  RelationNavigationState,
+  SurfaceInstanceId,
+} from "../lib/reader/spatial-contract";
+import {
+  createSurfaceInstanceId,
+  relationNavigationItems,
+  surfaceInstanceId,
+} from "../lib/reader/spatial-contract";
 import type { DocumentTarget } from "../lib/reader/space-index";
 import { observeReaderPerformance } from "./ui-performance";
 import { QaPerformancePanel } from "./qa-performance-panel";
@@ -93,6 +106,7 @@ const connections: Connection[] = documents
     label: `阅读 ${document.title}`,
     createdAt: "2026-09-18T00:00:00.000Z",
   }));
+const FIXTURE_CURRENT_SURFACE_ID = surfaceInstanceId("space-current");
 
 function SpaceDesignHarness() {
   const framed = new URLSearchParams(location.search).has("frame");
@@ -104,7 +118,7 @@ function SpaceDesignHarness() {
   const [state, dispatch] = useReducer(attentionReducer, undefined, () =>
     attentionReducer(emptyAttention(), {
       type: "navigate",
-      position: readingPosition(documents[0]),
+      position: readingPosition(documents[0], FIXTURE_CURRENT_SURFACE_ID),
     }),
   );
   const stateRef = useRef(state);
@@ -116,7 +130,30 @@ function SpaceDesignHarness() {
     [],
   );
   const revisionRef = useRef(revisions);
+  const [presentation, setPresentation] = useState<PresentationRequest>({
+    id: 0,
+    kind: "layout",
+  });
+  const presentationRef = useRef(presentation);
+  const presentationSequenceRef = useRef(0);
+  const requestPresentation = useCallback(
+    (
+      kind: PresentationRequest["kind"],
+      surfaces: readonly SurfaceInstanceId[] = [],
+    ) => {
+      const id = presentationSequenceRef.current + 1;
+      presentationSequenceRef.current = id;
+      const next: PresentationRequest =
+        kind === "align-ranges"
+          ? { id, kind, surfaces: [...new Set(surfaces)] }
+          : { id, kind };
+      presentationRef.current = next;
+      setPresentation(next);
+    },
+    [],
+  );
   const resolve = (position: ReadingSurface["position"]): ReadingSurface => ({
+    surfaceId: position.surfaceId,
     position,
     document: revisions.get(position.revisionId)!,
   });
@@ -152,36 +189,141 @@ function SpaceDesignHarness() {
       },
     ];
   });
-  const onReadBeside = useCallback(
-    (target: DocumentTarget) =>
-      dispatch({
-        type: "compare",
-        position: { ...target, scrollTop: 0 },
-        reason: { kind: "document" },
-      }),
-    [],
+  const dispatchAttention = useCallback(
+    (action: AttentionAction) => {
+      const attention = stateRef.current.attention;
+      if (action.type === "history") {
+        requestPresentation("restore");
+      } else if (
+        action.type === "navigate" ||
+        action.type === "compare" ||
+        action.type === "inspect-connection" ||
+        action.type === "promote" ||
+        action.type === "return-to-current" ||
+        action.type === "replace-revision"
+      ) {
+        const surfaces: SurfaceInstanceId[] = [];
+        if (action.type === "navigate") surfaces.push(action.position.surfaceId);
+        else if (action.type === "compare") {
+          if (attention.kind === "reading")
+            surfaces.push(attention.current.surfaceId);
+          surfaces.push(action.position.surfaceId);
+        } else if (action.type === "inspect-connection") {
+          const inspection = "inspection" in action ? action.inspection : action;
+          surfaces.push(
+            inspection.current.surfaceId,
+            inspection.companion.surfaceId,
+          );
+        } else if (attention.kind === "reading") {
+          surfaces.push(attention.current.surfaceId);
+          if (attention.companion)
+            surfaces.push(attention.companion.position.surfaceId);
+        }
+        requestPresentation("align-ranges", surfaces);
+      }
+      dispatch(action);
+    },
+    [requestPresentation],
   );
-  const onFollow = useCallback((id: ConnectionId) => {
-    const attention = stateRef.current.attention;
-    const connection = connections.find((item) => item.id === id);
-    if (!connection || attention.kind !== "reading") return;
-    const endpoint =
-      connection.from.revisionId === attention.current.revisionId
-        ? connection.to
-        : connection.from;
-    const document = revisionRef.current.get(endpoint.revisionId)!;
-    const start = document.content.indexOf(quote);
-    dispatch({
-      type: "compare",
-      position: readingPosition(document, {
-        revisionId: document.revisionId,
-        start,
-        end: start + quote.length,
-        quote,
-      }),
-      reason: { kind: "connection", connectionId: id },
-    });
-  }, []);
+  const onReadBeside = useCallback(
+    (target: DocumentTarget) => {
+      const document = revisionRef.current.get(target.revisionId);
+      if (!document) return;
+      dispatchAttention({
+        type: "compare",
+        position: readingPosition(
+          document,
+          createSurfaceInstanceId("companion"),
+          target.focus,
+          0,
+        ),
+        reason: { kind: "document" },
+      });
+    },
+    [dispatchAttention],
+  );
+  const onFollow = useCallback(
+    (activation: ConnectionActivation) => {
+      const attention = stateRef.current.attention;
+      const connection = connections.find(
+        (item) => item.id === activation.connectionId,
+      );
+      if (!connection || attention.kind !== "reading") return;
+
+      const endpointMatches = (
+        position: ReadingSurface["position"],
+        endpoint: "from" | "to",
+      ) => {
+        const anchor = connection[endpoint];
+        return (
+          position.documentId === anchor.documentId &&
+          position.revisionId === anchor.revisionId
+        );
+      };
+      let origin: ReadingSurface["position"] | null = null;
+      let endpoint: "from" | "to" | null = null;
+      if (activation.origin.kind === "surface") {
+        const surfaceId = activation.origin.surfaceId;
+        if (attention.current.surfaceId === surfaceId)
+          origin = attention.current;
+        else if (attention.companion?.position.surfaceId === surfaceId)
+          origin = attention.companion.position;
+        endpoint = activation.origin.endpoint;
+        if (!origin || !endpointMatches(origin, endpoint)) return;
+      } else {
+        for (const position of [
+          attention.current,
+          attention.companion?.position,
+        ]) {
+          if (!position) continue;
+          const matching = (["from", "to"] as const).find((candidate) =>
+            endpointMatches(position, candidate),
+          );
+          if (matching) {
+            origin = position;
+            endpoint = matching;
+            break;
+          }
+        }
+        if (!origin || !endpoint) return;
+      }
+
+      const targetEndpoint = endpoint === "from" ? "to" : "from";
+      const existing = [
+        attention.current,
+        attention.companion?.position,
+      ].find(
+        (position) =>
+          position &&
+          position.surfaceId !== origin?.surfaceId &&
+          endpointMatches(position, targetEndpoint),
+      );
+      const companion = existing
+        ? { ...existing, focus: { ...connection[targetEndpoint] } }
+        : (() => {
+            const document = revisionRef.current.get(
+              connection[targetEndpoint].revisionId,
+            );
+            if (!document) return null;
+            return readingPosition(
+              document,
+              createSurfaceInstanceId("connection"),
+              connection[targetEndpoint],
+              0,
+            );
+          })();
+      if (!companion || !origin || !endpoint) return;
+      const inspection = createConnectionInspection(
+        connection,
+        { ...origin, focus: { ...connection[endpoint] } },
+        companion,
+        endpoint,
+      );
+      if (!inspection) return;
+      dispatchAttention({ type: "inspect-connection", inspection });
+    },
+    [dispatchAttention],
+  );
   const onSelect = useCallback(
     (selection: AnchorInput) => setSelectedText(selection.quote),
     [],
@@ -190,27 +332,120 @@ function SpaceDesignHarness() {
     () => controllerRef.current?.measure(),
     [],
   );
-  const onPromote = useCallback(() => dispatch({ type: "promote" }), []);
+  const onPromote = useCallback(
+    () => dispatchAttention({ type: "promote" }),
+    [dispatchAttention],
+  );
   const onReturnToCurrent = useCallback(
-    () => dispatch({ type: "return-to-current" }),
-    [],
+    () => dispatchAttention({ type: "return-to-current" }),
+    [dispatchAttention],
   );
   const onHistory = useCallback(
-    (index: number) => dispatch({ type: "history", index }),
-    [],
+    (index: number) => dispatchAttention({ type: "history", index }),
+    [dispatchAttention],
   );
   const onScroll = useCallback(
-    (role: SurfaceRole, scrollTop: number) =>
-      dispatch({ type: "scroll", role, scrollTop }),
-    [],
+    (surfaceId: SurfaceInstanceId, scrollTop: number, presentationId: number) => {
+      if (presentationId !== presentationRef.current.id) return;
+      dispatchAttention({ type: "scroll", surfaceId, scrollTop });
+    },
+    [dispatchAttention],
   );
   const onCameraCheckpoint = useCallback(
-    (pose: CameraPose) => dispatch({ type: "camera", pose }),
-    [],
+    (pose: CameraPose) => dispatchAttention({ type: "camera", pose }),
+    [dispatchAttention],
   );
+  const onStepConnection = useCallback(
+    (direction: -1 | 1) => {
+      const attention = stateRef.current.attention;
+      if (attention.kind !== "reading") return;
+      const items = relationNavigationItems(
+        connections,
+        attention.current.revisionId,
+      );
+      if (!items.length) return;
+      let selected = -1;
+      if (attention.companion?.reason.kind === "connection") {
+        const reason = attention.companion.reason;
+        selected = items.findIndex(
+          (item) =>
+            item.connectionId === reason.connectionId &&
+            item.endpoint === reason.currentEndpoint,
+        );
+      }
+      const base =
+        selected >= 0
+          ? selected + direction
+          : direction > 0
+            ? items.findIndex(
+                (item) =>
+                  !attention.current.focus ||
+                  item.anchor.start >= attention.current.focus.start,
+              )
+            : [...items]
+                .map((item, index) => ({ item, index }))
+                .reverse()
+                .find(
+                  ({ item }) =>
+                    !attention.current.focus ||
+                    item.anchor.start <= attention.current.focus.start,
+                )?.index ?? -1;
+      const target = items[base];
+      if (!target) return;
+      onFollow({
+        connectionId: target.connectionId,
+        origin: {
+          kind: "surface",
+          surfaceId: attention.current.surfaceId,
+          endpoint: target.endpoint,
+        },
+      });
+    },
+    [onFollow],
+  );
+  const relationNavigation: RelationNavigationState = (() => {
+    if (state.attention.kind !== "reading")
+      return {
+        items: [],
+        current: null,
+        ordinal: null,
+        total: 0,
+        canPrevious: false,
+        canNext: false,
+        loading: false,
+        error: null,
+      };
+    const items = relationNavigationItems(
+      connections,
+      state.attention.current.revisionId,
+    );
+    const reason = state.attention.companion?.reason;
+    const itemIndex =
+      reason?.kind === "connection"
+        ? items.findIndex(
+            (item) =>
+              item.connectionId === reason.connectionId &&
+              item.endpoint === reason.currentEndpoint,
+          )
+        : -1;
+    return {
+      items,
+      current: itemIndex >= 0 ? items[itemIndex] ?? null : null,
+      ordinal: itemIndex >= 0 ? itemIndex + 1 : null,
+      total: items.length,
+      canPrevious: itemIndex > 0,
+      canNext: itemIndex >= 0 && itemIndex < items.length - 1,
+      loading: false,
+      error: null,
+    };
+  })();
   const renderedConnections = connections;
   const renderDocument = useCallback(
-    (surface: ReadingSurface) => (
+    (
+      surface: ReadingSurface,
+      _role: "current" | "companion",
+      context: DocumentRenderContext,
+    ) => (
       <article className="space-fixture-article">
         <header>
           <h1>{surface.document.title}</h1>
@@ -220,6 +455,8 @@ function SpaceDesignHarness() {
         </header>
         <DocumentPassage
           document={surface.document}
+          surfaceId={surface.surfaceId}
+          context={context}
           focus={surface.position.focus}
           connections={renderedConnections}
           onSelectText={onSelect}
@@ -229,6 +466,11 @@ function SpaceDesignHarness() {
       </article>
     ),
     [onFollow, onSelect, onGeometryChange, renderedConnections],
+  );
+  const loadPreview = useCallback(
+    async (target: DocumentTarget): Promise<DocumentRevision | null> =>
+      revisionRef.current.get(target.revisionId) ?? null,
+    [],
   );
   return (
     <main className="space-fixture">
@@ -319,10 +561,14 @@ function SpaceDesignHarness() {
             onPromote={onPromote}
             onReturnToCurrent={onReturnToCurrent}
             onFollow={onFollow}
+            onStepConnection={onStepConnection}
+            relationNavigation={relationNavigation}
+            presentation={presentation}
             onHistory={onHistory}
             onScroll={onScroll}
             onCameraCheckpoint={onCameraCheckpoint}
             renderDocument={renderDocument}
+            loadPreview={loadPreview}
           />
         )}
         {inputOnlyControl && (

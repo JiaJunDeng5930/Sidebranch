@@ -342,7 +342,6 @@ export interface ReaderSession {
   readonly neighborhood: NeighborhoodKnowledge;
   readonly connections: readonly Connection[];
   readonly questions: readonly Question[];
-  readonly selectedConnectionId: Connection["id"] | null;
   readonly selection: SelectionState;
   readonly question: QuestionDraft;
   /** Monotonic source for visible composer identities. */
@@ -385,7 +384,6 @@ export const emptySession = (): ReaderSession => ({
   neighborhood: { kind: "idle" },
   connections: [],
   questions: [],
-  selectedConnectionId: null,
   selection: { kind: "none" },
   question: emptyQuestionDraft(),
   questionDraftSequence: 0,
@@ -523,10 +521,6 @@ export type ReaderSessionAction =
       readonly connection: Connection;
     }
   | {
-      readonly type: "connection/select";
-      readonly connectionId: Connection["id"] | null;
-    }
-  | {
       readonly type: "editor/open-create";
       readonly path: string;
       readonly owner?: ReadingPosition | null;
@@ -624,6 +618,7 @@ export function readerSessionReducer(
       const navigation = [
         "navigate",
         "compare",
+        "inspect-connection",
         "promote",
         "return-to-current",
         "history",
@@ -643,10 +638,6 @@ export function readerSessionReducer(
           navigation && action.action.type === "navigate"
             ? []
             : state.questions,
-        selectedConnectionId:
-          navigation && action.action.type === "navigate"
-            ? null
-            : state.selectedConnectionId,
         loading: false,
       };
     }
@@ -1194,8 +1185,6 @@ export function readerSessionReducer(
           : [...state.connections, action.connection],
       };
     }
-    case "connection/select":
-      return { ...state, selectedConnectionId: action.connectionId };
     case "editor/open-create":
       return {
         ...state,

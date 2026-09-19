@@ -1,5 +1,12 @@
 "use client";
-import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { AnchorInput, DocumentRevision } from "../../lib/domain/model";
 import {
   assertRendererAnchor,
@@ -169,8 +176,15 @@ export const DocumentBody = memo(function DocumentBody({
     indexes.add(index);
   if (focus && virtual) {
     const focused = focusChunkIndexes(plan.chunks, focus);
-    if (focused[0] !== undefined) indexes.add(focused[0]);
-    if (focused.length > 1) indexes.add(focused[focused.length - 1]);
+    // A small focus range owns a complete contiguous render corridor so its
+    // DOM Range, native selection, and Scene geometry agree. Large ranges are
+    // bounded by the existing budget and expose explicit gaps as partial.
+    if (focused.length <= MAX_VIEWPORT_CHUNKS) {
+      for (const index of focused) indexes.add(index);
+    } else {
+      if (focused[0] !== undefined) indexes.add(focused[0]);
+      if (focused.length > 1) indexes.add(focused[focused.length - 1]);
+    }
   }
   if (virtual) {
     for (const index of [visibleFirst - 1, visibleLast + 1])
@@ -184,6 +198,12 @@ export const DocumentBody = memo(function DocumentBody({
   for (const index of selectionPins) indexes.add(index);
   const mounted = [...indexes].sort((a, b) => a - b);
   const mountedKey = mounted.join(",");
+
+  useLayoutEffect(() => {
+    // Scene must read the committed spacer heights, not the DOM preceding
+    // setHeights. Mounted chunks and spacer-only changes both move anchors.
+    geometryCallback.current?.();
+  }, [heights, mountedKey]);
 
   useEffect(() => {
     const root = rootRef.current;

@@ -13,12 +13,18 @@ import {
 } from "../lib/domain/model";
 import {
   attentionReducer,
+  createConnectionInspection,
   emptyAttention,
   readingPosition,
   returnHistoryIndex,
   type AttentionState,
   type ReadingPosition,
 } from "../lib/reader/attention";
+import {
+  formatConnectionLabel,
+  relationNavigationItems,
+  surfaceInstanceId,
+} from "../lib/reader/spatial-contract";
 import {
   projectSpaceEdges,
   resolveEdgeActivation,
@@ -49,9 +55,13 @@ function summary(
   };
 }
 
+let nextSurface = 0;
+
 function position(document: DocumentSummary, start = 0): ReadingPosition {
+  nextSurface += 1;
   return readingPosition(
     document,
+    surfaceInstanceId(`attention-test-${nextSurface}`),
     AnchorInput.parse({
       revisionId: document.revisionId,
       start,
@@ -97,10 +107,16 @@ test("attention preserves complete A/B reading context through promote and histo
     type: "navigate",
     position: position(a, 4),
   });
+  const inspection = createConnectionInspection(
+    connectionBetween(1, a, b),
+    position(a, 4),
+    position(b, 8),
+    "from",
+  );
+  assert.ok(inspection);
   state = attentionReducer(state, {
-    type: "compare",
-    position: position(b, 8),
-    reason: { kind: "connection", connectionId: connection(1) },
+    type: "inspect-connection",
+    inspection,
   });
   assert.equal(state.history.length, 2);
   assert.equal(state.attention.kind, "reading");
@@ -113,7 +129,13 @@ test("attention preserves complete A/B reading context through promote and histo
   assert.equal(state.attention.kind, "reading");
   if (state.attention.kind !== "reading") return;
   assert.equal(state.attention.current.documentId, b.id);
-  assert.equal(state.attention.companion, null);
+  assert.equal(state.attention.companion?.position.documentId, a.id);
+  assert.equal(
+    state.attention.companion?.reason.kind === "connection"
+      ? state.attention.companion.reason.currentEndpoint
+      : null,
+    "to",
+  );
   assert.equal(returnHistoryIndex(state), 1);
 
   state = attentionReducer(state, { type: "history", index: 1 });
@@ -121,10 +143,102 @@ test("attention preserves complete A/B reading context through promote and histo
   if (state.attention.kind !== "reading") return;
   assert.equal(state.attention.current.documentId, a.id);
   assert.equal(state.attention.current.scrollTop, 4);
-  assert.equal(state.attention.current.focus?.start, 4);
+  assert.equal(state.attention.current.focus?.start, 0);
   assert.equal(state.attention.companion?.position.documentId, b.id);
   assert.equal(state.attention.companion?.position.scrollTop, 8);
   assert.equal(state.history.length, 3, "history restore does not append");
+});
+
+test("connection inspection keeps occurrence identity, aligns twice without history, and swaps both ends", () => {
+  const a = summary(60, "Alpha");
+  const b = summary(61, "Beta");
+  const relation = connectionBetween(60, a, b);
+  const current = position(a, 2);
+  const companion = position(b, 4);
+  const inspection = createConnectionInspection(
+    relation,
+    { ...current, surfaceId: surfaceInstanceId("a-occurrence") },
+    { ...companion, surfaceId: surfaceInstanceId("b-occurrence") },
+    "from",
+  );
+  assert.ok(inspection);
+  let state = attentionReducer(emptyAttention(), {
+    type: "inspect-connection",
+    inspection,
+  });
+  assert.equal(state.history.length, 1);
+  assert.equal(state.attention.kind, "reading");
+  if (state.attention.kind !== "reading") return;
+  assert.notEqual(
+    state.attention.current.surfaceId,
+    state.attention.companion?.position.surfaceId,
+  );
+  const realigned = createConnectionInspection(
+    relation,
+    { ...inspection.current, scrollTop: 140 },
+    { ...inspection.companion, scrollTop: 220 },
+    "from",
+  );
+  assert.ok(realigned);
+  state = attentionReducer(state, {
+    type: "inspect-connection",
+    inspection: realigned,
+  });
+  assert.equal(state.history.length, 1, "alignment does not append history");
+  assert.equal(state.attention.kind, "reading");
+  if (state.attention.kind !== "reading") return;
+  assert.equal(state.attention.current.scrollTop, 140);
+  state = attentionReducer(state, { type: "promote" });
+  assert.equal(state.history.length, 2);
+  assert.equal(state.attention.kind, "reading");
+  if (state.attention.kind !== "reading") return;
+  assert.equal(state.attention.current.documentId, b.id);
+  assert.equal(state.attention.companion?.position.documentId, a.id);
+  assert.equal(
+    state.attention.companion?.reason.kind === "connection"
+      ? state.attention.companion.reason.currentEndpoint
+      : null,
+    "to",
+  );
+  assert.equal(
+    createConnectionInspection(
+      relation,
+      { ...inspection.current, documentId: b.id },
+      inspection.companion,
+      "from",
+    ),
+    null,
+  );
+});
+
+test("relation navigation keeps both endpoints and stable same-range order", () => {
+  const document = summary(62, "Self");
+  const first = connectionBetween(62, document, document);
+  const secondBase = connectionBetween(63, document, document);
+  const second = {
+    ...secondBase,
+    from: { ...secondBase.from, start: 0, end: 2 },
+    to: { ...secondBase.to, start: 0, end: 2 },
+  };
+  const items = relationNavigationItems(
+    [second, first],
+    document.revisionId,
+  );
+  assert.equal(items.length, 4);
+  assert.deepEqual(
+    items.map((item) => [item.connectionId, item.endpoint]),
+    [
+      [first.id, "from"],
+      [second.id, "from"],
+      [second.id, "to"],
+      [first.id, "to"],
+    ],
+  );
+  assert.equal(
+    items.filter((item) => item.connectionId === first.id).length,
+    2,
+  );
+  assert.equal(items[0]?.label, formatConnectionLabel(first, items[0]!.endpoint));
 });
 
 test("scroll, focus, and camera replace the current history snapshot", () => {
@@ -140,12 +254,18 @@ test("scroll, focus, and camera replace the current history snapshot", () => {
   const historyLength = state.history.length;
   state = attentionReducer(state, {
     type: "scroll",
-    role: "companion",
+    surfaceId:
+      state.attention.kind === "reading"
+        ? state.attention.companion!.position.surfaceId
+        : surfaceInstanceId("missing"),
     scrollTop: 120,
   });
   state = attentionReducer(state, {
     type: "focus",
-    role: "current",
+    surfaceId:
+      state.attention.kind === "reading"
+        ? state.attention.current.surfaceId
+        : surfaceInstanceId("missing"),
     focus: AnchorInput.parse({
       revisionId: a.revisionId,
       start: 2,

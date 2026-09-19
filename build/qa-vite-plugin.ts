@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import { qaBackend } from "../tests/qa-backend";
 import { commandSchemas, type CommandName } from "../lib/domain/commands";
 import { seedBenchmark } from "../tests/benchmark-fixture";
+import { seedReadingFixture } from "../tests/reading-fixture";
 /** Isolated, ephemeral fixtures for UI QA. configureServer is never part of a Worker build. */
 export function qaPreview(): Plugin {
   let backend: ReturnType<typeof qaBackend> | undefined;
   let benchmark: Promise<void> | undefined;
+  let readingFixture: ReturnType<typeof seedReadingFixture> | undefined;
   return {
     name: "sidebranch-local-qa",
     configureServer(server) {
@@ -45,6 +47,15 @@ export function qaPreview(): Plugin {
               await benchmark;
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ ready: true }));
+              return;
+            }
+            if (input.name === "__reading_fixture") {
+              readingFixture ??= backend.then((b) =>
+                seedReadingFixture(b.store),
+              );
+              const fixture = await readingFixture;
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ ready: true, fixture }));
               return;
             }
             if (!Object.hasOwn(commandSchemas, input.name))
