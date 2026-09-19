@@ -404,7 +404,8 @@ export function firstVisibleSourceOffset(
   const scroller =
     root.closest<HTMLElement>("[data-document-scroll]") ??
     root.closest<HTMLElement>(".reading-area");
-  const viewport = scroller?.getBoundingClientRect() ?? root.getBoundingClientRect();
+  const viewport =
+    scroller?.getBoundingClientRect() ?? root.getBoundingClientRect();
   let first: number | null = null;
   for (const span of root.querySelectorAll<HTMLElement>(
     "span[data-source-start][data-source-end]",
@@ -416,11 +417,7 @@ export function firstVisibleSourceOffset(
     const ranges = sourceRanges(root, { revisionId, start, end });
     let firstMapped = start;
     try {
-      firstMapped = sourceOffsetAt(
-        span,
-        span.textContent?.length ?? 0,
-        0,
-      );
+      firstMapped = sourceOffsetAt(span, span.textContent?.length ?? 0, 0);
     } catch {
       continue;
     }
@@ -555,6 +552,11 @@ function PassageImpl({
   }, [context, onGeometryChange]);
 
   useLayoutEffect(() => {
+    context?.registerAnchors(checkedMarks.map((mark) => mark.anchor));
+    return () => context?.registerAnchors([]);
+  }, [context, checkedMarks]);
+
+  useLayoutEffect(() => {
     const root = rootRef.current;
     if (!context || !root) return;
     const handle: PassageHandle = {
@@ -624,9 +626,7 @@ function PassageImpl({
       highlightRuns.forEach((run, index) => {
         const ranges = rangesFor(run);
         const appearance =
-          run.relation === "overlap"
-            ? null
-            : relationAppearance(run.relation);
+          run.relation === "overlap" ? null : relationAppearance(run.relation);
         const signal = appearance?.signal ?? readerPalette.overlap;
         const ink = appearance?.ink;
         register(
@@ -665,13 +665,7 @@ function PassageImpl({
       clear();
       style.remove();
     };
-  }, [
-    checkedMarks,
-    highlightRuns,
-    currentFocus,
-    doc.revisionId,
-    highlightId,
-  ]);
+  }, [checkedMarks, highlightRuns, currentFocus, doc.revisionId, highlightId]);
 
   function captureSelection(): void {
     const root = rootRef.current;
@@ -716,14 +710,20 @@ function PassageImpl({
           event.clientY <= rect.bottom,
       );
     };
-    const hits = markRanges.current.filter((mark) =>
-      mark.ranges.some((range) => hitRange(range)),
-    );
+    const hits = context
+      ? checkedMarks.filter((mark) =>
+          context.hitTestAnchor(mark.anchor, {
+            x: event.clientX,
+            y: event.clientY,
+          }),
+        )
+      : markRanges.current.filter((mark) => mark.ranges.some(hitRange));
     const unique = [
       ...new Set(hits.map((mark) => `${mark.id}:${mark.endpoint ?? ""}`)),
     ];
     if (unique.length && onActivateMarkRef.current) {
       event.preventDefault();
+      event.stopPropagation();
       const markFor = (key: string) => {
         const separator = key.lastIndexOf(":");
         const id = separator < 0 ? key : key.slice(0, separator);
@@ -735,13 +735,13 @@ function PassageImpl({
       };
       if (unique.length === 1) {
         const mark = markFor(unique[0]);
-        if (mark)
-          onActivateMarkRef.current(mark.id, mark.endpoint);
-      }
-      else {
+        if (mark) onActivateMarkRef.current(mark.id, mark.endpoint);
+      } else {
         setChoiceQuery("");
         setChoicePage(0);
-        setChoices(unique.flatMap((key) => (markFor(key) ? [markFor(key)!] : [])));
+        setChoices(
+          unique.flatMap((key) => (markFor(key) ? [markFor(key)!] : [])),
+        );
       }
     }
   }

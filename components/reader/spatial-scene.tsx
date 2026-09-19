@@ -16,17 +16,33 @@ import type {
   SurfaceInstanceId,
   DocumentRenderContext,
 } from "../../lib/reader/spatial-contract";
+import { quat, vec3 } from "gl-matrix";
+import type { AnchorInput, ConnectionId } from "../../lib/domain/model";
 import type { SpaceView } from "../../lib/reader/space-view";
 import {
   cameraTransform,
+  matrixCss,
   paperTransform,
   paperToWorld,
   paperPoint,
-  worldToScreen,
+  screenRay,
+  screenPoint,
+  worldPoint,
+  isProjectionSafe,
   type PaperPose,
   type CameraViewport,
 } from "../../lib/reader/camera";
-import { SceneGeometry } from "./scene-geometry";
+import { SceneGeometry, visibleAnchorFragments } from "./scene-geometry";
+import {
+  buildRangeRibbon,
+  clipRangeRibbonToCamera,
+  triangleLeafGeometry,
+  hitTestRangeRibbon,
+  intersectPaperRay,
+  type RangeRibbonMouthSegment,
+  type RangeRibbonTriangle,
+  type RangeRibbonProxyReason,
+} from "../../lib/reader/range-ribbon";
 import { defaultPaperPose, rangeScrollTarget } from "./scene-presentation";
 import { SceneInteraction } from "./scene-interaction";
 import { desiredFullText } from "../../lib/reader/space-residency";
@@ -48,7 +64,26 @@ export type SpatialSceneProps = Omit<
   renderDocumentMenu?(surface: ReadingSurface): React.ReactNode;
 };
 type Loaded = { surface: ReadingSurface };
-type Band = { id: string; path: string; color: string; label: string };
+type Band = {
+  id: ConnectionId;
+  triangles: readonly RangeRibbonTriangle[];
+  color: string;
+  label: string;
+};
+type ProxyMouth = {
+  key: string;
+  reason: RangeRibbonProxyReason;
+  transform: string;
+  color: string;
+};
+const proxyLabels: Record<RangeRibbonProxyReason, string> = {
+  "outside-visible-text": "原文在可见范围外",
+  unmapped: "原文范围无法映射",
+  folded: "展开后定位原文",
+  unloaded: "正文尚未加载",
+  loading: "正文加载中",
+  error: "正文加载失败",
+};
 const initialViewport = { width: 1280, height: 850 };
 function ScenePaper({
   surface,
@@ -59,6 +94,8 @@ function ScenePaper({
   register,
   registerPassage,
   invalidate,
+  registerAnchors,
+  hitTestAnchor,
   onScroll,
   onFocus,
   renderDocument,
@@ -71,7 +108,13 @@ function ScenePaper({
   viewport: CameraViewport;
   register(id: SurfaceInstanceId, node: HTMLElement | null): void;
   registerPassage(id: SurfaceInstanceId, handle: PassageHandle | null): void;
-  invalidate(): void;
+  invalidate(id?: SurfaceInstanceId): void;
+  registerAnchors(id: SurfaceInstanceId, anchors: readonly AnchorInput[]): void;
+  hitTestAnchor(
+    id: SurfaceInstanceId,
+    anchor: AnchorInput,
+    point: { x: number; y: number },
+  ): boolean;
   onScroll(id: SurfaceInstanceId, top: number): void;
   onFocus(id: SurfaceInstanceId): void;
   renderDocument: SpatialSceneProps["renderDocument"];
@@ -95,9 +138,18 @@ function ScenePaper({
   const context = useMemo<DocumentRenderContext>(
     () => ({
       registerPassage: (handle) => registerPassage(surface.surfaceId, handle),
-      onGeometryChange: invalidate,
+      onGeometryChange: () => invalidate(surface.surfaceId),
+      registerAnchors: (anchors) => registerAnchors(surface.surfaceId, anchors),
+      hitTestAnchor: (anchor, point) =>
+        hitTestAnchor(surface.surfaceId, anchor, point),
     }),
-    [surface.surfaceId, registerPassage, invalidate],
+    [
+      surface.surfaceId,
+      registerPassage,
+      invalidate,
+      registerAnchors,
+      hitTestAnchor,
+    ],
   );
   const down = useRef<{ x: number; y: number } | null>(null);
   return (
@@ -123,6 +175,7 @@ function ScenePaper({
         down.current = { x: event.clientX, y: event.clientY };
       }}
       onClick={(event) => {
+        if (event.defaultPrevented) return;
         const previous = down.current;
         down.current = null;
         if (
@@ -189,6 +242,7 @@ export function SpatialScene(props: SpatialSceneProps) {
   const nodes = useRef(new Map<SurfaceInstanceId, HTMLElement>()),
     passages = useRef(new Map<SurfaceInstanceId, PassageHandle>());
   const geometry = useRef(new SceneGeometry());
+  const anchors = useRef(new Map<SurfaceInstanceId, readonly AnchorInput[]>());
   const interaction = useRef(new SceneInteraction());
   const [viewport, setViewport] = useState(initialViewport),
     [draftView, setDraftView] = useState<{
@@ -196,6 +250,7 @@ export function SpatialScene(props: SpatialSceneProps) {
       view: SpaceView;
     } | null>(null),
     [bands, setBands] = useState<Band[]>([]),
+    [proxies, setProxies] = useState<ProxyMouth[]>([]),
     [measureEpoch, setMeasureEpoch] = useState(0);
   const view = draftView?.base === props.view ? draftView.view : props.view;
   const live = useRef(view);
@@ -237,8 +292,8 @@ export function SpatialScene(props: SpatialSceneProps) {
       defaultPaperPose(
         Math.max(
           0,
-          loadedRef.current.findIndex(
-            (entry) => entry.surface.surfaceId === id,
+          propsRef.current.surfaces.findIndex(
+            (surface) => surface.surfaceId === id,
           ),
         ),
       ),
@@ -258,8 +313,8 @@ export function SpatialScene(props: SpatialSceneProps) {
     },
     [paint],
   );
-  const invalidate = useCallback(() => {
-    geometry.current.invalidate();
+  const invalidate = useCallback((id?: SurfaceInstanceId) => {
+    geometry.current.invalidate(id);
     setMeasureEpoch((value) => value + 1);
   }, []);
   const register = useCallback(
@@ -272,9 +327,69 @@ export function SpatialScene(props: SpatialSceneProps) {
   const registerPassage = useCallback(
     (id: SurfaceInstanceId, handle: PassageHandle | null) => {
       if (handle) passages.current.set(id, handle);
-      else passages.current.delete(id);
+      else {
+        passages.current.delete(id);
+        geometry.current.invalidate(id);
+      }
     },
     [],
+  );
+  const registerAnchors = useCallback(
+    (id: SurfaceInstanceId, value: readonly AnchorInput[]) => {
+      anchors.current.set(id, value);
+      setMeasureEpoch((epoch) => epoch + 1);
+    },
+    [],
+  );
+  const hitTestAnchor = useCallback(
+    (
+      id: SurfaceInstanceId,
+      anchor: AnchorInput,
+      point: { x: number; y: number },
+    ) => {
+      const owner = geometry.current;
+      const layout = owner.layouts.get(id);
+      const surface = propsRef.current.surfaces.find(
+        (item) => item.surfaceId === id,
+      );
+      const scroll = nodes.current
+        .get(id)
+        ?.querySelector<HTMLElement>("[data-document-scroll]");
+      const root = viewportRef.current;
+      if (
+        !layout ||
+        !scroll ||
+        !root ||
+        !surface ||
+        surface.position.revisionId !== anchor.revisionId
+      )
+        return false;
+      const rect = root.getBoundingClientRect();
+      const ray = screenRay(
+        screenPoint(point.x - rect.left, point.y - rect.top),
+        live.current.camera,
+        viewportValue.current,
+      );
+      const hit = intersectPaperRay(
+        ray,
+        poseFor(live.current, id),
+        layout.width,
+        layout.height,
+      );
+      const cached = owner.resolveAnchor(id, anchor, undefined, scroll, false);
+      return (
+        !!hit &&
+        !!cached &&
+        visibleAnchorFragments(cached, layout, scroll).some(
+          (part) =>
+            hit.point.x >= part.left &&
+            hit.point.x <= part.right &&
+            hit.point.y >= part.top &&
+            hit.point.y <= part.bottom,
+        )
+      );
+    },
+    [poseFor],
   );
   const focus = useCallback((id: SurfaceInstanceId) => {
     if (!interaction.current.consumeClick())
@@ -293,6 +408,12 @@ export function SpatialScene(props: SpatialSceneProps) {
     });
     observer.observe(node);
     return () => observer.disconnect();
+  }, [invalidate]);
+  useEffect(() => {
+    const fonts = document.fonts;
+    const changed = () => invalidate();
+    fonts.addEventListener("loadingdone", changed);
+    return () => fonts.removeEventListener("loadingdone", changed);
   }, [invalidate]);
   useEffect(() => {
     const node = viewportRef.current;
@@ -337,37 +458,42 @@ export function SpatialScene(props: SpatialSceneProps) {
     const geometryOwner = geometry.current,
       node = viewportRef.current;
     if (!node) return;
-    geometryOwner.setContext(
-      JSON.stringify([
-        viewport,
-        loaded.map(({ surface }) => [
-          surface.surfaceId,
-          surface.document.revisionId,
-          surface.position.focus,
+    for (const surface of props.surfaces) {
+      geometryOwner.setSurfaceContext(
+        surface.surfaceId,
+        JSON.stringify([
+          viewport,
+          desiredIds.has(surface.surfaceId),
+          surface.position.documentId,
+          surface.position.revisionId,
         ]),
-        props.connections.map((connection) => [
-          connection.id,
-          connection.from,
-          connection.to,
-        ]),
-      ]),
-    );
+      );
+    }
+    // Newly discovered bindings/marks require one neutral measurement pass;
+    // existing ranges survive camera, paper, scroll and unrelated binding changes.
+    for (const { surface } of loaded) {
+      const required = [...(anchors.current.get(surface.surfaceId) ?? [])];
+      if (surface.position.focus) required.push(surface.position.focus);
+      for (const binding of props.bindings)
+        for (const endpoint of [binding.from, binding.to])
+          if (endpoint.surfaceId === surface.surfaceId)
+            required.push(endpoint.anchor);
+      if (
+        required.some(
+          (anchor) => !geometryOwner.hasAnchor(surface.surfaceId, anchor),
+        )
+      )
+        geometryOwner.dirty = true;
+    }
     for (const id of restored.current.keys())
       if (!loaded.some((entry) => entry.surface.surfaceId === id))
         restored.current.delete(id);
     const measure = geometryOwner.dirty;
     const restore = measure
-      ? geometryOwner.measureLayout(
-          node.getBoundingClientRect(),
-          worldRef.current,
-          nodes.current,
-          new Map(),
-        )
+      ? geometryOwner.measureLayout(worldRef.current, nodes.current)
       : () => {};
-    const local = new Map<
-      string,
-      { id: SurfaceInstanceId; points: { x: number; y: number }[] }
-    >();
+    const local = new Map<string, RangeRibbonMouthSegment[]>();
+    const proxyMouths: ProxyMouth[] = [];
     try {
       for (const { surface } of loaded) {
         const scroll = nodes.current
@@ -405,53 +531,172 @@ export function SpatialScene(props: SpatialSceneProps) {
           restored.current.set(surface.surfaceId, key);
         }
       }
-      for (const connection of props.connections)
+      for (const { surface } of loaded) {
+        const scroll = nodes.current
+          .get(surface.surfaceId)
+          ?.querySelector<HTMLElement>("[data-document-scroll]");
+        for (const anchor of anchors.current.get(surface.surfaceId) ?? [])
+          if (anchor.revisionId === surface.position.revisionId)
+            geometryOwner.resolveAnchor(
+              surface.surfaceId,
+              anchor,
+              passages.current.get(surface.surfaceId),
+              scroll,
+              measure,
+            );
+      }
+      const byId = new Map(
+        props.surfaces.map((surface) => [surface.surfaceId, surface]),
+      );
+      const bindings = new Map(
+        props.bindings.map((binding) => [binding.connectionId, binding]),
+      );
+      for (const connection of props.connections) {
+        const binding = bindings.get(connection.id);
+        if (!binding) continue;
         for (const endpoint of ["from", "to"] as const) {
-          const anchor = connection[endpoint];
-          const binding = props.bindings.find(
-            (item) => item.connectionId === connection.id,
-          );
-          const entry = loaded.find(
-            (item) => item.surface.surfaceId === binding?.[endpoint].surfaceId,
-          );
-          if (!entry) continue;
-          const id = entry.surface.surfaceId,
-            scroll = nodes.current
-              .get(id)
-              ?.querySelector<HTMLElement>("[data-document-scroll]"),
+          const bound = binding[endpoint],
+            opposite = binding[endpoint === "from" ? "to" : "from"];
+          const surface = byId.get(bound.surfaceId),
+            other = byId.get(opposite.surfaceId);
+          const anchor = bound.anchor,
+            declared = connection[endpoint];
+          if (
+            !surface ||
+            !other ||
+            anchor.revisionId !== surface.position.revisionId ||
+            declared.documentId !== surface.position.documentId ||
+            anchor.revisionId !== declared.revisionId ||
+            anchor.start !== declared.start ||
+            anchor.end !== declared.end
+          )
+            continue;
+          const id = surface.surfaceId,
             layout = geometryOwner.layouts.get(id);
-          if (!scroll || !layout) continue;
-          const resolved = geometryOwner.resolveAnchor(
-            id,
-            anchor,
-            passages.current.get(id),
-            scroll,
-            measure,
-          );
-          if (!resolved?.fragments.length) continue;
-          const fragments = resolved.fragments.filter(
-            (r) =>
-              r.bottom - scroll.scrollTop > 0 &&
-              r.top - scroll.scrollTop < scroll.clientHeight,
-          );
-          if (!fragments.length) continue;
-          const r = fragments[0];
-          const left = layout.scroll.left + r.left,
-            right = layout.scroll.left + r.right;
-          const top = layout.scroll.top + Math.max(0, r.top - scroll.scrollTop),
-            bottom =
-              layout.scroll.top +
-              Math.min(scroll.clientHeight, r.bottom - scroll.scrollTop);
-          local.set(`${connection.id}:${endpoint}`, {
-            id,
-            points: [
-              { x: left, y: top },
-              { x: right, y: top },
-              { x: right, y: bottom },
-              { x: left, y: bottom },
+          if (!layout) continue;
+          const pose = poseFor(view, id),
+            otherPose = poseFor(view, other.surfaceId);
+          const direction = vec3.transformQuat(
+            vec3.create(),
+            [
+              otherPose.position.x - pose.position.x,
+              otherPose.position.y - pose.position.y,
+              otherPose.position.z - pose.position.z,
             ],
-          });
+            quat.conjugate(quat.create(), pose.orientation),
+          );
+          const edge =
+            Math.abs(direction[0]) >= Math.abs(direction[1])
+              ? direction[0] >= 0
+                ? "right"
+                : "left"
+              : direction[1] >= 0
+                ? "bottom"
+                : "top";
+          const normal = vec3.transformQuat(
+            vec3.create(),
+            [0, 0, 0.7],
+            pose.orientation,
+          );
+          const toWorld = (x: number, y: number) => {
+            const p = paperToWorld(
+              paperPoint(x, y),
+              pose,
+              layout.width,
+              layout.height,
+            );
+            return worldPoint(
+              p.x + normal[0],
+              p.y + normal[1],
+              p.z + normal[2],
+            );
+          };
+          const mouth: RangeRibbonMouthSegment[] = [];
+          const proxy = (reason: RangeRibbonProxyReason, top?: number) => {
+            const x =
+              edge === "left"
+                ? 4
+                : edge === "right"
+                  ? layout.width - 4
+                  : layout.width / 2;
+            const y =
+              top ??
+              (edge === "top"
+                ? 4
+                : edge === "bottom"
+                  ? layout.height - 4
+                  : layout.height / 2);
+            const horizontal = edge === "top" || edge === "bottom";
+            mouth.push({
+              start: horizontal ? toWorld(x - 9, y) : toWorld(x, y - 9),
+              end: horizontal ? toWorld(x + 9, y) : toWorld(x, y + 9),
+              provenance: { kind: "proxy", reason },
+            });
+            if (!isProjectionSafe([toWorld(x, y)], view.camera)) return;
+            proxyMouths.push({
+              key: `${connection.id}:${endpoint}:${reason}`,
+              reason,
+              color: relationStyle(connection.relation)["--relation-signal"],
+              transform: `${paperTransform(pose, layout.width, layout.height)} translate3d(${Math.max(8, Math.min(layout.width - 118, x - 55))}px,${Math.max(8, Math.min(layout.height - 26, y - 9))}px,1px)`,
+            });
+          };
+          const scroll = nodes.current
+            .get(id)
+            ?.querySelector<HTMLElement>("[data-document-scroll]");
+          if (surface.payload !== "ready") proxy(surface.payload);
+          else if (!desiredIds.has(id)) proxy("folded");
+          else if (!scroll) proxy("outside-visible-text");
+          else {
+            const resolved = geometryOwner.resolveAnchor(
+              id,
+              anchor,
+              passages.current.get(id),
+              scroll,
+              measure,
+            );
+            if (!resolved) proxy("outside-visible-text");
+            else {
+              const fragments = visibleAnchorFragments(
+                resolved,
+                layout,
+                scroll,
+              );
+              for (const r of fragments) {
+                const horizontal = edge === "top" || edge === "bottom";
+                const x = edge === "left" ? r.left : r.right;
+                const y = edge === "top" ? r.top : r.bottom;
+                mouth.push({
+                  start: horizontal ? toWorld(r.left, y) : toWorld(x, r.top),
+                  end: horizontal ? toWorld(r.right, y) : toWorld(x, r.bottom),
+                  provenance: { kind: "exact" },
+                });
+              }
+              const outside = resolved.fragments.some(
+                (r) =>
+                  r.top < scroll.scrollTop ||
+                  r.bottom > scroll.scrollTop + scroll.clientHeight ||
+                  r.left < scroll.scrollLeft ||
+                  r.right > scroll.scrollLeft + scroll.clientWidth,
+              );
+              if (
+                outside ||
+                resolved.coverage === "partial" ||
+                (!fragments.length && resolved.coverage !== "unmapped")
+              ) {
+                const before =
+                  resolved.fragments.length &&
+                  resolved.fragments[0].top < scroll.scrollTop;
+                proxy(
+                  "outside-visible-text",
+                  before ? layout.scroll.top + 9 : layout.scroll.bottom - 9,
+                );
+              }
+              if (resolved.coverage === "unmapped") proxy("unmapped");
+            }
+          }
+          local.set(`${connection.id}:${endpoint}`, mouth);
         }
+      }
     } finally {
       restore();
       geometryOwner.dirty = false;
@@ -461,39 +706,22 @@ export function SpatialScene(props: SpatialSceneProps) {
       const from = local.get(`${connection.id}:from`),
         to = local.get(`${connection.id}:to`);
       if (!from || !to) continue;
-      const project = (end: typeof from) => {
-        const layout = geometryOwner.layouts.get(end.id)!;
-        return end.points.map((p) =>
-          worldToScreen(
-            paperToWorld(
-              paperPoint(p.x, p.y),
-              poseFor(view, end.id),
-              layout.width,
-              layout.height,
-            ),
-            view.camera,
-            viewport,
-          ),
-        );
-      };
-      const a = project(from),
-        b = project(to);
-      if (
-        [...a, ...b].some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))
-      )
-        continue;
-      const points =
-        a[0].x < b[0].x ? [a[1], b[0], b[3], a[2]] : [a[0], b[1], b[2], a[3]];
       result.push({
         id: connection.id,
-        path: `M ${points.map((p) => `${p.x},${p.y}`).join(" L ")} Z`,
+        triangles: clipRangeRibbonToCamera(
+          buildRangeRibbon(from, to),
+          view.camera,
+        ),
         color: relationStyle(connection.relation)["--relation-signal"],
         label: connection.label || connection.relation,
       });
     }
+    setProxies(proxyMouths);
     setBands(result);
   }, [
     loaded,
+    desiredIds,
+    props.surfaces,
     props.connections,
     props.bindings,
     props.presentation,
@@ -514,6 +742,75 @@ export function SpatialScene(props: SpatialSceneProps) {
       aria-label="三维文档空间"
       style={{ perspective: view.camera.perspective }}
       onPointerDown={(e) => interaction.current.pointerDown(e)}
+      onClick={(event) => {
+        if (
+          event.defaultPrevented ||
+          (event.target as Element).closest(
+            "[data-paper],button,a,input,textarea,[role='button']",
+          )
+        )
+          return;
+        if (
+          interaction.current.consumeClick() ||
+          window.getSelection()?.isCollapsed === false
+        )
+          return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        const ray = screenRay(
+          screenPoint(event.clientX - rect.left, event.clientY - rect.top),
+          view.camera,
+          viewport,
+        );
+        let nearest: {
+          band: Band;
+          hit: NonNullable<ReturnType<typeof hitTestRangeRibbon>>;
+        } | null = null;
+        for (const band of bands) {
+          const hit = hitTestRangeRibbon(ray, band.triangles);
+          if (hit && (!nearest || hit.distance < nearest.hit.distance))
+            nearest = { band, hit };
+        }
+        if (!nearest) return;
+        for (const surface of props.surfaces) {
+          const layout = geometry.current.layouts.get(surface.surfaceId);
+          if (!layout) continue;
+          const pose = poseFor(view, surface.surfaceId);
+          const normal = vec3.transformQuat(
+            vec3.create(),
+            [0, 0, 1],
+            pose.orientation,
+          );
+          // Match the paper's CSS backface-visibility: hidden when checking occlusion.
+          if (
+            normal[0] * ray.direction.x +
+              normal[1] * ray.direction.y +
+              normal[2] * ray.direction.z >=
+            0
+          )
+            continue;
+          const hit = intersectPaperRay(ray, pose, layout.width, layout.height);
+          if (
+            hit &&
+            isProjectionSafe([hit.worldPoint], view.camera) &&
+            hit.distance < nearest.hit.distance - 0.01
+          )
+            return;
+        }
+        const binding = props.bindings.find(
+          (item) => item.connectionId === nearest.band.id,
+        );
+        if (!binding) return;
+        const endpoint = nearest.hit.endpointWeight <= 0.5 ? "from" : "to";
+        event.preventDefault();
+        props.onFollow({
+          connectionId: binding.connectionId,
+          origin: {
+            kind: "surface",
+            surfaceId: binding[endpoint].surfaceId,
+            endpoint,
+          },
+        });
+      }}
       onPointerMove={(e) => interaction.current.pointerMove(e)}
       onPointerUp={(e) => interaction.current.pointerUp(e)}
       onPointerCancel={() => interaction.current.cancel()}
@@ -545,37 +842,46 @@ export function SpatialScene(props: SpatialSceneProps) {
             register={register}
             registerPassage={registerPassage}
             invalidate={invalidate}
+            registerAnchors={registerAnchors}
+            hitTestAnchor={hitTestAnchor}
             onScroll={scroll}
             onFocus={focus}
             renderDocument={props.renderDocument}
             renderDocumentMenu={props.renderDocumentMenu}
           />
         ))}
-      </div>
-      <svg
-        className="spatial-bands"
-        width={viewport.width}
-        height={viewport.height}
-        aria-label="段落关联"
-      >
-        {bands.map((band) => (
-          <path
-            key={band.id}
-            d={band.path}
-            style={{ fill: band.color }}
-            onClick={() =>
-              props.onFollow({
-                connectionId: band.id as Parameters<
-                  typeof props.onFollow
-                >[0]["connectionId"],
-                origin: { kind: "bridge" },
-              })
-            }
+        {bands.flatMap((band) =>
+          band.triangles.map((triangle, index) => {
+            const leaf = triangleLeafGeometry(triangle);
+            return leaf ? (
+              <div
+                key={`${band.id}:${index}`}
+                className="spatial-range-triangle"
+                data-connection-id={band.id}
+                aria-hidden="true"
+                style={{
+                  transform: matrixCss(leaf.matrix),
+                  width: leaf.width,
+                  height: leaf.height,
+                  clipPath: `polygon(${leaf.points.map((point) => `${point.x}px ${point.y}px`).join(",")})`,
+                  backgroundColor: `color-mix(in srgb, ${band.color} 30%, transparent)`,
+                }}
+              />
+            ) : null;
+          }),
+        )}
+        {proxies.map((proxy) => (
+          <div
+            key={proxy.key}
+            className="spatial-range-proxy"
+            data-proxy-status={proxy.reason}
+            title={proxyLabels[proxy.reason]}
+            style={{ transform: proxy.transform, borderColor: proxy.color }}
           >
-            <title>{band.label}</title>
-          </path>
+            {proxyLabels[proxy.reason]}
+          </div>
         ))}
-      </svg>
+      </div>
       <p className="spatial-gesture-hint">
         拖动空白环顾 · Shift 拖动平移 · 滚轮靠近 · 拖动纸边移动 · Shift
         拖动纸边调整远近

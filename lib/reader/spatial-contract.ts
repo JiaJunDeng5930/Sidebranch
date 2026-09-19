@@ -109,6 +109,11 @@ export interface PassageHandle {
 export interface DocumentRenderContext {
   registerPassage(handle: PassageHandle | null): void;
   onGeometryChange(): void;
+  registerAnchors(anchors: readonly AnchorInput[]): void;
+  hitTestAnchor(
+    anchor: AnchorInput,
+    clientPoint: { x: number; y: number },
+  ): boolean;
 }
 
 export type PresentationRequest =

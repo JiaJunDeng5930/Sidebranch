@@ -7,7 +7,9 @@ A single-owner document space on ChatGPT Sites, with an authenticated MCP server
 - Passage connections are independent, bidirectional entities. Questions reference passages; answers reference independently created documents.
 - The website supports browsing, literal full-text search, editing, imports, version history, paths and archiving.
 - The ChatGPT App uses the same reader. Selecting text opens a question composer; submitting saves the question and sends a user message through the MCP Apps bridge.
-- Every document belongs to the paper field. The current document and a companion remain readable; other documents gather as folded sheets at the edges. There is no open-file list, close-file action or overview mode. Continuing in the companion leaves an exact return position.
+- Every document belongs to one three-dimensional paper space. Papers retain their own positions and reading progress while focus moves between them. Distant papers fold; nearby text loads according to visibility. Returning through reading history preserves the documents and their placements.
+
+Drag empty space to orbit, Shift-drag to pan, and use the wheel or pinch to move closer or farther away. Drag a paper edge to move that paper; Shift-drag its edge to change depth. Click a paper or folded sheet to approach it. Text selection and scrolling inside a paper remain native. Keyboard users can focus a paper edge and use the arrow keys to move it, or Shift+Up/Down to change depth.
 
 ## Connect ChatGPT
 

@@ -139,18 +139,28 @@
   margin-top: 8px;
   color: #7a7c6c;
 }
-.spatial-bands {
+.spatial-range-triangle {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
   pointer-events: none;
 }
-.spatial-bands path {
-  fill-opacity: 0.13;
-  pointer-events: visiblePainted;
-  cursor: pointer;
-}
-.spatial-bands path:hover {
-  fill-opacity: 0.28;
+.spatial-range-proxy {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 110px;
+  height: 18px;
+  transform-origin: 0 0;
+  pointer-events: none;
+  border-left: 5px solid;
+  background: repeating-linear-gradient(135deg, #fffdf7 0 4px, #e7e2d8 4px 6px);
+  color: #514e45;
+  font-size: 9px;
+  line-height: 18px;
+  padding-left: 4px;
+  white-space: nowrap;
 }
 .spatial-gesture-hint {
   position: absolute;

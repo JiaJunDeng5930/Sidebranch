@@ -21,6 +21,13 @@ selection, scrolling, editing and accessibility do not depend on a second text
 renderer. CSS 3D is used as the presentation mechanism, with the same coordinate
 conventions used by range geometry and gesture hit testing.
 
+Passage bands belong to that same three-dimensional rendering context. A
+screen-space overlay cannot let an intervening paper obscure part of a band.
+Triangulated surfaces allow the browser to resolve that depth while native
+text remains selectable. Band geometry retains every measured text fragment;
+unloaded or out-of-view text uses an explicit endpoint on its existing paper
+instead of inventing an exact text location.
+
 A document's membership in the space does not depend on whether its revision
 payload is loaded or its text is currently rendered. Moving the reading focus
 must preserve other occurrences and their placements. Distant folds are a
