@@ -42,24 +42,42 @@ export type SelectionState =
       readonly rect: SelectionRect | null;
     };
 
+interface QuestionDraftBase {
+  readonly document: DocumentRevision;
+  readonly anchor: AnchorInput;
+  readonly body: string;
+}
+
+interface UnsavedQuestionDraft extends QuestionDraftBase {
+  readonly error: string | null;
+}
+
+interface SavedQuestionDraft extends QuestionDraftBase {
+  readonly question: Question;
+}
+
+/** A question's lifecycle keeps persisted identity separate from unsaved text. */
 export type QuestionDraft =
   | { readonly kind: "closed" }
-  | {
-      readonly kind:
-        | "draft"
-        | "saving"
-        | "saved"
-        | "sending"
-        | "awaiting"
-        | "send_failed"
-        | "answered";
-      readonly document: DocumentRevision;
-      readonly anchor: AnchorInput;
-      readonly body: string;
-      readonly saved: Question | null;
+  | (UnsavedQuestionDraft & { readonly kind: "draft" })
+  | (UnsavedQuestionDraft & { readonly kind: "saving"; readonly error: null })
+  | (SavedQuestionDraft & { readonly kind: "saved"; readonly error: null })
+  | (SavedQuestionDraft & { readonly kind: "sending"; readonly error: null })
+  | (SavedQuestionDraft & {
+      readonly kind: "awaiting";
+      readonly sentBody: string;
+      readonly error: null;
+    })
+  | (SavedQuestionDraft & {
+      readonly kind: "answered";
+      readonly sentBody: string;
+      readonly error: null;
+    })
+  | (SavedQuestionDraft & {
+      readonly kind: "send_failed";
       readonly sentBody: string | null;
-      readonly error: string | null;
-    };
+      readonly error: string;
+    });
 
 export interface QuestionTask {
   readonly question: Question;
@@ -84,12 +102,29 @@ export type ConnectionDraft =
       readonly error: null;
     }
   | {
-      readonly kind: "second" | "saving" | "failed";
+      readonly kind: "second";
       readonly first: ConnectionEndpoint;
       readonly second: ConnectionEndpoint;
       readonly relation: Connection["relation"];
       readonly label: string;
-      readonly error: string | null;
+      readonly error: null;
+    }
+  | {
+      readonly kind: "saving";
+      readonly first: ConnectionEndpoint;
+      readonly second: ConnectionEndpoint;
+      readonly relation: Connection["relation"];
+      readonly label: string;
+      readonly saveRequestId: number;
+      readonly error: null;
+    }
+  | {
+      readonly kind: "failed";
+      readonly first: ConnectionEndpoint;
+      readonly second: ConnectionEndpoint;
+      readonly relation: Connection["relation"];
+      readonly label: string;
+      readonly error: string;
     };
 
 interface EditorDraftFields {
@@ -102,6 +137,7 @@ interface EditorDraftFields {
   readonly initialContent: string;
   readonly error: string | null;
   readonly saving: boolean;
+  readonly saveRequestId: number | null;
 }
 
 export type EditorDraft =
@@ -168,12 +204,22 @@ export interface CatalogueState {
   readonly archivedError: string | null;
 }
 
-export interface PendingNavigation {
-  readonly target: DocumentTarget;
-  readonly title: string;
-  readonly revision: DocumentRevision | null;
-  readonly message: string;
-}
+export type PendingNavigation =
+  | {
+      readonly kind: "resolved";
+      readonly target: DocumentTarget;
+      readonly title: string;
+      readonly revision: DocumentRevision | null;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "unresolved";
+      readonly documentId: DocumentId;
+      readonly revisionId?: RevisionId;
+      readonly focus: AnchorInput | null;
+      readonly title: string;
+      readonly message: string;
+    };
 
 export interface AnswerNotification {
   readonly questionId: QuestionId;
@@ -181,6 +227,15 @@ export interface AnswerNotification {
   readonly answerRevisionId: RevisionId;
   readonly title: string;
   readonly status: "unseen" | "seen" | "reading";
+}
+
+export function answerNotificationKey(
+  notification: Pick<
+    AnswerNotification,
+    "questionId" | "answerDocumentId" | "answerRevisionId"
+  >,
+): string {
+  return `${notification.questionId}:${notification.answerDocumentId}:${notification.answerRevisionId}`;
 }
 
 export interface ImportTask {
@@ -329,10 +384,18 @@ export type ReaderSessionAction =
       readonly relation: Connection["relation"];
     }
   | { readonly type: "connection/label"; readonly label: string }
-  | { readonly type: "connection/saving" }
-  | { readonly type: "connection/failed"; readonly message: string }
+  | { readonly type: "connection/saving"; readonly requestId: number }
+  | {
+      readonly type: "connection/failed";
+      readonly requestId: number;
+      readonly message: string;
+    }
   | { readonly type: "connection/close" }
-  | { readonly type: "connection/added"; readonly connection: Connection }
+  | {
+      readonly type: "connection/added";
+      readonly requestId: number;
+      readonly connection: Connection;
+    }
   | {
       readonly type: "connection/select";
       readonly connectionId: Connection["id"] | null;
@@ -355,8 +418,12 @@ export type ReaderSessionAction =
   | { readonly type: "editor/path"; readonly path: string }
   | { readonly type: "editor/title"; readonly title: string }
   | { readonly type: "editor/content"; readonly content: string }
-  | { readonly type: "editor/saving" }
-  | { readonly type: "editor/error"; readonly message: string }
+  | { readonly type: "editor/saving"; readonly requestId: number }
+  | {
+      readonly type: "editor/error";
+      readonly requestId: number;
+      readonly message: string;
+    }
   | { readonly type: "editor/close" }
   | { readonly type: "dialog/open-search" }
   | {
@@ -387,6 +454,8 @@ export type ReaderSessionAction =
   | {
       readonly type: "answer/status";
       readonly questionId: QuestionId;
+      readonly answerDocumentId: DocumentId;
+      readonly answerRevisionId: RevisionId;
       readonly status: AnswerNotification["status"];
     }
   | {
@@ -569,126 +638,163 @@ export function readerSessionReducer(
           document: action.document,
           anchor: action.anchor,
           body: "",
-          saved: null,
-          sentBody: null,
           error: null,
         },
       };
-    case "question/body":
-      if (state.question.kind === "closed") return state;
+    case "question/body": {
+      const question = state.question;
+      if (question.kind === "closed") return state;
+      if (action.body === question.body) return state;
+      if (
+        question.kind === "saved" ||
+        question.kind === "sending" ||
+        question.kind === "awaiting" ||
+        question.kind === "send_failed" ||
+        question.kind === "answered"
+      ) {
+        return {
+          ...state,
+          question: {
+            kind: "draft",
+            document: question.document,
+            anchor: question.anchor,
+            body: action.body,
+            error: null,
+          },
+        };
+      }
       return {
         ...state,
-        question: {
-          ...state.question,
-          kind:
-            action.body !== state.question.body && state.question.saved
-              ? "draft"
-              : state.question.kind === "saved" ||
-                  state.question.kind === "awaiting" ||
-                  state.question.kind === "answered"
-                ? "draft"
-                : state.question.kind,
-          body: action.body,
-          saved:
-            action.body !== state.question.body ? null : state.question.saved,
-          sentBody:
-            action.body !== state.question.body
-              ? null
-              : state.question.sentBody,
-          error: null,
-        },
+        question: { ...question, body: action.body, error: null },
       };
+    }
     case "question/saving":
-      return state.question.kind === "draft" ||
-        state.question.kind === "send_failed"
+      return state.question.kind === "draft"
         ? {
             ...state,
             question: { ...state.question, kind: "saving", error: null },
           }
         : state;
-    case "question/saved":
-      if (state.question.kind === "closed") return state;
-      if (state.question.body.trim() !== action.body.trim())
+    case "question/saved": {
+      const current = state.question;
+      const savedQuestions = mergeQuestions(state.questions, [action.question]);
+      const savedTask = upsertQuestionTask(state.questionTasks, {
+        question: action.question,
+        document: findSummary(
+          state.documents,
+          action.question.anchor.documentId,
+        ),
+        status: "saved",
+        error: null,
+      });
+      if (current.kind !== "saving" && current.kind !== "draft")
+        return {
+          ...state,
+          questions: savedQuestions,
+          questionTasks: savedTask,
+        };
+      const sameAnchor =
+        current.anchor.revisionId === action.question.anchor.revisionId &&
+        current.anchor.start === action.question.anchor.start &&
+        current.anchor.end === action.question.anchor.end &&
+        current.anchor.quote === action.question.anchor.quote;
+      if (current.body.trim() !== action.body.trim() || !sameAnchor)
         return {
           ...state,
           question: {
-            ...state.question,
             kind: "draft",
-            saved: null,
-            sentBody: null,
+            document: current.document,
+            anchor: current.anchor,
+            body: current.body,
             error: "问题内容在保存期间发生了变化，请确认后重新发送。",
           },
+          questions: savedQuestions,
+          questionTasks: savedTask,
         };
       return {
         ...state,
         question: {
-          ...state.question,
           kind: "saved",
-          saved: action.question,
-          sentBody: null,
+          document: current.document,
+          anchor: current.anchor,
+          body: current.body,
+          question: action.question,
           error: null,
         },
-        questions: mergeQuestions(state.questions, [action.question]),
-        questionTasks: upsertQuestionTask(state.questionTasks, {
-          question: action.question,
-          document: findSummary(
-            state.documents,
-            action.question.anchor.documentId,
-          ),
-          status: "saved",
-          error: null,
-        }),
+        questions: savedQuestions,
+        questionTasks: savedTask,
       };
-    case "question/sending":
-      if (state.question.kind === "closed" || !state.question.saved)
+    }
+    case "question/sending": {
+      const current = state.question;
+      if (current.kind !== "saved" && current.kind !== "send_failed")
         return state;
-      if (state.question.body.trim() !== action.body.trim()) return state;
+      if (current.body.trim() !== action.body.trim()) return state;
       return {
         ...state,
-        question: { ...state.question, kind: "sending", error: null },
+        question: { ...current, kind: "sending", error: null },
         questionTasks: updateQuestionTask(
           state.questionTasks,
-          state.question.saved.id,
+          current.question.id,
           { status: "sending", error: null },
         ),
       };
+    }
     case "question/sent": {
-      const draft = state.question;
-      if (draft.kind === "closed" || !draft.saved) return state;
-      if (draft.body.trim() !== action.body.trim())
+      const current = state.question;
+      if (current.kind !== "sending") return state;
+      if (current.body.trim() !== action.body.trim())
         return {
           ...state,
           question: {
-            ...draft,
             kind: "draft",
-            sentBody: null,
+            document: current.document,
+            anchor: current.anchor,
+            body: current.body,
             error: "问题内容已变化，上一条问题没有发送当前草稿。",
           },
         };
       return {
         ...state,
         question: {
-          ...draft,
           kind: "awaiting",
+          document: current.document,
+          anchor: current.anchor,
+          body: current.body,
+          question: current.question,
           sentBody: action.body,
           error: null,
         },
-        questionTasks: updateQuestionTask(state.questionTasks, draft.saved.id, {
-          status: "awaiting",
-          error: null,
-        }),
+        questionTasks: updateQuestionTask(
+          state.questionTasks,
+          current.question.id,
+          { status: "awaiting", error: null },
+        ),
       };
     }
     case "question/answered": {
       const question = action.question;
       const active = state.question;
       const questionMatches =
-        active.kind !== "closed" && active.saved?.id === question.id;
+        active.kind !== "closed" &&
+        "question" in active &&
+        active.question.id === question.id;
       return {
         ...state,
         questions: mergeQuestions(state.questions, [question]),
         question: questionMatches
-          ? { ...active, kind: "answered", saved: question, error: null }
+          ? {
+              kind: "answered",
+              document: active.document,
+              anchor: active.anchor,
+              body: active.body,
+              question,
+              sentBody:
+                "sentBody" in active
+                  ? (active.sentBody ?? active.body.trim())
+                  : active.body.trim(),
+              error: null,
+            }
           : active,
         questionTasks: upsertQuestionTask(state.questionTasks, {
           question,
@@ -698,27 +804,44 @@ export function readerSessionReducer(
         }),
       };
     }
-    case "question/failure":
-      return state.question.kind === "closed"
-        ? state
-        : {
-            ...state,
-            question: {
-              ...state.question,
-              kind: state.question.saved ? "send_failed" : "draft",
-              error: action.message,
-            },
-            questionTasks: state.question.saved
-              ? updateQuestionTask(
-                  state.questionTasks,
-                  state.question.saved.id,
-                  {
-                    status: "send_failed",
-                    error: action.message,
-                  },
-                )
-              : state.questionTasks,
-          };
+    case "question/failure": {
+      const current = state.question;
+      if (
+        current.kind === "closed" ||
+        current.kind === "awaiting" ||
+        current.kind === "answered"
+      )
+        return state;
+      if (current.kind === "saving" || current.kind === "draft")
+        return {
+          ...state,
+          question: { ...current, kind: "draft", error: action.message },
+        };
+      if (
+        current.kind !== "saved" &&
+        current.kind !== "sending" &&
+        current.kind !== "send_failed"
+      )
+        return state;
+      const sentBody = current.kind === "send_failed" ? current.sentBody : null;
+      return {
+        ...state,
+        question: {
+          kind: "send_failed",
+          document: current.document,
+          anchor: current.anchor,
+          body: current.body,
+          question: current.question,
+          sentBody,
+          error: action.message,
+        },
+        questionTasks: updateQuestionTask(
+          state.questionTasks,
+          current.question.id,
+          { status: "send_failed", error: action.message },
+        ),
+      };
+    }
     case "question/close":
       return {
         ...state,
@@ -754,60 +877,118 @@ export function readerSessionReducer(
             },
           }
         : state;
-    case "connection/relation":
-      return state.connection.kind === "closed"
-        ? state
-        : {
-            ...state,
-            connection: {
-              ...state.connection,
-              relation: action.relation,
-              error: null,
-            },
-          };
-    case "connection/label":
-      return state.connection.kind === "closed"
-        ? state
-        : {
-            ...state,
-            connection: {
-              ...state.connection,
-              label: action.label,
-              error: null,
-            },
-          };
+    case "connection/relation": {
+      const connection = state.connection;
+      if (connection.kind === "closed") return state;
+      if (connection.relation === action.relation && connection.error === null)
+        return state;
+      if (connection.kind === "saving")
+        return {
+          ...state,
+          connection: {
+            kind: "second",
+            first: connection.first,
+            second: connection.second,
+            relation: action.relation,
+            label: connection.label,
+            error: null,
+          },
+        };
+      if (connection.kind === "failed")
+        return {
+          ...state,
+          connection: {
+            kind: "second",
+            first: connection.first,
+            second: connection.second,
+            relation: action.relation,
+            label: connection.label,
+            error: null,
+          },
+        };
+      return {
+        ...state,
+        connection: { ...connection, relation: action.relation, error: null },
+      };
+    }
+    case "connection/label": {
+      const connection = state.connection;
+      if (connection.kind === "closed") return state;
+      if (connection.label === action.label && connection.error === null)
+        return state;
+      if (connection.kind === "saving")
+        return {
+          ...state,
+          connection: {
+            kind: "second",
+            first: connection.first,
+            second: connection.second,
+            relation: connection.relation,
+            label: action.label,
+            error: null,
+          },
+        };
+      if (connection.kind === "failed")
+        return {
+          ...state,
+          connection: {
+            kind: "second",
+            first: connection.first,
+            second: connection.second,
+            relation: connection.relation,
+            label: action.label,
+            error: null,
+          },
+        };
+      return {
+        ...state,
+        connection: { ...connection, label: action.label, error: null },
+      };
+    }
     case "connection/saving":
       return state.connection.kind === "second" ||
         state.connection.kind === "failed"
         ? {
             ...state,
-            connection: { ...state.connection, kind: "saving", error: null },
+            connection: {
+              ...state.connection,
+              kind: "saving",
+              saveRequestId: action.requestId,
+              error: null,
+            },
           }
         : state;
     case "connection/failed":
-      return state.connection.kind === "second" ||
-        state.connection.kind === "saving"
+      return state.connection.kind === "saving" &&
+        state.connection.saveRequestId === action.requestId
         ? {
             ...state,
             connection: {
-              ...state.connection,
               kind: "failed",
+              first: state.connection.first,
+              second: state.connection.second,
+              relation: state.connection.relation,
+              label: state.connection.label,
               error: action.message,
             },
           }
         : state;
     case "connection/close":
       return { ...state, connection: emptyConnectionDraft() };
-    case "connection/added":
+    case "connection/added": {
+      const accepted =
+        state.connection.kind === "saving" &&
+        state.connection.saveRequestId === action.requestId;
       return {
         ...state,
-        connection: emptyConnectionDraft(),
+        connection: accepted ? emptyConnectionDraft() : state.connection,
         connections: state.connections.some(
           (item) => item.id === action.connection.id,
         )
           ? state.connections
           : [...state.connections, action.connection],
       };
+    }
     case "connection/select":
       return { ...state, selectedConnectionId: action.connectionId };
     case "editor/open-create":
@@ -825,6 +1006,7 @@ export function readerSessionReducer(
           initialContent: "",
           error: null,
           saving: false,
+          saveRequestId: null,
         },
       };
     case "editor/open-edit":
@@ -843,6 +1025,7 @@ export function readerSessionReducer(
           expectedRevisionId: action.document.revisionId,
           error: null,
           saving: false,
+          saveRequestId: null,
         },
       };
     case "editor/open-rename":
@@ -861,39 +1044,93 @@ export function readerSessionReducer(
           expectedRevisionId: action.document.revisionId,
           error: null,
           saving: false,
+          saveRequestId: null,
         },
       };
-    case "editor/path":
-      return state.editor.kind === "closed"
-        ? state
-        : {
-            ...state,
-            editor: { ...state.editor, path: action.path, error: null },
-          };
-    case "editor/title":
-      return state.editor.kind === "closed"
-        ? state
-        : {
-            ...state,
-            editor: { ...state.editor, title: action.title, error: null },
-          };
-    case "editor/content":
-      return state.editor.kind === "closed"
-        ? state
-        : {
-            ...state,
-            editor: { ...state.editor, content: action.content, error: null },
-          };
+    case "editor/path": {
+      const editor = state.editor;
+      if (
+        editor.kind === "closed" ||
+        editor.kind === "edit" ||
+        editor.path === action.path
+      )
+        return state;
+      return {
+        ...state,
+        editor: {
+          ...editor,
+          path: action.path,
+          error: null,
+          saving: false,
+          saveRequestId: null,
+        },
+      };
+    }
+    case "editor/title": {
+      const editor = state.editor;
+      // Existing document titles are changed through the explicit rename flow;
+      // edit persists body text only.
+      if (
+        editor.kind === "closed" ||
+        editor.kind !== "create" ||
+        editor.title === action.title
+      )
+        return state;
+      return {
+        ...state,
+        editor: {
+          ...editor,
+          title: action.title,
+          error: null,
+          saving: false,
+          saveRequestId: null,
+        },
+      };
+    }
+    case "editor/content": {
+      const editor = state.editor;
+      if (
+        editor.kind === "closed" ||
+        editor.kind === "rename" ||
+        editor.content === action.content
+      )
+        return state;
+      return {
+        ...state,
+        editor: {
+          ...editor,
+          content: action.content,
+          error: null,
+          saving: false,
+          saveRequestId: null,
+        },
+      };
+    }
     case "editor/saving":
-      return state.editor.kind === "closed"
-        ? state
-        : { ...state, editor: { ...state.editor, saving: true, error: null } };
-    case "editor/error":
-      return state.editor.kind === "closed"
+      return state.editor.kind === "closed" || state.editor.saving
         ? state
         : {
             ...state,
-            editor: { ...state.editor, saving: false, error: action.message },
+            editor: {
+              ...state.editor,
+              saving: true,
+              saveRequestId: action.requestId,
+              error: null,
+            },
+          };
+    case "editor/error":
+      return state.editor.kind === "closed" ||
+        !state.editor.saving ||
+        state.editor.saveRequestId !== action.requestId
+        ? state
+        : {
+            ...state,
+            editor: {
+              ...state.editor,
+              saving: false,
+              saveRequestId: null,
+              error: action.message,
+            },
           };
     case "editor/close":
       return { ...state, editor: emptyEditorDraft() };
@@ -955,7 +1192,9 @@ export function readerSessionReducer(
       };
     case "answer/arrived": {
       const previous = state.answers.findIndex(
-        (answer) => answer.questionId === action.notification.questionId,
+        (answer) =>
+          answerNotificationKey(answer) ===
+          answerNotificationKey(action.notification),
       );
       const answers = [...state.answers];
       if (previous >= 0) answers[previous] = action.notification;
@@ -966,7 +1205,9 @@ export function readerSessionReducer(
       return {
         ...state,
         answers: state.answers.map((answer) =>
-          answer.questionId === action.questionId
+          answer.questionId === action.questionId &&
+          answer.answerDocumentId === action.answerDocumentId &&
+          answer.answerRevisionId === action.answerRevisionId
             ? { ...answer, status: action.status }
             : answer,
         ),
@@ -1011,7 +1252,11 @@ export function isQuestionDirty(question: QuestionDraft): boolean {
 }
 
 export function hasProtectedDraft(state: ReaderSession): boolean {
-  return isEditorDirty(state.editor) || isQuestionDirty(state.question);
+  return (
+    state.selection.kind === "selected" ||
+    isEditorDirty(state.editor) ||
+    isQuestionDirty(state.question)
+  );
 }
 
 function mergeDocuments(

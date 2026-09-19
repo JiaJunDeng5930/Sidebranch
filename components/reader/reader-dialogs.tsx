@@ -14,6 +14,7 @@ import type {
   ReaderSessionAction,
   SearchMatch,
 } from "../../lib/reader/session";
+import { answerNotificationKey } from "../../lib/reader/session";
 import {
   ReaderDialog,
   ReaderDialogContent,
@@ -150,13 +151,15 @@ export function ReaderDialogs({
             {session.editor.kind === "create"
               ? "新建文档"
               : session.editor.kind === "rename"
-                ? "移动文档"
+                ? "移动 / 重命名"
                 : "编辑文档"}
           </ReaderDialogTitle>
           <ReaderDialogDescription>
             {session.editor.kind === "edit"
               ? `正在编辑 v${session.editor.document.sequence}；保存会创建新版本。`
-              : "保存后文档仍属于空间，是否旁读由你决定。"}
+              : session.editor.kind === "rename"
+                ? "此处只改变文档路径；正文和版本保持不变。"
+                : "保存后文档仍属于空间，是否旁读由你决定。"}
           </ReaderDialogDescription>
           <label className="workspace-label">
             路径
@@ -176,6 +179,7 @@ export function ReaderDialogs({
               标题
               <input
                 className="workspace-input"
+                readOnly={session.editor.kind === "edit"}
                 value={
                   session.editor.kind === "closed" ? "" : session.editor.title
                 }
@@ -247,7 +251,7 @@ export function ReaderDialogs({
               <button
                 type="button"
                 className="activity-item"
-                key={answer.questionId}
+                key={answerNotificationKey(answer)}
                 onClick={() => {
                   dispatch({ type: "dialog/close" });
                   onOpenAnswer(answer);

@@ -23,6 +23,7 @@ import type {
   ReaderSession,
   ReaderSessionAction,
 } from "../../lib/reader/session";
+import { isQuestionDirty } from "../../lib/reader/session";
 import { relationNames } from "../../lib/reader/relations";
 import type { Connection, DocumentRevision } from "../../lib/domain/model";
 
@@ -122,6 +123,8 @@ export function SelectionComposer({
   onSendQuestion,
   onStartConnection,
   onSaveConnection,
+  onDismiss,
+  onDiscardQuestion,
 }: {
   session: ReaderSession;
   dispatch: (action: ReaderSessionAction) => void;
@@ -129,6 +132,8 @@ export function SelectionComposer({
   onSendQuestion: () => void;
   onStartConnection: () => void;
   onSaveConnection: () => void;
+  onDismiss: () => void;
+  onDiscardQuestion: () => void;
 }) {
   const selection = session.selection;
   const question = session.question;
@@ -195,7 +200,7 @@ export function SelectionComposer({
           type="button"
           className="quiet-icon"
           aria-label="关闭"
-          onClick={() => dispatch({ type: "selection/clear" })}
+          onClick={onDismiss}
         >
           <X size={15} />
         </button>
@@ -262,6 +267,15 @@ export function SelectionComposer({
           >
             <Link2 size={15} /> 建立连接
           </button>
+          {isQuestionDirty(question) && (
+            <button
+              type="button"
+              className="quiet-button full-button"
+              onClick={onDiscardQuestion}
+            >
+              放弃问题草稿
+            </button>
+          )}
         </div>
       ) : question.kind === "closed" ? (
         <div className="composer-actions">
@@ -303,6 +317,23 @@ export function SelectionComposer({
               onClick={onStartConnection}
             >
               <Link2 size={15} /> 连接文字
+            </button>
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={
+                question.kind === "draft" ||
+                question.kind === "saving" ||
+                question.kind === "send_failed"
+                  ? onDiscardQuestion
+                  : onDismiss
+              }
+            >
+              {question.kind === "draft" ||
+              question.kind === "saving" ||
+              question.kind === "send_failed"
+                ? "放弃问题草稿"
+                : "收起问题"}
             </button>
             <button
               type="button"

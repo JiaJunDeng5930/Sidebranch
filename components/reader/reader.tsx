@@ -26,9 +26,11 @@ import {
   ReaderMenuSeparator,
 } from "./workspace-controls";
 import {
+  answerNotificationKey,
   emptySession,
   hasProtectedDraft,
   isEditorDirty,
+  isQuestionDirty,
   readerSessionReducer,
   type AnswerNotification,
   type ImportTask,
@@ -62,6 +64,12 @@ import {
   type ReadingPosition,
   type SurfaceRole,
 } from "../../lib/reader/attention";
+import {
+  changesReadingContext,
+  isCurrentRequest,
+  nextRequest,
+  requestToken,
+} from "../../lib/reader/navigation-requests";
 import type { DocumentTarget } from "../../lib/reader/space-index";
 import type {
   PendingSurface,
@@ -122,6 +130,9 @@ export function Reader({
   const catalogueRequestRef = useRef({ active: 0, archived: 0 });
   const openRequestRef = useRef(0);
   const compareRequestRef = useRef(0);
+  const connectionRequestRef = useRef(0);
+  const editorRequestRef = useRef(0);
+  const attentionEpochRef = useRef(0);
   const relationRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
   const historyRequestRef = useRef(0);
@@ -136,7 +147,15 @@ export function Reader({
   }, []);
 
   const dispatchAttention = useCallback((action: AttentionAction) => {
+    if (changesReadingContext(action))
+      attentionEpochRef.current = nextRequest(attentionEpochRef.current);
     dispatchSession({ type: "attention", action });
+  }, []);
+
+  const cancelLocalNavigation = useCallback(() => {
+    openRequestRef.current = nextRequest(openRequestRef.current);
+    compareRequestRef.current = nextRequest(compareRequestRef.current);
+    attentionEpochRef.current = nextRequest(attentionEpochRef.current);
   }, []);
 
   const loadCatalogue = useCallback(
@@ -405,6 +424,7 @@ export function Reader({
   const deferNavigation = useCallback(
     (view: ReadingView, message: string) => {
       const pending: PendingNavigation = {
+        kind: "resolved",
         target: {
           documentId: view.document.id,
           revisionId: view.document.revisionId,
@@ -436,31 +456,42 @@ export function Reader({
         const cachedSummary = sessionRef.current.documents.find(
           (item) => item.id === target.id,
         );
-        dispatch({
-          type: "navigation/defer",
-          navigation: {
-            target: {
+        const resolvedRevisionId =
+          target.revisionId ??
+          cachedRevision?.revisionId ??
+          cachedSummary?.revisionId;
+        const pending: PendingNavigation = resolvedRevisionId
+          ? {
+              kind: "resolved",
+              target: {
+                documentId: target.id,
+                revisionId: resolvedRevisionId,
+                focus,
+              },
+              title:
+                cachedRevision?.title ?? cachedSummary?.title ?? "目标文档",
+              revision: cachedRevision ?? null,
+              message: "当前有未保存草稿。",
+            }
+          : {
+              kind: "unresolved",
               documentId: target.id,
-              revisionId:
-                target.revisionId ??
-                cachedRevision?.revisionId ??
-                cachedSummary?.revisionId ??
-                ("" as RevisionId),
+              revisionId: undefined,
               focus,
-            },
-            title: cachedRevision?.title ?? cachedSummary?.title ?? "目标文档",
-            revision: cachedRevision ?? null,
-            message: "当前有未保存草稿。",
-          },
-        });
+              title: cachedSummary?.title ?? "目标文档",
+              message: "当前有未保存草稿。",
+            };
+        dispatch({ type: "navigation/defer", navigation: pending });
         dispatch({
           type: "status",
           message: "当前草稿已保留；保存或关闭后再打开目标。",
         });
         return false;
       }
-      const requestId = openRequestRef.current + 1;
+      attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+      const requestId = nextRequest(openRequestRef.current);
       openRequestRef.current = requestId;
+      const request = requestToken(attentionEpochRef.current, requestId);
       dispatch({ type: "loading", loading: true });
       dispatch({ type: "error", message: null });
       try {
@@ -468,7 +499,19 @@ export function Reader({
           documentId: target.id,
           revisionId: target.revisionId,
         });
-        if (requestId !== openRequestRef.current || !view) return false;
+        if (
+          !isCurrentRequest(
+            request,
+            attentionEpochRef.current,
+            openRequestRef.current,
+          )
+        )
+          return false;
+        if (!view) {
+          dispatch({ type: "loading", loading: false });
+          dispatch({ type: "error", message: "目标文档当前不可用。" });
+          return false;
+        }
         commitView(view, "navigate", focus);
         dispatch({ type: "navigation/clear" });
         dispatch({ type: "loading", loading: false });
@@ -485,7 +528,13 @@ export function Reader({
         }
         return true;
       } catch (error) {
-        if (requestId === openRequestRef.current) {
+        if (
+          isCurrentRequest(
+            request,
+            attentionEpochRef.current,
+            openRequestRef.current,
+          )
+        ) {
           dispatch({ type: "loading", loading: false });
           dispatch({ type: "error", message: errorMessage(error) });
         }
@@ -498,6 +547,7 @@ export function Reader({
   const acceptHostResult = useCallback(
     (result: OpenDocumentResult): void => {
       if (!isReady(result)) {
+        cancelLocalNavigation();
         dispatch({ type: "loading", loading: false });
         dispatch({
           type: "status",
@@ -528,6 +578,7 @@ export function Reader({
         });
         return;
       }
+      cancelLocalNavigation();
       if (
         hasProtectedDraft(sessionRef.current) ||
         composing ||
@@ -540,12 +591,31 @@ export function Reader({
       dispatch({ type: "loading", loading: false });
       dispatch({ type: "status", message: null });
     },
-    [commitView, composing, deferNavigation, dispatch, pointerSelecting],
+    [
+      cancelLocalNavigation,
+      commitView,
+      composing,
+      deferNavigation,
+      dispatch,
+      pointerSelecting,
+    ],
   );
 
   const openLatest = useCallback(async (): Promise<void> => {
+    attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+    const requestId = nextRequest(openRequestRef.current);
+    openRequestRef.current = requestId;
+    const request = requestToken(attentionEpochRef.current, requestId);
     try {
       const view = await readOpenResult({});
+      if (
+        !isCurrentRequest(
+          request,
+          attentionEpochRef.current,
+          openRequestRef.current,
+        )
+      )
+        return;
       if (!view) {
         dispatch({ type: "loading", loading: false });
         dispatch({
@@ -557,6 +627,14 @@ export function Reader({
       commitView(view, "navigate");
       dispatch({ type: "loading", loading: false });
     } catch (error) {
+      if (
+        !isCurrentRequest(
+          request,
+          attentionEpochRef.current,
+          openRequestRef.current,
+        )
+      )
+        return;
       dispatch({ type: "loading", loading: false });
       dispatch({ type: "error", message: errorMessage(error) });
     }
@@ -588,6 +666,29 @@ export function Reader({
     return registerReadingTools(client, acceptHostResult);
   }, [acceptHostResult, client]);
 
+  const dismissComposer = useCallback(() => {
+    const current = sessionRef.current;
+    if (isQuestionDirty(current.question)) {
+      dispatch({
+        type: "status",
+        message: "问题草稿仍保留；选择“放弃问题草稿”才会清除。",
+      });
+      return;
+    }
+    if (current.question.kind !== "closed")
+      dispatch({ type: "question/close" });
+    else if (
+      current.selection.kind === "selected" ||
+      current.connection.kind !== "closed"
+    )
+      dispatch({ type: "selection/clear" });
+  }, [dispatch]);
+
+  const discardQuestion = useCallback(() => {
+    if (sessionRef.current.question.kind === "closed") return;
+    dispatch({ type: "question/close" });
+  }, [dispatch]);
+
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -595,17 +696,12 @@ export function Reader({
         dispatch({ type: "dialog/open-search" });
       }
       if (event.key === "Escape") {
-        const current = sessionRef.current;
-        if (
-          current.question.kind !== "closed" ||
-          current.connection.kind !== "closed"
-        )
-          dispatch({ type: "selection/clear" });
+        dismissComposer();
       }
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [dispatch]);
+  }, [dismissComposer, dispatch]);
 
   useEffect(() => {
     if (initialView !== undefined || initialOpenRef.current) return;
@@ -696,8 +792,9 @@ export function Reader({
     ): Promise<void> => {
       const attention = sessionRef.current.attention.attention;
       if (attention.kind !== "reading") return;
-      const requestId = compareRequestRef.current + 1;
+      const requestId = nextRequest(compareRequestRef.current);
       compareRequestRef.current = requestId;
+      const request = requestToken(attentionEpochRef.current, requestId);
       const summary = sessionRef.current.documents.find(
         (document) => document.id === target.documentId,
       );
@@ -713,8 +810,13 @@ export function Reader({
         });
         const latest = sessionRef.current.attention.attention;
         if (
-          requestId !== compareRequestRef.current ||
+          !isCurrentRequest(
+            request,
+            attentionEpochRef.current,
+            compareRequestRef.current,
+          ) ||
           latest.kind !== "reading" ||
+          latest.current.documentId !== attention.current.documentId ||
           latest.current.revisionId !== attention.current.revisionId ||
           !view
         )
@@ -723,7 +825,13 @@ export function Reader({
         setPendingSurface(null);
         dispatch({ type: "status", message: null });
       } catch (error) {
-        if (requestId === compareRequestRef.current)
+        if (
+          isCurrentRequest(
+            request,
+            attentionEpochRef.current,
+            compareRequestRef.current,
+          )
+        )
           setPendingSurface((pending: PendingSurface | null) =>
             pending ? { ...pending, error: errorMessage(error) } : pending,
           );
@@ -797,6 +905,9 @@ export function Reader({
 
   const selectText = useCallback(
     (anchor: AnchorInput, document: DocumentRevision, rect: DOMRect): void => {
+      // A fresh text selection is an explicit user reading context.  A late
+      // local open must not replace the surface underneath it.
+      cancelLocalNavigation();
       setPointerSelecting(false);
       const connection = sessionRef.current.connection;
       dispatch({
@@ -820,7 +931,7 @@ export function Reader({
       if (connection.kind === "first")
         dispatch({ type: "connection/open-second", document, anchor });
     },
-    [dispatch],
+    [cancelLocalNavigation, dispatch],
   );
 
   const openQuestion = useCallback(() => {
@@ -861,29 +972,26 @@ export function Reader({
         return;
       const body = draft.body.trim();
       if (!body) return;
-      if (draft.saved && draft.sentBody === body) return;
-      dispatch({ type: "question/saving" });
       try {
-        const question =
-          draft.saved && draft.sentBody === null
-            ? draft.saved
-            : (await client.invoke("ask", { anchor: draft.anchor, body }))
-                .question;
-        const latest = sessionRef.current.question;
-        if (
-          latest.kind === "closed" ||
-          latest.body.trim() !== body ||
-          latest.anchor.revisionId !== draft.anchor.revisionId
-        ) {
-          dispatch({
-            type: "question/failure",
-            message: "问题内容在保存期间发生了变化，请确认后重新发送。",
-          });
-          return;
-        }
-        dispatch({ type: "question/saved", question, body });
-        if (client.sendQuestion) {
+        let question: Question;
+        if (draft.kind === "draft") {
+          dispatch({ type: "question/saving" });
+          question = (
+            await client.invoke("ask", { anchor: draft.anchor, body })
+          ).question;
+          const latest = sessionRef.current.question;
+          if (
+            latest.kind !== "saving" ||
+            latest.body.trim() !== body ||
+            latest.anchor.revisionId !== draft.anchor.revisionId
+          )
+            return;
+          dispatch({ type: "question/saved", question, body });
+        } else {
+          question = draft.question;
           dispatch({ type: "question/sending", body });
+        }
+        if (client.sendQuestion) {
           await client.sendQuestion(question);
           dispatch({ type: "question/sent", body });
           dispatch({ type: "status", message: "问题已发送，等待回答。" });
@@ -918,7 +1026,9 @@ export function Reader({
   const saveConnection = useCallback(async (): Promise<void> => {
     const draft = sessionRef.current.connection;
     if (draft.kind !== "second" && draft.kind !== "failed") return;
-    dispatch({ type: "connection/saving" });
+    const requestId = nextRequest(connectionRequestRef.current);
+    connectionRequestRef.current = requestId;
+    dispatch({ type: "connection/saving", requestId });
     try {
       const result = await client.invoke("link", {
         from: draft.first.anchor,
@@ -926,10 +1036,24 @@ export function Reader({
         relation: draft.relation,
         label: draft.label,
       });
-      dispatch({ type: "connection/added", connection: result.connection });
-      dispatch({ type: "status", message: "连接已建立。" });
+      const latest = sessionRef.current.connection;
+      const accepted =
+        latest.kind === "saving" && latest.saveRequestId === requestId;
+      dispatch({
+        type: "connection/added",
+        requestId,
+        connection: result.connection,
+      });
+      dispatch({
+        type: "status",
+        message: accepted ? "连接已建立。" : "连接已建立；当前连接草稿仍保留。",
+      });
     } catch (error) {
-      dispatch({ type: "connection/failed", message: errorMessage(error) });
+      dispatch({
+        type: "connection/failed",
+        requestId,
+        message: errorMessage(error),
+      });
     }
   }, [client, dispatch]);
 
@@ -979,16 +1103,19 @@ export function Reader({
       pointerSelecting
     )
       return;
-    dispatch({ type: "navigation/clear" });
-    void openDocument(
-      {
-        id: pending.target.documentId,
-        revisionId: pending.target.revisionId || undefined,
-      },
-      pending.target.focus,
-      { force: true },
-    );
-  }, [composing, openDocument, pointerSelecting, dispatch]);
+    const target =
+      pending.kind === "resolved"
+        ? {
+            id: pending.target.documentId,
+            revisionId: pending.target.revisionId,
+          }
+        : { id: pending.documentId, revisionId: pending.revisionId };
+    const focus =
+      pending.kind === "resolved" ? pending.target.focus : pending.focus;
+    // Keep the request in state until openDocument succeeds.  A failed retry
+    // must leave the user's deferred destination available.
+    void openDocument(target, focus, { force: true });
+  }, [composing, openDocument, pointerSelecting]);
 
   useEffect(() => {
     const currentSession = sessionRef.current;
@@ -1011,8 +1138,10 @@ export function Reader({
 
   const saveEditor = useCallback(async (): Promise<void> => {
     const draft = sessionRef.current.editor;
-    if (draft.kind === "closed") return;
-    dispatch({ type: "editor/saving" });
+    if (draft.kind === "closed" || draft.saving) return;
+    const requestId = nextRequest(editorRequestRef.current);
+    editorRequestRef.current = requestId;
+    dispatch({ type: "editor/saving", requestId });
     try {
       let document: DocumentRevision;
       if (draft.kind === "create") {
@@ -1049,6 +1178,18 @@ export function Reader({
         scope: "active",
         documents: [document],
       });
+      const latest = sessionRef.current.editor;
+      const accepted =
+        latest.kind !== "closed" &&
+        latest.saving &&
+        latest.saveRequestId === requestId;
+      if (!accepted) {
+        dispatch({
+          type: "status",
+          message: "服务器版本已保存；当前编辑草稿仍保留。",
+        });
+        return;
+      }
       dispatch({ type: "editor/close" });
       dispatch({
         type: "status",
@@ -1068,21 +1209,41 @@ export function Reader({
           },
         );
       else if (draft.kind === "edit" && draft.owner) {
-        const role: SurfaceRole =
-          sessionRef.current.attention.attention.kind === "reading" &&
-          sessionRef.current.attention.attention.current.revisionId ===
-            draft.owner.revisionId
-            ? "current"
-            : "companion";
-        dispatchAttention({
-          type: "replace-revision",
-          role,
-          position: readingPosition(document),
-        });
+        const attention = sessionRef.current.attention.attention;
+        if (attention.kind === "reading") {
+          const role: SurfaceRole | null =
+            attention.current.documentId === draft.owner.documentId &&
+            attention.current.revisionId === draft.owner.revisionId
+              ? "current"
+              : attention.companion?.position.documentId ===
+                    draft.owner.documentId &&
+                  attention.companion.position.revisionId ===
+                    draft.owner.revisionId
+                ? "companion"
+                : null;
+          if (role)
+            dispatchAttention({
+              type: "replace-revision",
+              role,
+              // The old revision's focus is not valid in the new revision;
+              // retain the reader's sensible scroll position instead.
+              position: readingPosition(document, null, draft.owner.scrollTop),
+            });
+        }
       }
       flushPendingNavigation();
     } catch (error) {
-      dispatch({ type: "editor/error", message: errorMessage(error) });
+      const latest = sessionRef.current.editor;
+      if (
+        latest.kind !== "closed" &&
+        latest.saving &&
+        latest.saveRequestId === requestId
+      )
+        dispatch({
+          type: "editor/error",
+          requestId,
+          message: errorMessage(error),
+        });
     }
   }, [
     client,
@@ -1261,6 +1422,8 @@ export function Reader({
       dispatch({
         type: "answer/status",
         questionId: answer.questionId,
+        answerDocumentId: answer.answerDocumentId,
+        answerRevisionId: answer.answerRevisionId,
         status: "reading",
       });
       void readBeside(
@@ -1589,7 +1752,10 @@ export function Reader({
               {session.answers
                 .filter((answer) => answer.status === "unseen")
                 .map((answer) => (
-                  <div className="answer-notice-item" key={answer.questionId}>
+                  <div
+                    className="answer-notice-item"
+                    key={answerNotificationKey(answer)}
+                  >
                     <span>已有回答：{answer.title}</span>
                     <button type="button" onClick={() => openAnswer(answer)}>
                       旁读答案
@@ -1601,6 +1767,8 @@ export function Reader({
                         dispatch({
                           type: "answer/status",
                           questionId: answer.questionId,
+                          answerDocumentId: answer.answerDocumentId,
+                          answerRevisionId: answer.answerRevisionId,
                           status: "seen",
                         })
                       }
@@ -1669,6 +1837,8 @@ export function Reader({
         onSendQuestion={() => void sendQuestion()}
         onStartConnection={startConnection}
         onSaveConnection={() => void saveConnection()}
+        onDismiss={dismissComposer}
+        onDiscardQuestion={discardQuestion}
       />
 
       <ReaderDialogs

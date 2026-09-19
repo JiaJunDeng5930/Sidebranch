@@ -166,6 +166,7 @@ test("selecting text only opens the action layer; question editing is explicit",
     },
   });
   assert.equal(state.question.kind, "closed");
+  assert.equal(hasProtectedDraft(state), true);
   state = readerSessionReducer(state, {
     type: "question/open",
     document,
@@ -196,8 +197,9 @@ test("late question save cannot replace a changed draft", () => {
   });
   assert.equal(state.question.kind, "draft");
   assert.equal(state.question.body, "new body");
-  assert.equal(state.question.saved, null);
+  assert.equal("question" in state.question, false);
   assert.match(state.question.error ?? "", /发生了变化/);
+  assert.equal(state.questions[0]?.id, saved.id);
 });
 
 test("persisted question states do not block a new destination", () => {
@@ -219,6 +221,10 @@ test("persisted question states do not block a new destination", () => {
     question: saved,
     body: saved.body,
   });
+  // The selection remains a protected host interaction until it is explicitly
+  // cleared, even though the persisted question itself is safe to navigate.
+  assert.equal(hasProtectedDraft(state), true);
+  state = readerSessionReducer(state, { type: "selection/clear" });
   assert.equal(hasProtectedDraft(state), false);
 
   state = readerSessionReducer(state, {
@@ -328,6 +334,7 @@ test("dirty editor and question drafts are protected from deferred navigation", 
   state = readerSessionReducer(state, {
     type: "navigation/defer",
     navigation: {
+      kind: "resolved",
       target: {
         documentId: second.id,
         revisionId: second.revisionId,
@@ -338,7 +345,12 @@ test("dirty editor and question drafts are protected from deferred navigation", 
       message: "当前有未保存草稿。",
     },
   });
-  assert.equal(state.pendingNavigation?.target.revisionId, second.revisionId);
+  assert.equal(
+    state.pendingNavigation?.kind === "resolved"
+      ? state.pendingNavigation.target.revisionId
+      : null,
+    second.revisionId,
+  );
   assert.equal(state.attention.attention.kind, "reading");
   if (state.attention.attention.kind !== "reading")
     throw new Error("missing attention");
@@ -390,7 +402,141 @@ test("connection draft, saved relation, and question draft remain independent", 
     label: "",
     createdAt: "2026-01-01T00:00:00.000Z",
   };
-  state = readerSessionReducer(state, { type: "connection/added", connection });
+  state = readerSessionReducer(state, {
+    type: "connection/saving",
+    requestId: 1,
+  });
+  state = readerSessionReducer(state, {
+    type: "connection/label",
+    label: "changed while saving",
+  });
+  state = readerSessionReducer(state, {
+    type: "connection/added",
+    requestId: 1,
+    connection,
+  });
   assert.equal(state.connections.length, 1);
+  assert.equal(state.connection.kind, "second");
+  if (state.connection.kind !== "second")
+    throw new Error("edited connection draft was lost");
+  assert.equal(state.connection.label, "changed while saving");
+  state = readerSessionReducer(state, {
+    type: "connection/saving",
+    requestId: 2,
+  });
+  state = readerSessionReducer(state, {
+    type: "connection/added",
+    requestId: 2,
+    connection,
+  });
+  assert.equal(state.connection.kind, "closed");
   assert.equal(state.question.kind, "draft");
+});
+
+test("answer status keeps same question's answer identities independent", () => {
+  const source = revision("000000000014");
+  const answerOne = revision("000000000015");
+  const answerTwo = revision("000000000016");
+  const question = questionFor(source, "two answers");
+  const first = {
+    questionId: question.id,
+    answerDocumentId: answerOne.id,
+    answerRevisionId: answerOne.revisionId,
+    title: answerOne.title,
+    status: "unseen" as const,
+  };
+  const second = {
+    questionId: question.id,
+    answerDocumentId: answerTwo.id,
+    answerRevisionId: answerTwo.revisionId,
+    title: answerTwo.title,
+    status: "unseen" as const,
+  };
+  let state = emptySession();
+  state = readerSessionReducer(state, {
+    type: "answer/arrived",
+    notification: first,
+  });
+  state = readerSessionReducer(state, {
+    type: "answer/arrived",
+    notification: second,
+  });
+  state = readerSessionReducer(state, {
+    type: "answer/status",
+    questionId: first.questionId,
+    answerDocumentId: first.answerDocumentId,
+    answerRevisionId: first.answerRevisionId,
+    status: "seen",
+  });
+  assert.deepEqual(
+    state.answers.map((answer) => [answer.answerDocumentId, answer.status]),
+    [
+      [answerOne.id, "seen"],
+      [answerTwo.id, "unseen"],
+    ],
+  );
+});
+
+test("late editor failure cannot replace a changed draft", () => {
+  const document = revision("000000000017");
+  let state = startReading(emptySession(), document);
+  state = readerSessionReducer(state, {
+    type: "editor/open-edit",
+    document,
+    owner: readingPosition(document, anchor(document), 240),
+  });
+  state = readerSessionReducer(state, {
+    type: "editor/content",
+    content: "first edit",
+  });
+  state = readerSessionReducer(state, {
+    type: "editor/saving",
+    requestId: 1,
+  });
+  state = readerSessionReducer(state, {
+    type: "editor/content",
+    content: "newer edit",
+  });
+  state = readerSessionReducer(state, {
+    type: "editor/error",
+    requestId: 1,
+    message: "late failure",
+  });
+  assert.equal(state.editor.kind, "edit");
+  if (state.editor.kind !== "edit") throw new Error("editor closed");
+  assert.equal(state.editor.content, "newer edit");
+  assert.equal(state.editor.saving, false);
+  assert.equal(state.editor.error, null);
+});
+
+test("editing an existing title is read only and question close clears the draft", () => {
+  const document = revision("000000000018");
+  const selected = anchor(document);
+  let state = startReading(emptySession(), document);
+  state = readerSessionReducer(state, {
+    type: "editor/open-edit",
+    document,
+    owner: readingPosition(document),
+  });
+  state = readerSessionReducer(state, {
+    type: "editor/title",
+    title: "should use rename",
+  });
+  assert.equal(state.editor.kind, "edit");
+  if (state.editor.kind !== "edit") throw new Error("editor closed");
+  assert.equal(state.editor.title, document.title);
+
+  state = readerSessionReducer(state, {
+    type: "question/open",
+    document,
+    anchor: selected,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/body",
+    body: "discard explicitly",
+  });
+  assert.equal(hasProtectedDraft(state), true);
+  state = readerSessionReducer(state, { type: "question/close" });
+  assert.equal(state.question.kind, "closed");
+  assert.equal(hasProtectedDraft(state), false);
 });
