@@ -43,9 +43,45 @@ export type SelectionState =
     };
 
 interface QuestionDraftBase {
+  readonly draftId: QuestionDraftId;
   readonly document: DocumentRevision;
   readonly anchor: AnchorInput;
   readonly body: string;
+}
+
+declare const questionDraftIdBrand: unique symbol;
+declare const questionPersistenceAttemptIdBrand: unique symbol;
+declare const questionDeliveryAttemptIdBrand: unique symbol;
+
+/** Identity of the visible composer instance, independent from its text. */
+export type QuestionDraftId = number & {
+  readonly [questionDraftIdBrand]: "QuestionDraftId";
+};
+
+/** Identity of one asynchronous question persistence operation. */
+export type QuestionPersistenceAttemptId = number & {
+  readonly [questionPersistenceAttemptIdBrand]: "QuestionPersistenceAttemptId";
+};
+
+/** Identity of one asynchronous question delivery operation. */
+export type QuestionDeliveryAttemptId = number & {
+  readonly [questionDeliveryAttemptIdBrand]: "QuestionDeliveryAttemptId";
+};
+
+export function questionDraftId(value: number): QuestionDraftId {
+  return value as QuestionDraftId;
+}
+
+export function questionPersistenceAttemptId(
+  value: number,
+): QuestionPersistenceAttemptId {
+  return value as QuestionPersistenceAttemptId;
+}
+
+export function questionDeliveryAttemptId(
+  value: number,
+): QuestionDeliveryAttemptId {
+  return value as QuestionDeliveryAttemptId;
 }
 
 interface UnsavedQuestionDraft extends QuestionDraftBase {
@@ -60,22 +96,34 @@ interface SavedQuestionDraft extends QuestionDraftBase {
 export type QuestionDraft =
   | { readonly kind: "closed" }
   | (UnsavedQuestionDraft & { readonly kind: "draft" })
-  | (UnsavedQuestionDraft & { readonly kind: "saving"; readonly error: null })
+  | (UnsavedQuestionDraft & {
+      readonly kind: "saving";
+      readonly error: null;
+      readonly persistenceAttemptId: QuestionPersistenceAttemptId;
+      readonly submittedBody: string;
+    })
   | (SavedQuestionDraft & { readonly kind: "saved"; readonly error: null })
-  | (SavedQuestionDraft & { readonly kind: "sending"; readonly error: null })
+  | (SavedQuestionDraft & {
+      readonly kind: "sending";
+      readonly error: null;
+      readonly deliveryAttemptId: QuestionDeliveryAttemptId;
+    })
   | (SavedQuestionDraft & {
       readonly kind: "awaiting";
       readonly sentBody: string;
+      readonly deliveryAttemptId: QuestionDeliveryAttemptId;
       readonly error: null;
     })
   | (SavedQuestionDraft & {
       readonly kind: "answered";
       readonly sentBody: string;
+      readonly deliveryAttemptId: QuestionDeliveryAttemptId | null;
       readonly error: null;
     })
   | (SavedQuestionDraft & {
       readonly kind: "send_failed";
       readonly sentBody: string | null;
+      readonly deliveryAttemptId: QuestionDeliveryAttemptId;
       readonly error: string;
     });
 
@@ -85,6 +133,7 @@ export interface QuestionTask {
   readonly status:
     "saved" | "sending" | "awaiting" | "send_failed" | "answered";
   readonly error: string | null;
+  readonly deliveryAttemptId: QuestionDeliveryAttemptId | null;
 }
 
 export interface ConnectionEndpoint {
@@ -204,7 +253,28 @@ export interface CatalogueState {
   readonly archivedError: string | null;
 }
 
-export type PendingNavigation =
+declare const navigationIntentIdBrand: unique symbol;
+declare const navigationAttemptIdBrand: unique symbol;
+
+/** Identity of the latest deferred destination. */
+export type NavigationIntentId = number & {
+  readonly [navigationIntentIdBrand]: "NavigationIntentId";
+};
+
+/** Identity of one fetch attempt for a deferred destination. */
+export type NavigationAttemptId = number & {
+  readonly [navigationAttemptIdBrand]: "NavigationAttemptId";
+};
+
+export function navigationIntentId(value: number): NavigationIntentId {
+  return value as NavigationIntentId;
+}
+
+export function navigationAttemptId(value: number): NavigationAttemptId {
+  return value as NavigationAttemptId;
+}
+
+export type PendingNavigationTarget =
   | {
       readonly kind: "resolved";
       readonly target: DocumentTarget;
@@ -219,6 +289,25 @@ export type PendingNavigation =
       readonly focus: AnchorInput | null;
       readonly title: string;
       readonly message: string;
+    };
+
+export type PendingNavigation =
+  | {
+      readonly lifecycle: "blocked";
+      readonly intentId: NavigationIntentId;
+      readonly target: PendingNavigationTarget;
+    }
+  | {
+      readonly lifecycle: "opening";
+      readonly intentId: NavigationIntentId;
+      readonly attemptId: NavigationAttemptId;
+      readonly target: PendingNavigationTarget;
+    }
+  | {
+      readonly lifecycle: "failed";
+      readonly intentId: NavigationIntentId;
+      readonly target: PendingNavigationTarget;
+      readonly error: string;
     };
 
 export interface AnswerNotification {
@@ -256,6 +345,8 @@ export interface ReaderSession {
   readonly selectedConnectionId: Connection["id"] | null;
   readonly selection: SelectionState;
   readonly question: QuestionDraft;
+  /** Monotonic source for visible composer identities. */
+  readonly questionDraftSequence: number;
   readonly questionTasks: readonly QuestionTask[];
   readonly connection: ConnectionDraft;
   readonly editor: EditorDraft;
@@ -297,6 +388,7 @@ export const emptySession = (): ReaderSession => ({
   selectedConnectionId: null,
   selection: { kind: "none" },
   question: emptyQuestionDraft(),
+  questionDraftSequence: 0,
   questionTasks: [],
   connection: emptyConnectionDraft(),
   editor: emptyEditorDraft(),
@@ -354,16 +446,50 @@ export type ReaderSessionAction =
       readonly anchor: AnchorInput;
     }
   | { readonly type: "question/body"; readonly body: string }
-  | { readonly type: "question/saving" }
+  | {
+      readonly type: "question/saving";
+      readonly draftId: QuestionDraftId;
+      readonly attemptId: QuestionPersistenceAttemptId;
+      readonly body: string;
+    }
   | {
       readonly type: "question/saved";
       readonly question: Question;
       readonly body: string;
+      readonly draftId: QuestionDraftId;
+      readonly attemptId: QuestionPersistenceAttemptId;
     }
-  | { readonly type: "question/sending"; readonly body: string }
-  | { readonly type: "question/sent"; readonly body: string }
+  | {
+      readonly type: "question/sending";
+      readonly questionId: QuestionId;
+      readonly draftId: QuestionDraftId;
+      readonly attemptId: QuestionDeliveryAttemptId;
+      readonly body: string;
+    }
+  | {
+      readonly type: "question/sent";
+      readonly questionId: QuestionId;
+      readonly draftId: QuestionDraftId;
+      readonly attemptId: QuestionDeliveryAttemptId;
+      readonly body: string;
+    }
   | { readonly type: "question/answered"; readonly question: Question }
-  | { readonly type: "question/failure"; readonly message: string }
+  | {
+      readonly type: "question/failure";
+      readonly stage: "saving";
+      readonly draftId: QuestionDraftId;
+      readonly attemptId: QuestionPersistenceAttemptId;
+      readonly message: string;
+    }
+  | {
+      readonly type: "question/failure";
+      readonly stage: "sending";
+      readonly questionId: QuestionId;
+      readonly draftId: QuestionDraftId;
+      readonly attemptId: QuestionDeliveryAttemptId;
+      readonly body: string;
+      readonly message: string;
+    }
   | { readonly type: "question/close" }
   | {
       readonly type: "questions/merge";
@@ -462,7 +588,21 @@ export type ReaderSessionAction =
       readonly type: "navigation/defer";
       readonly navigation: PendingNavigation;
     }
-  | { readonly type: "navigation/clear" }
+  | {
+      readonly type: "navigation/start";
+      readonly intentId: NavigationIntentId;
+      readonly attemptId: NavigationAttemptId;
+    }
+  | {
+      readonly type: "navigation/failure";
+      readonly intentId: NavigationIntentId;
+      readonly attemptId: NavigationAttemptId;
+      readonly message: string;
+    }
+  | {
+      readonly type: "navigation/clear";
+      readonly intentId?: NavigationIntentId;
+    }
   | { readonly type: "imports/set"; readonly imports: readonly ImportTask[] }
   | { readonly type: "status"; readonly message: string | null }
   | { readonly type: "error"; readonly message: string | null }
@@ -621,30 +761,50 @@ export function readerSessionReducer(
         connection: emptyConnectionDraft(),
       };
     case "question/open":
-      return {
-        ...state,
-        selection:
-          state.selection.kind === "selected"
-            ? state.selection
-            : {
-                kind: "selected",
-                document: action.document,
-                anchor: action.anchor,
-                preview: action.anchor.quote,
-                rect: null,
-              },
-        question: {
-          kind: "draft",
-          document: action.document,
-          anchor: action.anchor,
-          body: "",
-          error: null,
-        },
-      };
+      {
+        const draftId = questionDraftId(state.questionDraftSequence + 1);
+        return {
+          ...state,
+          questionDraftSequence: state.questionDraftSequence + 1,
+          selection:
+            state.selection.kind === "selected"
+              ? state.selection
+              : {
+                  kind: "selected",
+                  document: action.document,
+                  anchor: action.anchor,
+                  preview: action.anchor.quote,
+                  rect: null,
+                },
+          question: {
+            kind: "draft",
+            draftId,
+            document: action.document,
+            anchor: action.anchor,
+            body: "",
+            error: null,
+          },
+        };
+      }
     case "question/body": {
       const question = state.question;
       if (question.kind === "closed") return state;
       if (action.body === question.body) return state;
+      if (question.kind === "saving") {
+        const draftId = questionDraftId(state.questionDraftSequence + 1);
+        return {
+          ...state,
+          questionDraftSequence: state.questionDraftSequence + 1,
+          question: {
+            kind: "draft",
+            draftId,
+            document: question.document,
+            anchor: question.anchor,
+            body: action.body,
+            error: null,
+          },
+        };
+      }
       if (
         question.kind === "saved" ||
         question.kind === "sending" ||
@@ -652,10 +812,13 @@ export function readerSessionReducer(
         question.kind === "send_failed" ||
         question.kind === "answered"
       ) {
+        const draftId = questionDraftId(state.questionDraftSequence + 1);
         return {
           ...state,
+          questionDraftSequence: state.questionDraftSequence + 1,
           question: {
             kind: "draft",
+            draftId,
             document: question.document,
             anchor: question.anchor,
             body: action.body,
@@ -669,45 +832,45 @@ export function readerSessionReducer(
       };
     }
     case "question/saving":
-      return state.question.kind === "draft"
+      return state.question.kind === "draft" &&
+        state.question.draftId === action.draftId
         ? {
             ...state,
-            question: { ...state.question, kind: "saving", error: null },
+            question: {
+              ...state.question,
+              kind: "saving",
+              persistenceAttemptId: action.attemptId,
+              submittedBody: action.body,
+              error: null,
+            },
           }
         : state;
     case "question/saved": {
       const current = state.question;
       const savedQuestions = mergeQuestions(state.questions, [action.question]);
-      const savedTask = upsertQuestionTask(state.questionTasks, {
-        question: action.question,
-        document: findSummary(
-          state.documents,
-          action.question.anchor.documentId,
-        ),
-        status: "saved",
-        error: null,
-      });
-      if (current.kind !== "saving" && current.kind !== "draft")
+      const existingTask = state.questionTasks.find(
+        (task) => task.question.id === action.question.id,
+      );
+      const savedTask =
+        existingTask && existingTask.status !== "saved"
+          ? [...state.questionTasks]
+          : upsertQuestionTask(state.questionTasks, {
+              question: action.question,
+              document: findSummary(
+                state.documents,
+                action.question.anchor.documentId,
+              ),
+              status: "saved",
+              error: null,
+              deliveryAttemptId: null,
+            });
+      if (
+        current.kind !== "saving" ||
+        current.draftId !== action.draftId ||
+        current.persistenceAttemptId !== action.attemptId
+      )
         return {
           ...state,
-          questions: savedQuestions,
-          questionTasks: savedTask,
-        };
-      const sameAnchor =
-        current.anchor.revisionId === action.question.anchor.revisionId &&
-        current.anchor.start === action.question.anchor.start &&
-        current.anchor.end === action.question.anchor.end &&
-        current.anchor.quote === action.question.anchor.quote;
-      if (current.body.trim() !== action.body.trim() || !sameAnchor)
-        return {
-          ...state,
-          question: {
-            kind: "draft",
-            document: current.document,
-            anchor: current.anchor,
-            body: current.body,
-            error: "问题内容在保存期间发生了变化，请确认后重新发送。",
-          },
           questions: savedQuestions,
           questionTasks: savedTask,
         };
@@ -715,6 +878,7 @@ export function readerSessionReducer(
         ...state,
         question: {
           kind: "saved",
+          draftId: current.draftId,
           document: current.document,
           anchor: current.anchor,
           body: current.body,
@@ -727,47 +891,65 @@ export function readerSessionReducer(
     }
     case "question/sending": {
       const current = state.question;
-      if (current.kind !== "saved" && current.kind !== "send_failed")
+      if (
+        (current.kind !== "saved" && current.kind !== "send_failed") ||
+        current.draftId !== action.draftId ||
+        current.question.id !== action.questionId
+      )
         return state;
       if (current.body.trim() !== action.body.trim()) return state;
       return {
         ...state,
-        question: { ...current, kind: "sending", error: null },
-        questionTasks: updateQuestionTask(
-          state.questionTasks,
-          current.question.id,
-          { status: "sending", error: null },
-        ),
-      };
-    }
-    case "question/sent": {
-      const current = state.question;
-      if (current.kind !== "sending") return state;
-      if (current.body.trim() !== action.body.trim())
-        return {
-          ...state,
-          question: {
-            kind: "draft",
-            document: current.document,
-            anchor: current.anchor,
-            body: current.body,
-            error: "问题内容已变化，上一条问题没有发送当前草稿。",
-          },
-        };
-      return {
-        ...state,
         question: {
-          kind: "awaiting",
-          document: current.document,
-          anchor: current.anchor,
-          body: current.body,
-          question: current.question,
-          sentBody: action.body,
+          ...current,
+          kind: "sending",
+          deliveryAttemptId: action.attemptId,
           error: null,
         },
         questionTasks: updateQuestionTask(
           state.questionTasks,
           current.question.id,
+          {
+            status: "sending",
+            error: null,
+            deliveryAttemptId: action.attemptId,
+          },
+        ),
+      };
+    }
+    case "question/sent": {
+      const current = state.question;
+      const task = state.questionTasks.find(
+        (item) =>
+          item.question.id === action.questionId &&
+          item.status === "sending" &&
+          item.deliveryAttemptId === action.attemptId,
+      );
+      if (!task) return state;
+      const visible =
+        current.kind === "sending" &&
+        current.draftId === action.draftId &&
+        current.question.id === action.questionId &&
+        current.deliveryAttemptId === action.attemptId &&
+        current.body.trim() === action.body.trim();
+      return {
+        ...state,
+        question: visible
+          ? {
+              kind: "awaiting",
+              draftId: current.draftId,
+              document: current.document,
+              anchor: current.anchor,
+              body: current.body,
+              question: current.question,
+              sentBody: action.body,
+              deliveryAttemptId: action.attemptId,
+              error: null,
+            }
+          : current,
+        questionTasks: updateQuestionTask(
+          state.questionTasks,
+          action.questionId,
           { status: "awaiting", error: null },
         ),
       };
@@ -785,6 +967,7 @@ export function readerSessionReducer(
         question: questionMatches
           ? {
               kind: "answered",
+              draftId: active.draftId,
               document: active.document,
               anchor: active.anchor,
               body: active.body,
@@ -793,6 +976,10 @@ export function readerSessionReducer(
                 "sentBody" in active
                   ? (active.sentBody ?? active.body.trim())
                   : active.body.trim(),
+              deliveryAttemptId:
+                "deliveryAttemptId" in active
+                  ? active.deliveryAttemptId
+                  : null,
               error: null,
             }
           : active,
@@ -801,43 +988,56 @@ export function readerSessionReducer(
           document: findSummary(state.documents, question.anchor.documentId),
           status: "answered",
           error: null,
+          deliveryAttemptId:
+            state.questionTasks.find((task) => task.question.id === question.id)
+              ?.deliveryAttemptId ?? null,
         }),
       };
     }
     case "question/failure": {
       const current = state.question;
-      if (
-        current.kind === "closed" ||
-        current.kind === "awaiting" ||
-        current.kind === "answered"
-      )
-        return state;
-      if (current.kind === "saving" || current.kind === "draft")
+      if (action.stage === "saving") {
+        if (
+          current.kind !== "saving" ||
+          current.draftId !== action.draftId ||
+          current.persistenceAttemptId !== action.attemptId
+        )
+          return state;
         return {
           ...state,
           question: { ...current, kind: "draft", error: action.message },
         };
-      if (
-        current.kind !== "saved" &&
-        current.kind !== "sending" &&
-        current.kind !== "send_failed"
-      )
-        return state;
-      const sentBody = current.kind === "send_failed" ? current.sentBody : null;
+      }
+      const task = state.questionTasks.find(
+        (item) =>
+          item.question.id === action.questionId &&
+          item.status === "sending" &&
+          item.deliveryAttemptId === action.attemptId,
+      );
+      if (!task) return state;
+      const visible =
+        current.kind === "sending" &&
+        current.draftId === action.draftId &&
+        current.question.id === action.questionId &&
+        current.deliveryAttemptId === action.attemptId;
       return {
         ...state,
-        question: {
-          kind: "send_failed",
-          document: current.document,
-          anchor: current.anchor,
-          body: current.body,
-          question: current.question,
-          sentBody,
-          error: action.message,
-        },
+        question: visible
+          ? {
+              kind: "send_failed",
+              draftId: current.draftId,
+              document: current.document,
+              anchor: current.anchor,
+              body: current.body,
+              question: current.question,
+              sentBody: action.body,
+              deliveryAttemptId: action.attemptId,
+              error: action.message,
+            }
+          : current,
         questionTasks: updateQuestionTask(
           state.questionTasks,
-          current.question.id,
+          action.questionId,
           { status: "send_failed", error: action.message },
         ),
       };
@@ -1214,8 +1414,48 @@ export function readerSessionReducer(
       };
     case "navigation/defer":
       return { ...state, pendingNavigation: action.navigation };
+    case "navigation/start": {
+      const pending = state.pendingNavigation;
+      if (
+        !pending ||
+        pending.intentId !== action.intentId ||
+        (pending.lifecycle !== "blocked" && pending.lifecycle !== "failed")
+      )
+        return state;
+      return {
+        ...state,
+        pendingNavigation: {
+          lifecycle: "opening",
+          intentId: pending.intentId,
+          attemptId: action.attemptId,
+          target: pending.target,
+        },
+      };
+    }
+    case "navigation/failure": {
+      const pending = state.pendingNavigation;
+      if (
+        !pending ||
+        pending.lifecycle !== "opening" ||
+        pending.intentId !== action.intentId ||
+        pending.attemptId !== action.attemptId
+      )
+        return state;
+      return {
+        ...state,
+        pendingNavigation: {
+          lifecycle: "failed",
+          intentId: pending.intentId,
+          target: pending.target,
+          error: action.message,
+        },
+      };
+    }
     case "navigation/clear":
-      return { ...state, pendingNavigation: null };
+      return action.intentId !== undefined &&
+        state.pendingNavigation?.intentId !== action.intentId
+        ? state
+        : { ...state, pendingNavigation: null };
     case "imports/set":
       return { ...state, imports: action.imports };
     case "status":
@@ -1246,6 +1486,16 @@ export function isQuestionDirty(question: QuestionDraft): boolean {
   return (
     (question.kind === "draft" ||
       question.kind === "saving" ||
+      question.kind === "send_failed") &&
+    question.body.trim().length > 0
+  );
+}
+
+/** The single domain rule used by both the controller and the composer button. */
+export function canSendQuestion(question: QuestionDraft): boolean {
+  return (
+    (question.kind === "draft" ||
+      question.kind === "saved" ||
       question.kind === "send_failed") &&
     question.body.trim().length > 0
   );
@@ -1316,7 +1566,8 @@ function upsertQuestionTask(
 function updateQuestionTask(
   tasks: readonly QuestionTask[],
   questionId: QuestionId,
-  update: Pick<QuestionTask, "status" | "error">,
+  update: Pick<QuestionTask, "status" | "error"> &
+    Partial<Pick<QuestionTask, "deliveryAttemptId">>,
 ): QuestionTask[] {
   return tasks.map((task) =>
     task.question.id === questionId ? { ...task, ...update } : task,

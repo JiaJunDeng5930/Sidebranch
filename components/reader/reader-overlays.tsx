@@ -23,7 +23,7 @@ import type {
   ReaderSession,
   ReaderSessionAction,
 } from "../../lib/reader/session";
-import { isQuestionDirty } from "../../lib/reader/session";
+import { canSendQuestion, isQuestionDirty } from "../../lib/reader/session";
 import { relationNames } from "../../lib/reader/relations";
 import type { Connection, DocumentRevision } from "../../lib/domain/model";
 
@@ -262,10 +262,11 @@ export function SelectionComposer({
           <button
             type="button"
             className="solid-button full-button"
-            disabled={connection.kind !== "second"}
+            disabled={connection.kind !== "second" && connection.kind !== "failed"}
             onClick={onSaveConnection}
           >
-            <Link2 size={15} /> 建立连接
+            <Link2 size={15} />
+            {connection.kind === "failed" ? "重试连接" : "建立连接"}
           </button>
           {isQuestionDirty(question) && (
             <button
@@ -338,12 +339,7 @@ export function SelectionComposer({
             <button
               type="button"
               className="solid-button"
-              disabled={
-                !question.body.trim() ||
-                question.kind === "saving" ||
-                question.kind === "sending" ||
-                question.kind === "awaiting"
-              }
+              disabled={!canSendQuestion(question)}
               onClick={onSendQuestion}
             >
               <Send size={15} />{" "}

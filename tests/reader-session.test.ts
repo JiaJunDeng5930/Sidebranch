@@ -17,6 +17,10 @@ import {
   emptySession,
   hasProtectedDraft,
   isEditorDirty,
+  navigationAttemptId,
+  navigationIntentId,
+  questionDeliveryAttemptId,
+  questionPersistenceAttemptId,
   readerSessionReducer,
   type ReaderSession,
 } from "../lib/reader/session";
@@ -190,16 +194,32 @@ test("late question save cannot replace a changed draft", () => {
     type: "question/body",
     body: "new body",
   });
+  if (state.question.kind !== "draft") throw new Error("missing question draft");
+  const draftId = state.question.draftId;
+  const persistenceAttemptId = questionPersistenceAttemptId(1);
+  state = readerSessionReducer(state, {
+    type: "question/saving",
+    draftId,
+    attemptId: persistenceAttemptId,
+    body: "new body",
+  });
+  state = readerSessionReducer(state, {
+    type: "question/body",
+    body: "newer body",
+  });
   state = readerSessionReducer(state, {
     type: "question/saved",
     question: saved,
     body: "old body",
+    draftId,
+    attemptId: persistenceAttemptId,
   });
   assert.equal(state.question.kind, "draft");
-  assert.equal(state.question.body, "new body");
+  assert.equal(state.question.body, "newer body");
   assert.equal("question" in state.question, false);
-  assert.match(state.question.error ?? "", /发生了变化/);
+  assert.equal(state.question.error, null);
   assert.equal(state.questions[0]?.id, saved.id);
+  assert.equal(state.questionTasks[0]?.status, "saved");
 });
 
 test("persisted question states do not block a new destination", () => {
@@ -216,10 +236,21 @@ test("persisted question states do not block a new destination", () => {
     type: "question/body",
     body: saved.body,
   });
+  if (state.question.kind !== "draft") throw new Error("missing question draft");
+  const draftId = state.question.draftId;
+  const persistenceAttemptId = questionPersistenceAttemptId(2);
+  state = readerSessionReducer(state, {
+    type: "question/saving",
+    draftId,
+    attemptId: persistenceAttemptId,
+    body: saved.body,
+  });
   state = readerSessionReducer(state, {
     type: "question/saved",
     question: saved,
     body: saved.body,
+    draftId,
+    attemptId: persistenceAttemptId,
   });
   // The selection remains a protected host interaction until it is explicitly
   // cleared, even though the persisted question itself is safe to navigate.
@@ -229,10 +260,16 @@ test("persisted question states do not block a new destination", () => {
 
   state = readerSessionReducer(state, {
     type: "question/sending",
+    questionId: saved.id,
+    draftId,
+    attemptId: questionDeliveryAttemptId(1),
     body: saved.body,
   });
   state = readerSessionReducer(state, {
     type: "question/sent",
+    questionId: saved.id,
+    draftId,
+    attemptId: questionDeliveryAttemptId(1),
     body: saved.body,
   });
   assert.equal(hasProtectedDraft(state), false);
@@ -277,6 +314,129 @@ test("answer arrival is a notification and preserves a different question draft"
   assert.equal(state.attention.attention.kind, "reading");
   if (state.question.kind === "closed") throw new Error("draft was lost");
   assert.equal(state.question.body, "draft in progress");
+});
+
+test("question delivery identities update the task and reject late receipts", () => {
+  const document = revision("000000000061");
+  const selected = anchor(document);
+  const question = questionFor(document, "identity");
+  let state = startReading(emptySession(), document);
+  state = readerSessionReducer(state, {
+    type: "question/open",
+    document,
+    anchor: selected,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/body",
+    body: question.body,
+  });
+  if (state.question.kind !== "draft") throw new Error("missing draft");
+  const draftId = state.question.draftId;
+  const persistenceAttemptId = questionPersistenceAttemptId(61);
+  state = readerSessionReducer(state, {
+    type: "question/saving",
+    draftId,
+    attemptId: persistenceAttemptId,
+    body: question.body,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/saved",
+    question,
+    body: question.body,
+    draftId,
+    attemptId: persistenceAttemptId,
+  });
+  const deliveryAttemptId = questionDeliveryAttemptId(61);
+  state = readerSessionReducer(state, {
+    type: "question/sending",
+    questionId: question.id,
+    draftId,
+    attemptId: deliveryAttemptId,
+    body: question.body,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/sent",
+    questionId: question.id,
+    draftId,
+    attemptId: deliveryAttemptId,
+    body: question.body,
+  });
+  assert.equal(state.question.kind, "awaiting");
+  assert.equal(state.questionTasks[0]?.status, "awaiting");
+
+  state = readerSessionReducer(state, {
+    type: "question/answered",
+    question: { ...question, answers: [document.id] },
+  });
+  assert.equal(state.question.kind, "answered");
+  state = readerSessionReducer(state, {
+    type: "question/failure",
+    stage: "sending",
+    questionId: question.id,
+    draftId,
+    attemptId: deliveryAttemptId,
+    body: question.body,
+    message: "late failure",
+  });
+  assert.equal(state.question.kind, "answered");
+  assert.equal(state.questionTasks[0]?.status, "answered");
+});
+
+test("old delivery receipts update only their independent task after editing", () => {
+  const document = revision("000000000062");
+  const selected = anchor(document);
+  const question = questionFor(document, "old delivery");
+  let state = startReading(emptySession(), document);
+  state = readerSessionReducer(state, {
+    type: "question/open",
+    document,
+    anchor: selected,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/body",
+    body: question.body,
+  });
+  if (state.question.kind !== "draft") throw new Error("missing draft");
+  const draftId = state.question.draftId;
+  const persistenceAttemptId = questionPersistenceAttemptId(62);
+  state = readerSessionReducer(state, {
+    type: "question/saving",
+    draftId,
+    attemptId: persistenceAttemptId,
+    body: question.body,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/saved",
+    question,
+    body: question.body,
+    draftId,
+    attemptId: persistenceAttemptId,
+  });
+  const deliveryAttemptId = questionDeliveryAttemptId(62);
+  state = readerSessionReducer(state, {
+    type: "question/sending",
+    questionId: question.id,
+    draftId,
+    attemptId: deliveryAttemptId,
+    body: question.body,
+  });
+  state = readerSessionReducer(state, {
+    type: "question/body",
+    body: "new draft",
+  });
+  assert.equal(state.question.kind, "draft");
+  const newDraftId = state.question.draftId;
+  assert.notEqual(newDraftId, draftId);
+  state = readerSessionReducer(state, {
+    type: "question/sent",
+    questionId: question.id,
+    draftId,
+    attemptId: deliveryAttemptId,
+    body: question.body,
+  });
+  assert.equal(state.question.kind, "draft");
+  assert.equal(state.question.body, "new draft");
+  assert.equal(state.questionTasks[0]?.status, "awaiting");
 });
 
 test("active and archived catalogue completion are independent", () => {
@@ -334,20 +494,25 @@ test("dirty editor and question drafts are protected from deferred navigation", 
   state = readerSessionReducer(state, {
     type: "navigation/defer",
     navigation: {
-      kind: "resolved",
+      lifecycle: "blocked",
+      intentId: navigationIntentId(1),
       target: {
-        documentId: second.id,
-        revisionId: second.revisionId,
-        focus: null,
+        kind: "resolved",
+        target: {
+          documentId: second.id,
+          revisionId: second.revisionId,
+          focus: null,
+        },
+        title: second.title,
+        revision: second,
+        message: "当前有未保存草稿。",
       },
-      title: second.title,
-      revision: second,
-      message: "当前有未保存草稿。",
     },
   });
   assert.equal(
-    state.pendingNavigation?.kind === "resolved"
-      ? state.pendingNavigation.target.revisionId
+    state.pendingNavigation?.lifecycle === "blocked" &&
+      state.pendingNavigation.target.kind === "resolved"
+      ? state.pendingNavigation.target.target.revisionId
       : null,
     second.revisionId,
   );
@@ -355,6 +520,68 @@ test("dirty editor and question drafts are protected from deferred navigation", 
   if (state.attention.attention.kind !== "reading")
     throw new Error("missing attention");
   assert.equal(state.attention.attention.current.revisionId, first.revisionId);
+});
+
+test("deferred navigation has retryable attempts and identity-scoped cleanup", () => {
+  const first = revision("000000000063");
+  const second = revision("000000000064");
+  let state = startReading(emptySession(), first);
+  const intentId = navigationIntentId(63);
+  state = readerSessionReducer(state, {
+    type: "navigation/defer",
+    navigation: {
+      lifecycle: "blocked",
+      intentId,
+      target: {
+        kind: "resolved",
+        target: {
+          documentId: second.id,
+          revisionId: second.revisionId,
+          focus: null,
+        },
+        title: second.title,
+        revision: second,
+        message: "当前有未保存草稿。",
+      },
+    },
+  });
+  const firstAttempt = navigationAttemptId(63);
+  state = readerSessionReducer(state, {
+    type: "navigation/start",
+    intentId,
+    attemptId: firstAttempt,
+  });
+  state = readerSessionReducer(state, {
+    type: "navigation/failure",
+    intentId,
+    attemptId: firstAttempt,
+    message: "一次失败",
+  });
+  assert.equal(state.pendingNavigation?.lifecycle, "failed");
+
+  const secondAttempt = navigationAttemptId(64);
+  state = readerSessionReducer(state, {
+    type: "navigation/start",
+    intentId,
+    attemptId: secondAttempt,
+  });
+  state = readerSessionReducer(state, {
+    type: "navigation/failure",
+    intentId,
+    attemptId: firstAttempt,
+    message: "过期失败",
+  });
+  assert.equal(state.pendingNavigation?.lifecycle, "opening");
+  state = readerSessionReducer(state, {
+    type: "navigation/clear",
+    intentId: navigationIntentId(999),
+  });
+  assert.equal(state.pendingNavigation?.lifecycle, "opening");
+  state = readerSessionReducer(state, {
+    type: "navigation/clear",
+    intentId,
+  });
+  assert.equal(state.pendingNavigation, null);
 });
 
 test("connection draft, saved relation, and question draft remain independent", () => {

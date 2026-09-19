@@ -27,13 +27,20 @@ import {
 } from "./workspace-controls";
 import {
   answerNotificationKey,
+  canSendQuestion,
   emptySession,
   hasProtectedDraft,
   isEditorDirty,
   isQuestionDirty,
+  navigationAttemptId,
+  navigationIntentId,
+  questionDeliveryAttemptId,
+  questionPersistenceAttemptId,
   readerSessionReducer,
   type AnswerNotification,
   type ImportTask,
+  type NavigationAttemptId,
+  type NavigationIntentId,
   type PendingNavigation,
   type ReaderSessionAction,
   type SearchMatch,
@@ -77,6 +84,7 @@ import type {
   ReturnLeaf,
   SpatialSceneController,
 } from "./spatial-scene";
+import type { NavigationRequestToken } from "../../lib/reader/navigation-requests";
 import {
   answerArrival,
   errorMessage,
@@ -93,6 +101,11 @@ import { ReaderDialogs } from "./reader-dialogs";
 import "./reader.css";
 
 const NO_CONNECTIONS: readonly Connection[] = [];
+
+type OwnedPendingSurface = PendingSurface & {
+  /** The compare request that owns this loading/error presentation. */
+  readonly request: NavigationRequestToken;
+};
 
 export function Reader({
   client,
@@ -111,7 +124,7 @@ export function Reader({
   const [historyItems, setHistoryItems] = useState<
     readonly Omit<DocumentRevision, "content">[]
   >([]);
-  const [pendingSurface, setPendingSurface] = useState<PendingSurface | null>(
+  const [pendingSurface, setPendingSurface] = useState<OwnedPendingSurface | null>(
     null,
   );
   const [importInputKey, setImportInputKey] = useState(0);
@@ -130,12 +143,16 @@ export function Reader({
   const catalogueRequestRef = useRef({ active: 0, archived: 0 });
   const openRequestRef = useRef(0);
   const compareRequestRef = useRef(0);
+  const navigationIntentRef = useRef(0);
+  const navigationAttemptRef = useRef(0);
   const connectionRequestRef = useRef(0);
   const editorRequestRef = useRef(0);
   const attentionEpochRef = useRef(0);
   const relationRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
   const historyRequestRef = useRef(0);
+  const questionPersistenceAttemptRef = useRef(0);
+  const questionDeliveryAttemptRef = useRef(0);
   const questionSubmissionRef = useRef<Promise<void> | null>(null);
   const revisionPromisesRef = useRef(
     new Map<string, Promise<DocumentRevision>>(),
@@ -147,8 +164,10 @@ export function Reader({
   }, []);
 
   const dispatchAttention = useCallback((action: AttentionAction) => {
-    if (changesReadingContext(action))
+    if (changesReadingContext(action)) {
       attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+      setPendingSurface(null);
+    }
     dispatchSession({ type: "attention", action });
   }, []);
 
@@ -156,6 +175,7 @@ export function Reader({
     openRequestRef.current = nextRequest(openRequestRef.current);
     compareRequestRef.current = nextRequest(compareRequestRef.current);
     attentionEpochRef.current = nextRequest(attentionEpochRef.current);
+    setPendingSurface(null);
   }, []);
 
   const loadCatalogue = useCallback(
@@ -422,18 +442,31 @@ export function Reader({
   );
 
   const deferNavigation = useCallback(
-    (view: ReadingView, message: string) => {
+    (
+      view: ReadingView,
+      message: string,
+      focus: AnchorInput | null = null,
+      existingIntentId?: NavigationIntentId,
+    ) => {
       const pending: PendingNavigation = {
-        kind: "resolved",
+        lifecycle: "blocked",
+        intentId:
+          existingIntentId ??
+          navigationIntentId(nextRequest(navigationIntentRef.current)),
         target: {
-          documentId: view.document.id,
-          revisionId: view.document.revisionId,
-          focus: null,
+          kind: "resolved",
+          target: {
+            documentId: view.document.id,
+            revisionId: view.document.revisionId,
+            focus,
+          },
+          title: view.document.title,
+          revision: view.document,
+          message,
         },
-        title: view.document.title,
-        revision: view.document,
-        message,
       };
+      if (!existingIntentId)
+        navigationIntentRef.current = pending.intentId as number;
       dispatch({ type: "navigation/defer", navigation: pending });
       dispatch({
         type: "status",
@@ -447,7 +480,13 @@ export function Reader({
     async (
       target: { id: DocumentId; revisionId?: RevisionId },
       focus: AnchorInput | null = null,
-      options: { force?: boolean } = {},
+      options: {
+        force?: boolean;
+        pending?: {
+          intentId: NavigationIntentId;
+          attemptId: NavigationAttemptId;
+        };
+      } = {},
     ): Promise<boolean> => {
       if (!options.force && hasProtectedDraft(sessionRef.current)) {
         const cachedRevision = target.revisionId
@@ -460,27 +499,32 @@ export function Reader({
           target.revisionId ??
           cachedRevision?.revisionId ??
           cachedSummary?.revisionId;
-        const pending: PendingNavigation = resolvedRevisionId
-          ? {
-              kind: "resolved",
-              target: {
+        const pending: PendingNavigation = {
+          lifecycle: "blocked",
+          intentId: navigationIntentId(nextRequest(navigationIntentRef.current)),
+          target: resolvedRevisionId
+            ? {
+                kind: "resolved",
+                target: {
+                  documentId: target.id,
+                  revisionId: resolvedRevisionId,
+                  focus,
+                },
+                title:
+                  cachedRevision?.title ?? cachedSummary?.title ?? "目标文档",
+                revision: cachedRevision ?? null,
+                message: "当前有未保存草稿。",
+              }
+            : {
+                kind: "unresolved",
                 documentId: target.id,
-                revisionId: resolvedRevisionId,
+                revisionId: undefined,
                 focus,
+                title: cachedSummary?.title ?? "目标文档",
+                message: "当前有未保存草稿。",
               },
-              title:
-                cachedRevision?.title ?? cachedSummary?.title ?? "目标文档",
-              revision: cachedRevision ?? null,
-              message: "当前有未保存草稿。",
-            }
-          : {
-              kind: "unresolved",
-              documentId: target.id,
-              revisionId: undefined,
-              focus,
-              title: cachedSummary?.title ?? "目标文档",
-              message: "当前有未保存草稿。",
-            };
+        };
+        navigationIntentRef.current = pending.intentId as number;
         dispatch({ type: "navigation/defer", navigation: pending });
         dispatch({
           type: "status",
@@ -508,12 +552,37 @@ export function Reader({
         )
           return false;
         if (!view) {
+          const message = "目标文档当前不可用。";
+          if (options.pending)
+            dispatch({
+              type: "navigation/failure",
+              intentId: options.pending.intentId,
+              attemptId: options.pending.attemptId,
+              message,
+            });
           dispatch({ type: "loading", loading: false });
-          dispatch({ type: "error", message: "目标文档当前不可用。" });
+          if (!options.pending) dispatch({ type: "error", message });
+          return false;
+        }
+        if (
+          hasProtectedDraft(sessionRef.current) ||
+          composing ||
+          pointerSelecting
+        ) {
+          deferNavigation(
+            view,
+            "当前有未完成的阅读操作。",
+            focus,
+            options.pending?.intentId,
+          );
+          dispatch({ type: "loading", loading: false });
           return false;
         }
         commitView(view, "navigate", focus);
-        dispatch({ type: "navigation/clear" });
+        dispatch({
+          type: "navigation/clear",
+          intentId: options.pending?.intentId,
+        });
         dispatch({ type: "loading", loading: false });
         dispatch({ type: "status", message: null });
         if (client.mode === "website" && typeof window !== "undefined") {
@@ -535,13 +604,29 @@ export function Reader({
             openRequestRef.current,
           )
         ) {
+          const message = errorMessage(error);
+          if (options.pending)
+            dispatch({
+              type: "navigation/failure",
+              intentId: options.pending.intentId,
+              attemptId: options.pending.attemptId,
+              message,
+            });
           dispatch({ type: "loading", loading: false });
-          dispatch({ type: "error", message: errorMessage(error) });
+          if (!options.pending) dispatch({ type: "error", message });
         }
         return false;
       }
     },
-    [client, commitView, dispatch, readOpenResult],
+    [
+      client,
+      commitView,
+      composing,
+      deferNavigation,
+      dispatch,
+      pointerSelecting,
+      readOpenResult,
+    ],
   );
 
   const acceptHostResult = useCallback(
@@ -588,6 +673,7 @@ export function Reader({
         return;
       }
       commitView(result.view, "navigate");
+      dispatch({ type: "navigation/clear" });
       dispatch({ type: "loading", loading: false });
       dispatch({ type: "status", message: null });
     },
@@ -624,7 +710,17 @@ export function Reader({
         });
         return;
       }
+      if (
+        hasProtectedDraft(sessionRef.current) ||
+        composing ||
+        pointerSelecting
+      ) {
+        deferNavigation(view, "当前有未完成的阅读操作。");
+        dispatch({ type: "loading", loading: false });
+        return;
+      }
       commitView(view, "navigate");
+      dispatch({ type: "navigation/clear" });
       dispatch({ type: "loading", loading: false });
     } catch (error) {
       if (
@@ -638,7 +734,7 @@ export function Reader({
       dispatch({ type: "loading", loading: false });
       dispatch({ type: "error", message: errorMessage(error) });
     }
-  }, [commitView, dispatch, readOpenResult]);
+  }, [commitView, composing, deferNavigation, dispatch, pointerSelecting, readOpenResult]);
 
   useEffect(() => {
     void loadCatalogue("active");
@@ -789,9 +885,9 @@ export function Reader({
         import("../../lib/reader/attention").ComparisonReason,
         { kind: "connection" | "document" | "revision" | "answer" }
       > = { kind: "document" },
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       const attention = sessionRef.current.attention.attention;
-      if (attention.kind !== "reading") return;
+      if (attention.kind !== "reading") return false;
       const requestId = nextRequest(compareRequestRef.current);
       compareRequestRef.current = requestId;
       const request = requestToken(attentionEpochRef.current, requestId);
@@ -802,6 +898,7 @@ export function Reader({
         target,
         title: summary?.title ?? "正在读取…",
         error: null,
+        request,
       });
       try {
         const view = await readOpenResult({
@@ -817,13 +914,36 @@ export function Reader({
           ) ||
           latest.kind !== "reading" ||
           latest.current.documentId !== attention.current.documentId ||
-          latest.current.revisionId !== attention.current.revisionId ||
-          !view
+          latest.current.revisionId !== attention.current.revisionId
         )
-          return;
+          return false;
+        if (!view) {
+          setPendingSurface((pending) =>
+            pending?.request === request
+              ? { ...pending, error: "目标文档当前不可用。" }
+              : pending,
+          );
+          return false;
+        }
         commitView(view, "compare", target.focus, reason);
-        setPendingSurface(null);
+        setPendingSurface((pending) =>
+          pending?.request === request ? null : pending,
+        );
+        const answer = sessionRef.current.answers.find(
+          (item) =>
+            item.answerDocumentId === target.documentId &&
+            item.answerRevisionId === target.revisionId,
+        );
+        if (answer)
+          dispatch({
+            type: "answer/status",
+            questionId: answer.questionId,
+            answerDocumentId: answer.answerDocumentId,
+            answerRevisionId: answer.answerRevisionId,
+            status: "reading",
+          });
         dispatch({ type: "status", message: null });
+        return true;
       } catch (error) {
         if (
           isCurrentRequest(
@@ -832,9 +952,12 @@ export function Reader({
             compareRequestRef.current,
           )
         )
-          setPendingSurface((pending: PendingSurface | null) =>
-            pending ? { ...pending, error: errorMessage(error) } : pending,
+          setPendingSurface((pending) =>
+            pending?.request === request
+              ? { ...pending, error: errorMessage(error) }
+              : pending,
           );
+        return false;
       }
     },
     [commitView, dispatch, readOpenResult],
@@ -964,44 +1087,117 @@ export function Reader({
     if (questionSubmissionRef.current) return questionSubmissionRef.current;
     const run = (async () => {
       const draft = sessionRef.current.question;
-      if (
-        draft.kind !== "draft" &&
-        draft.kind !== "send_failed" &&
-        draft.kind !== "saved"
-      )
-        return;
+      if (!canSendQuestion(draft) || draft.kind === "closed") return;
       const body = draft.body.trim();
-      if (!body) return;
+      const draftId = draft.draftId;
+      let persistenceAttemptId:
+        | import("../../lib/reader/session").QuestionPersistenceAttemptId
+        | null = null;
+      let deliveryAttemptId:
+        | import("../../lib/reader/session").QuestionDeliveryAttemptId
+        | null = null;
+      let question: Question | null = null;
       try {
-        let question: Question;
         if (draft.kind === "draft") {
-          dispatch({ type: "question/saving" });
+          persistenceAttemptId = questionPersistenceAttemptId(
+            nextRequest(questionPersistenceAttemptRef.current),
+          );
+          questionPersistenceAttemptRef.current = persistenceAttemptId as number;
+          dispatch({
+            type: "question/saving",
+            draftId,
+            attemptId: persistenceAttemptId,
+            body,
+          });
           question = (
             await client.invoke("ask", { anchor: draft.anchor, body })
           ).question;
           const latest = sessionRef.current.question;
-          if (
-            latest.kind !== "saving" ||
-            latest.body.trim() !== body ||
-            latest.anchor.revisionId !== draft.anchor.revisionId
-          )
-            return;
-          dispatch({ type: "question/saved", question, body });
-        } else {
+          const accepted =
+            latest.kind === "saving" &&
+            latest.draftId === draftId &&
+            latest.persistenceAttemptId === persistenceAttemptId;
+          dispatch({
+            type: "question/saved",
+            question,
+            body,
+            draftId,
+            attemptId: persistenceAttemptId,
+          });
+          if (!accepted) return;
+          persistenceAttemptId = null;
+        } else if (draft.kind === "saved" || draft.kind === "send_failed") {
           question = draft.question;
-          dispatch({ type: "question/sending", body });
+          deliveryAttemptId = questionDeliveryAttemptId(
+            nextRequest(questionDeliveryAttemptRef.current),
+          );
+          questionDeliveryAttemptRef.current = deliveryAttemptId as number;
+          dispatch({
+            type: "question/sending",
+            questionId: question.id,
+            draftId,
+            attemptId: deliveryAttemptId,
+            body,
+          });
+        } else {
+          return;
         }
+        if (!deliveryAttemptId && question) {
+          deliveryAttemptId = questionDeliveryAttemptId(
+            nextRequest(questionDeliveryAttemptRef.current),
+          );
+          questionDeliveryAttemptRef.current = deliveryAttemptId as number;
+          dispatch({
+            type: "question/sending",
+            questionId: question.id,
+            draftId,
+            attemptId: deliveryAttemptId,
+            body,
+          });
+        }
+        if (!question || !deliveryAttemptId) return;
         if (client.sendQuestion) {
           await client.sendQuestion(question);
-          dispatch({ type: "question/sent", body });
+          dispatch({
+            type: "question/sent",
+            questionId: question.id,
+            draftId,
+            attemptId: deliveryAttemptId,
+            body,
+          });
           dispatch({ type: "status", message: "问题已发送，等待回答。" });
         } else {
           await navigator.clipboard.writeText(questionPrompt(question));
-          dispatch({ type: "question/sent", body });
+          dispatch({
+            type: "question/sent",
+            questionId: question.id,
+            draftId,
+            attemptId: deliveryAttemptId,
+            body,
+          });
           dispatch({ type: "status", message: "问题已保存，提问内容已复制。" });
         }
       } catch (error) {
-        dispatch({ type: "question/failure", message: errorMessage(error) });
+        const message = errorMessage(error);
+        if (persistenceAttemptId) {
+          dispatch({
+            type: "question/failure",
+            stage: "saving",
+            draftId,
+            attemptId: persistenceAttemptId,
+            message,
+          });
+        } else if (deliveryAttemptId && question) {
+          dispatch({
+            type: "question/failure",
+            stage: "sending",
+            questionId: question.id,
+            draftId,
+            attemptId: deliveryAttemptId,
+            body,
+            message,
+          });
+        }
       }
     })();
     questionSubmissionRef.current = run;
@@ -1094,28 +1290,54 @@ export function Reader({
     [dispatch, openDocument],
   );
 
+  const startPendingNavigation = useCallback(
+    (allowRetry: boolean): void => {
+      const pending = sessionRef.current.pendingNavigation;
+      if (
+        !pending ||
+        (pending.lifecycle !== "blocked" &&
+          !(allowRetry && pending.lifecycle === "failed")) ||
+        hasProtectedDraft(sessionRef.current) ||
+        composing ||
+        pointerSelecting
+      )
+        return;
+      const target = pending.target;
+      const requestTarget =
+        target.kind === "resolved"
+          ? {
+              id: target.target.documentId,
+              revisionId: target.target.revisionId,
+            }
+          : { id: target.documentId, revisionId: target.revisionId };
+      const focus =
+        target.kind === "resolved" ? target.target.focus : target.focus;
+      const attemptId = navigationAttemptId(
+        nextRequest(navigationAttemptRef.current),
+      );
+      navigationAttemptRef.current = attemptId as number;
+      dispatch({
+        type: "navigation/start",
+        intentId: pending.intentId,
+        attemptId,
+      });
+      // Keep the request in state until openDocument succeeds. A failed retry
+      // becomes an explicit failed lifecycle and remains available to retry.
+      void openDocument(requestTarget, focus, {
+        force: true,
+        pending: { intentId: pending.intentId, attemptId },
+      });
+    },
+    [composing, dispatch, openDocument, pointerSelecting],
+  );
+
   const flushPendingNavigation = useCallback(() => {
-    const pending = sessionRef.current.pendingNavigation;
-    if (
-      !pending ||
-      hasProtectedDraft(sessionRef.current) ||
-      composing ||
-      pointerSelecting
-    )
-      return;
-    const target =
-      pending.kind === "resolved"
-        ? {
-            id: pending.target.documentId,
-            revisionId: pending.target.revisionId,
-          }
-        : { id: pending.documentId, revisionId: pending.revisionId };
-    const focus =
-      pending.kind === "resolved" ? pending.target.focus : pending.focus;
-    // Keep the request in state until openDocument succeeds.  A failed retry
-    // must leave the user's deferred destination available.
-    void openDocument(target, focus, { force: true });
-  }, [composing, openDocument, pointerSelecting]);
+    startPendingNavigation(false);
+  }, [startPendingNavigation]);
+
+  const retryPendingNavigation = useCallback(() => {
+    startPendingNavigation(true);
+  }, [startPendingNavigation]);
 
   useEffect(() => {
     const currentSession = sessionRef.current;
@@ -1131,6 +1353,7 @@ export function Reader({
     composing,
     flushPendingNavigation,
     pointerSelecting,
+    session.selection,
     session.editor,
     session.pendingNavigation,
     session.question,
@@ -1419,13 +1642,6 @@ export function Reader({
 
   const openAnswer = useCallback(
     (answer: AnswerNotification): void => {
-      dispatch({
-        type: "answer/status",
-        questionId: answer.questionId,
-        answerDocumentId: answer.answerDocumentId,
-        answerRevisionId: answer.answerRevisionId,
-        status: "reading",
-      });
       void readBeside(
         {
           documentId: answer.answerDocumentId,
@@ -1435,7 +1651,7 @@ export function Reader({
         { kind: "answer", questionId: answer.questionId },
       );
     },
-    [dispatch, readBeside],
+    [readBeside],
   );
 
   const renderDocument = useCallback(
@@ -1596,6 +1812,11 @@ export function Reader({
     window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
+  const pendingNavigationFailure =
+    session.pendingNavigation?.lifecycle === "failed"
+      ? session.pendingNavigation
+      : null;
+
   return (
     <main className="reader-shell">
       <header className="reader-topbar">
@@ -1720,15 +1941,34 @@ export function Reader({
           }}
         >
           {(session.error ||
+            pendingNavigationFailure ||
             session.catalogue.activeError ||
             session.catalogue.archivedError) && (
             <div className="reader-alert error" role="alert">
-              {session.error ??
-                session.catalogue.activeError ??
-                session.catalogue.archivedError}
+              {pendingNavigationFailure
+                ? `打开“${pendingNavigationFailure.target.title}”失败：${pendingNavigationFailure.error}`
+                : (session.error ??
+                  session.catalogue.activeError ??
+                  session.catalogue.archivedError)}
+              {pendingNavigationFailure && (
+                <button
+                  type="button"
+                  onClick={retryPendingNavigation}
+                  className="quiet-button"
+                >
+                  重试
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => dispatch({ type: "error", message: null })}
+                onClick={() =>
+                  pendingNavigationFailure
+                    ? dispatch({
+                        type: "navigation/clear",
+                        intentId: pendingNavigationFailure.intentId,
+                      })
+                    : dispatch({ type: "error", message: null })
+                }
                 aria-label="关闭错误"
               >
                 <X size={15} />
