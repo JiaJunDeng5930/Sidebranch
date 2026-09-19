@@ -8,6 +8,7 @@ export function observeReaderPerformance() {
     totalBlockingMs: 0,
     inputPaintMs: [] as number[],
     frameGapsMs: [] as number[],
+    longAnimationFrames: [] as unknown[],
   };
   const publish = () => {
     document.documentElement.dataset.qaPerformance = JSON.stringify(metrics);
@@ -26,6 +27,17 @@ export function observeReaderPerformance() {
   } catch {
     /* Unsupported browser. */
   }
+  const animationObserver = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      if (entry.startTime < metrics.started) continue;
+      metrics.longAnimationFrames.push(entry.toJSON());
+      if (metrics.longAnimationFrames.length > 20)
+        metrics.longAnimationFrames.shift();
+    }
+    publish();
+  });
+  if (PerformanceObserver.supportedEntryTypes.includes("long-animation-frame"))
+    animationObserver.observe({ type: "long-animation-frame" });
   let measuring = false;
   const input = () => {
     const eventAt = performance.now();
@@ -61,6 +73,7 @@ export function observeReaderPerformance() {
     metrics.totalBlockingMs = 0;
     metrics.inputPaintMs = [];
     metrics.frameGapsMs = [];
+    metrics.longAnimationFrames = [];
     publish();
   };
   document.addEventListener("qa-reset-performance", reset);
@@ -68,6 +81,7 @@ export function observeReaderPerformance() {
   return () => {
     document.removeEventListener("qa-reset-performance", reset);
     observer.disconnect();
+    animationObserver.disconnect();
     document.removeEventListener("keydown", input);
     document.removeEventListener("pointerdown", input);
     document.removeEventListener("wheel", input);

@@ -1,5 +1,41 @@
 # Performance baseline, before the spatial-reader rebuild
 
+## v3 measurements, 2026-09-19 — 60 Hz gate remains open
+
+These are observations from the managed Chromium browser, not a 60 fps claim.
+The current code keeps persistent document membership separate from mounted
+bodies, updates the camera without React dispatch per pointer move, and caches
+anchor geometry. Long-task absence alone is not smoothness.
+
+| Workload                                                                         | Duration | Frame p95 / p99 | Double-rAF proxy p95 | Tasks >50ms |
+| -------------------------------------------------------------------------------- | -------: | --------------: | -------------------: | ----------: |
+| 1,000-section Markdown; 40 native scroll inputs; tilted paper                    |    6.54s |   33.3 / 33.4ms |               33.3ms |           0 |
+| 120-document space, one mounted short body; 8 pan/orbit drags of 24 points       |    6.92s |   50.0 / 66.6ms |               73.8ms |           0 |
+| Same visible scene; transparent QA input layer freezes the camera                |    4.32s |   33.4 / 33.4ms |               50.9ms |           0 |
+| Camera after direct transform writes, bounded beam updates and no moving shadows |    6.83s |   50.1 / 83.3ms |               69.7ms |           0 |
+
+The renderer sample had 329 frame samples and three mounted chunks. Native
+selection at section 990 mapped to the exact source slice [189798,189809).
+The space sample had 72 DOM elements and one mounted document; all 120 documents
+remained reachable through metadata folds. The control uses the same input path
+and visible content; differing automated drag durations mean it is a diagnostic
+comparison, not a hardware-normalized benchmark.
+
+The last camera changes remove concrete unnecessary work but do **not** establish
+a frame-rate improvement. A subsequent four-orbit diagnostic captured three long
+animation frames of 75.1, 159.6 and 111.4ms, with zero blocking duration and no
+reported long script. Their render-start-to-paint times were approximately 0.5,
+1.0 and 2.1ms, while presentation followed paint by 110.4, 184.8 and 84.3ms.
+This points to substantial scheduling/presentation delay in this environment;
+it does not prove the application meets its target on a user's device.
+
+The required p95 ≤20ms / p99 ≤33ms gate remains **unmet**. Real touch-device and
+representative desktop measurements, including presentation/compositing work,
+remain necessary. No v3 production deployment was made. QA telemetry, the
+transparent control layer and synthetic documents are excluded from production.
+
+## Historical baseline
+
 Measured 2026-09-17 in the managed browser, production-built reader in the isolated QA host. This is a browser benchmark, not a claim about every user's hardware/network.
 
 Fixture: 1,000 Markdown sections generated identically by the browser QA scenario: one heading, two paragraphs, bold text, inline code and an external link per section. The original renderer mounted 15,095 DOM elements, including 9,000 source spans, for the whole document.

@@ -406,7 +406,7 @@ test("MCP Streamable HTTP exposes tools, renders an App resource and executes do
     name: string;
     _meta: Record<string, unknown>;
   }[];
-  assert.equal(tools.length, 15);
+  assert.equal(tools.length, 16);
   assert.ok(tools.find((t) => t.name === "open_document")?._meta.ui);
   const read = await call("tools/call", { name: "ls", arguments: {} });
   assert.ok(

@@ -22,6 +22,7 @@ import {
   type RequiredLocator,
   type DocumentPath,
 } from "../domain/model";
+import type { NeighborhoodNode, NeighborhoodResult } from "../domain/space";
 import type {
   NewAnchorEntity,
   AssetEntity,
@@ -54,7 +55,8 @@ import {
   searchRowFromValue,
 } from "./entity-mappers";
 
-type CursorKind = "ls" | "grep" | "connections" | "questions" | "history";
+type CursorKind =
+  "ls" | "grep" | "connections" | "questions" | "history" | "neighborhood";
 
 /*
  * Cursors are untrusted wire data.  Keeping a schema for every cursor kind
@@ -111,12 +113,47 @@ const CursorPayloadSchema = z.discriminatedUnion("kind", [
       sequence: z.number().int().positive(),
     })
     .strict(),
+  z
+    .object({
+      v: z.literal(1),
+      kind: z.literal("neighborhood"),
+      centerRevisionId: z.string().uuid(),
+      distance: z.union([z.literal(1), z.literal(2)]),
+      title: z.string(),
+      path: z.string().min(2).max(500),
+      documentId: z.string().uuid(),
+      sequence: z.number().int().positive(),
+      revisionId: z.string().uuid(),
+      connectionId: z.string().uuid(),
+      viaRevisionId: z.string().uuid().nullable(),
+    })
+    .strict(),
 ]);
 type CursorPayload = z.infer<typeof CursorPayloadSchema>;
 
 const SEARCH_PAGE_SIZE = 25;
 const MAX_RELATION_PAGE = 200;
+const MAX_NEIGHBORHOOD_PAGE = 200;
 const now = () => new Date().toISOString();
+
+const NeighborhoodRowSchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  title: z.string(),
+  asset_id: z.string().nullable(),
+  archived: z.union([z.number().int(), z.boolean()]),
+  created_at: z.string(),
+  revision_id: z.string(),
+  sequence: z.number().int().positive(),
+  parent_id: z.string().nullable(),
+  format: z.enum(["markdown", "text"]),
+  updated_at: z.string(),
+  node_revision_id: z.string().uuid(),
+  node_sequence: z.number().int().positive(),
+  distance: z.union([z.literal(1), z.literal(2)]),
+  via_revision_id: z.string().uuid().nullable(),
+  connection_id: z.string().uuid(),
+});
 
 function encodeCursor(payload: CursorPayload): string {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
@@ -151,6 +188,71 @@ function decodeCursor<K extends CursorKind>(
       "The continuation cursor is invalid.",
     );
   }
+}
+
+function neighborhoodNodeFromRow(
+  value: unknown,
+  centerRevisionId: RevisionId,
+): {
+  node: NeighborhoodNode;
+  cursor: CursorOf<"neighborhood">;
+} {
+  let row: z.infer<typeof NeighborhoodRowSchema>;
+  try {
+    row = NeighborhoodRowSchema.parse(value);
+  } catch {
+    throw new DomainError(
+      "DATA_CORRUPTION",
+      "Stored neighborhood data is invalid.",
+      500,
+    );
+  }
+  const document = documentSummaryFromRow(row);
+  const revisionId = RevisionId.parse(row.node_revision_id);
+  const connectionId = ConnectionId.parse(row.connection_id);
+  const viaRevisionId = row.via_revision_id
+    ? RevisionId.parse(row.via_revision_id)
+    : null;
+  let node: NeighborhoodNode;
+  if (row.distance === 1) {
+    node = {
+      document,
+      revisionId,
+      sequence: row.node_sequence,
+      distance: 1,
+      viaRevisionId: null,
+      connectionId,
+    };
+  } else {
+    if (viaRevisionId === null)
+      throw new DomainError(
+        "DATA_CORRUPTION",
+        "A second-hop neighborhood node is missing its via revision.",
+        500,
+      );
+    node = {
+      document,
+      revisionId,
+      sequence: row.node_sequence,
+      distance: 2,
+      viaRevisionId,
+      connectionId,
+    };
+  }
+  const cursor: CursorOf<"neighborhood"> = {
+    v: 1,
+    kind: "neighborhood",
+    centerRevisionId,
+    distance: node.distance,
+    title: document.title,
+    path: document.path,
+    documentId: document.id,
+    sequence: node.sequence,
+    revisionId: node.revisionId,
+    connectionId: node.connectionId,
+    viaRevisionId: node.viaRevisionId,
+  };
+  return { node, cursor };
 }
 
 function pathUpperBound(prefix: string): string | null {
@@ -326,6 +428,135 @@ export class DocumentStore {
               id: last.id,
             })
           : null,
+    };
+  }
+
+  /**
+   * Return exact revision nodes reachable through one or two real
+   * connections.  The SQL builds the undirected revision graph once for the
+   * page and joins latest document metadata in the same query; no document
+   * content, quote, or per-node lookup crosses this boundary.
+   */
+  async neighborhood(
+    a: ParsedInput<"neighborhood">,
+  ): Promise<NeighborhoodResult> {
+    const cursor = decodeCursor(a.cursor, "neighborhood");
+    if (cursor && cursor.centerRevisionId !== a.revisionId)
+      throw new DomainError(
+        "INVALID_CURSOR",
+        "The continuation cursor does not match this neighborhood.",
+      );
+
+    const center = await this.db
+      .prepare("SELECT id FROM revisions WHERE id=?")
+      .bind(a.revisionId)
+      .first<{ id: string }>();
+    if (!center) throw new DomainError("NOT_FOUND", "Revision not found.", 404);
+
+    const afterSql = cursor
+      ? " AND (" +
+        "n.distance," +
+        "d.title COLLATE BINARY," +
+        "d.path COLLATE BINARY," +
+        "d.id COLLATE BINARY," +
+        "-node.sequence," +
+        "node.id COLLATE BINARY," +
+        "n.connection_id COLLATE BINARY," +
+        "COALESCE(n.via_revision_id,'') COLLATE BINARY" +
+        ") > (?,?,?,?,?,?,?,?)"
+      : "";
+    const values: unknown[] = [a.revisionId, a.revisionId, a.revisionId];
+    if (cursor)
+      values.push(
+        cursor.distance,
+        cursor.title,
+        cursor.path,
+        cursor.documentId,
+        -cursor.sequence,
+        cursor.revisionId,
+        cursor.connectionId,
+        cursor.viaRevisionId ?? "",
+      );
+    values.push(Math.min(a.limit, MAX_NEIGHBORHOOD_PAGE) + 1);
+
+    const rows = await this.db
+      .prepare(
+        "WITH edge_pairs AS (" +
+          "SELECT c.id AS connection_id," +
+          "af.revision_id AS from_revision_id," +
+          "at.revision_id AS to_revision_id " +
+          "FROM connections c " +
+          "JOIN anchors af ON af.id=c.from_id " +
+          "JOIN anchors at ON at.id=c.to_id " +
+          "UNION ALL " +
+          "SELECT c.id AS connection_id," +
+          "at.revision_id AS from_revision_id," +
+          "af.revision_id AS to_revision_id " +
+          "FROM connections c " +
+          "JOIN anchors af ON af.id=c.from_id " +
+          "JOIN anchors at ON at.id=c.to_id" +
+          "), first_hop AS (" +
+          "SELECT e.to_revision_id AS node_revision_id," +
+          "MIN(e.connection_id) AS connection_id " +
+          "FROM edge_pairs e WHERE e.from_revision_id=? " +
+          "GROUP BY e.to_revision_id" +
+          "), candidate_paths AS (" +
+          "SELECT node_revision_id,connection_id,1 AS distance," +
+          "NULL AS via_revision_id FROM first_hop " +
+          "UNION ALL " +
+          "SELECT e2.to_revision_id AS node_revision_id," +
+          "e2.connection_id,2 AS distance,e1.node_revision_id AS via_revision_id " +
+          "FROM first_hop e1 JOIN edge_pairs e2 " +
+          "ON e2.from_revision_id=e1.node_revision_id " +
+          "WHERE e2.to_revision_id<>?" +
+          "), ranked_nodes AS (" +
+          "SELECT *,ROW_NUMBER() OVER (PARTITION BY node_revision_id " +
+          "ORDER BY distance,connection_id,COALESCE(via_revision_id,'')) AS rank " +
+          "FROM candidate_paths" +
+          "), candidate_nodes AS (" +
+          // The projection contains revision nodes, not one row per possible
+          // path. Keep one deterministic shortest witness; all passage edges
+          // remain independently available through the document projection.
+          "SELECT node_revision_id,connection_id,distance,via_revision_id " +
+          "FROM ranked_nodes WHERE rank=1" +
+          ") " +
+          "SELECT d.id,d.path,d.title,d.asset_id,d.archived,d.created_at," +
+          "latest.id AS revision_id,latest.sequence,latest.parent_id," +
+          "latest.format,latest.created_at AS updated_at," +
+          "node.id AS node_revision_id,node.sequence AS node_sequence," +
+          "n.distance,n.via_revision_id,n.connection_id AS connection_id " +
+          "FROM candidate_nodes n " +
+          "JOIN revisions node ON node.id=n.node_revision_id " +
+          "JOIN documents d ON d.id=node.document_id " +
+          "JOIN revisions latest ON latest.document_id=d.id AND " +
+          this.latestClause("latest", "d") +
+          " WHERE node.id<>?" +
+          afterSql +
+          " ORDER BY n.distance ASC," +
+          "d.title COLLATE BINARY ASC," +
+          "d.path COLLATE BINARY ASC," +
+          "d.id COLLATE BINARY ASC," +
+          "node.sequence DESC," +
+          "node.id COLLATE BINARY ASC," +
+          "n.connection_id COLLATE BINARY ASC," +
+          "COALESCE(n.via_revision_id,'') COLLATE BINARY ASC " +
+          "LIMIT ?",
+      )
+      .bind(...values)
+      .all<unknown>();
+
+    const page = rows.results
+      .slice(0, a.limit)
+      .map((row) => neighborhoodNodeFromRow(row, a.revisionId));
+    const last = page.at(-1);
+    let nextCursor: string | null = null;
+    if (rows.results.length > a.limit && last) {
+      nextCursor = encodeCursor(last.cursor);
+    }
+    return {
+      centerRevisionId: a.revisionId,
+      nodes: page.map(({ node }) => node),
+      nextCursor,
     };
   }
 
@@ -1067,6 +1298,17 @@ export class DocumentStore {
       document = await this.readLatestActive();
     }
     if (!document) return { status: "empty" };
+    let arrival: { question: Question } | undefined;
+    if (a.answerFor !== undefined) {
+      const question = await this.questionEntity(a.answerFor);
+      if (!question.answers.some((answer) => answer.documentId === document.id))
+        throw new DomainError(
+          "ANSWER_NOT_ASSOCIATED",
+          "The opened document is not associated with this question.",
+          409,
+        );
+      arrival = { question: questionFromEntity(question) };
+    }
     const [connections, questions] = await Promise.all([
       this.connectionPage(
         document.id,
@@ -1089,6 +1331,7 @@ export class DocumentStore {
         connectionsNextCursor: connections.nextCursor,
         questionsNextCursor: questions.nextCursor,
       },
+      ...(arrival ? { arrival } : {}),
     };
   }
 
@@ -1101,6 +1344,9 @@ export class DocumentStore {
     switch (name) {
       case "ls":
         result = await this.list(input as ParsedInput<"ls">);
+        break;
+      case "neighborhood":
+        result = await this.neighborhood(input as ParsedInput<"neighborhood">);
         break;
       case "cat":
         result = { document: await this.read(input as ParsedInput<"cat">) };

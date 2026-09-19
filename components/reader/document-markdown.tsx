@@ -124,7 +124,8 @@ export function sourceSpansPlugin(source: string, baseOffset = 0) {
                 context?.end ??
                 localStart + value.length);
             const raw = generated?.raw ?? source.slice(localStart, localEnd);
-            const map = renderedTextOffsets(raw, value);
+            const identity = raw === value;
+            const map = identity ? null : renderedTextOffsets(raw, value);
             const sourceStart = baseOffset + localStart;
             const sourceEnd = baseOffset + localEnd;
             const range = context ?? { start: localStart, end: localEnd };
@@ -135,7 +136,10 @@ export function sourceSpansPlugin(source: string, baseOffset = 0) {
               "data-source-node-end": baseOffset + range.end,
               "data-source-rendered-length": value.length,
             };
-            if (
+            if (identity) {
+              // Equal source and rendered text proves the affine offset map;
+              // do not allocate or serialize one integer for every character.
+            } else if (
               map &&
               isValidRenderedTextOffsets(map, value.length, raw.length)
             ) {
@@ -244,7 +248,8 @@ export const DocumentTextChunk = memo(function DocumentTextChunk({
   chunkIndex,
 }: DocumentTextChunkProps) {
   const rendered = source.replace(/\r\n?/g, "\n");
-  const map = renderedTextOffsets(source, rendered);
+  const identity = source === rendered;
+  const map = identity ? null : renderedTextOffsets(source, rendered);
   return (
     <div
       className="document-chunk plain-text"
@@ -256,9 +261,11 @@ export const DocumentTextChunk = memo(function DocumentTextChunk({
         data-source-start={sourceStart}
         data-source-end={sourceEnd}
         data-source-rendered-length={rendered.length}
-        {...(map
-          ? { "data-source-map": JSON.stringify(map) }
-          : { "data-source-map-state": "unmapped" })}
+        {...(identity
+          ? {}
+          : map
+            ? { "data-source-map": JSON.stringify(map) }
+            : { "data-source-map-state": "unmapped" })}
         data-source-node-start={sourceStart}
         data-source-node-end={sourceEnd}
       >

@@ -1,5 +1,7 @@
 # Xanadu Sidebranch 交互研究规格
 
+> 历史研究与 v2 方案。2026-09-18 用户已明确否定文档目录、打开/关闭空间窗口和总览模式；这些实现建议不再是约束。原始资料摘述仍可参考，本轮设计入口是 `space-redesign/brief.md`，后续以整合后的连续文档空间契约为准。
+
 范围：Project Xanadu / XanaduSpace 的原始交互、平行文档与空间视觉原则，以及它们在 Sidebranch 中可验收的产品操作模型。本文不审查服务端、D1/R2 或 OAuth。没有运行浏览器；现有实现的差距均标为静态代码证据。
 
 ## 1. 核心结论
@@ -78,20 +80,20 @@ Brown 页面第 121 至 140 行展示 link 在版本插入、删除后如何继�
 
 ## 3. 概念实体、程序实体和状态归属
 
-| 领域概念 | 稳定程序实体 | 渲染/会话实体 | 所属 |
-|---|---|---|---|
-| 文档 | DocumentRecord：documentId、path、title、current revision | 无，文档可多次实例化 | 持久；不等于屏幕 slab |
-| 文档版本 | DocumentRevision：revisionId、sequence、content、parent | RevisionSlab / SlabInstance | 持久版本；同一 revision 可出现在多个 view |
-| Passage | PassageRef 或 Anchor：revisionId、start、end、quote、documentId | TetroidInstance / PassageHighlight | 精确范围；不等于整个文档组件 |
-| 连接 | ConnectionRecord：两端 Anchor、relation、label | BeamInstance：两端 slab 和实际 DOM rect | Connection 持久；Beam 是 view 内派生 |
-| 同一内容来源 | TransclusionRecord 或 source identity | TransclusionBeamInstance / SourceMarker | 与 Connection 分开；没有来源身份不显示 |
-| 阅读快照 | ReadingView：current revision、connections、questions、documents | SceneGraph / slab list | 数据投影；不拥有 camera |
-| 当前阅读角色 | ReadingContext.currentSlabId / currentRevisionRef | current slab 样式 | 会话状态；提升 companion 不删除旧 slab |
-| Companion | ReadingContext.companionSlabIds | companion slab | 会话派生集合；line of fire 突出一个或少数 |
-| 镜头 | CameraState：position、rotation、zoom、projection | scene transform | ReadingSession 私有；不写 Document |
-| 焦点 | FocusState：focusAnchor、focusSlabId、selectedConnectionId | focus ring、active beam、scroll target | 临时；与文本 Selection 分开 |
-| 文本选取 | SelectionState：DOM selection + AnchorInput | highlight + action popover | 临时；提交 ask/link 后可清除 |
-| 导航历史 | ReadingHistoryEntry：current、companion、focus、camera、scroll | back/forward | 会话私有；与 revision history 分离 |
+| 领域概念     | 稳定程序实体                                                     | 渲染/会话实体                           | 所属                                      |
+| ------------ | ---------------------------------------------------------------- | --------------------------------------- | ----------------------------------------- |
+| 文档         | DocumentRecord：documentId、path、title、current revision        | 无，文档可多次实例化                    | 持久；不等于屏幕 slab                     |
+| 文档版本     | DocumentRevision：revisionId、sequence、content、parent          | RevisionSlab / SlabInstance             | 持久版本；同一 revision 可出现在多个 view |
+| Passage      | PassageRef 或 Anchor：revisionId、start、end、quote、documentId  | TetroidInstance / PassageHighlight      | 精确范围；不等于整个文档组件              |
+| 连接         | ConnectionRecord：两端 Anchor、relation、label                   | BeamInstance：两端 slab 和实际 DOM rect | Connection 持久；Beam 是 view 内派生      |
+| 同一内容来源 | TransclusionRecord 或 source identity                            | TransclusionBeamInstance / SourceMarker | 与 Connection 分开；没有来源身份不显示    |
+| 阅读快照     | ReadingView：current revision、connections、questions、documents | SceneGraph / slab list                  | 数据投影；不拥有 camera                   |
+| 当前阅读角色 | ReadingContext.currentSlabId / currentRevisionRef                | current slab 样式                       | 会话状态；提升 companion 不删除旧 slab    |
+| Companion    | ReadingContext.companionSlabIds                                  | companion slab                          | 会话派生集合；line of fire 突出一个或少数 |
+| 镜头         | CameraState：position、rotation、zoom、projection                | scene transform                         | ReadingSession 私有；不写 Document        |
+| 焦点         | FocusState：focusAnchor、focusSlabId、selectedConnectionId       | focus ring、active beam、scroll target  | 临时；与文本 Selection 分开               |
+| 文本选取     | SelectionState：DOM selection + AnchorInput                      | highlight + action popover              | 临时；提交 ask/link 后可清除              |
+| 导航历史     | ReadingHistoryEntry：current、companion、focus、camera、scroll   | back/forward                            | 会话私有；与 revision history 分离        |
 
 建议代码中明确三层：
 
@@ -131,19 +133,19 @@ Brown 页面第 121 至 140 行展示 link 在版本插入、删除后如何继�
 
 ### 4.3 相机和阅读动作
 
-| 输入 | 语义 | 结果 |
-|---|---|---|
-| 点 passage | focus | 高亮 passage，提亮相关 beams |
-| 点 beam/关系标签 | follow | 目标 slab 进入 line of fire，目标 passage 居中 |
-| 点 companion 标题/正文 | promote | companion 成 current，旧 current 保留 |
-| 空场景拖动 | orbit/pan | 只改 CameraState |
-| 空场景滚轮/pinch | zoom | 改变空间范围，不滚动文字 |
-| slab 正文滚轮 | scroll | 只滚动该 slab，端点实时跟随 |
-| Escape/Close bridge | close | 只关近景关系，不删 Connection |
-| Reset view | reset camera | current/focus 不变 |
-| Tab/Shift+Tab | 键盘导航 | current、companion、beam、close、promote 等均可达 |
-| Enter | 执行动作 | follow、promote 或打开 source |
-| reduced motion | 降级 | 直接到目标 pose，语义不变 |
+| 输入                   | 语义         | 结果                                              |
+| ---------------------- | ------------ | ------------------------------------------------- |
+| 点 passage             | focus        | 高亮 passage，提亮相关 beams                      |
+| 点 beam/关系标签       | follow       | 目标 slab 进入 line of fire，目标 passage 居中    |
+| 点 companion 标题/正文 | promote      | companion 成 current，旧 current 保留             |
+| 空场景拖动             | orbit/pan    | 只改 CameraState                                  |
+| 空场景滚轮/pinch       | zoom         | 改变空间范围，不滚动文字                          |
+| slab 正文滚轮          | scroll       | 只滚动该 slab，端点实时跟随                       |
+| Escape/Close bridge    | close        | 只关近景关系，不删 Connection                     |
+| Reset view             | reset camera | current/focus 不变                                |
+| Tab/Shift+Tab          | 键盘导航     | current、companion、beam、close、promote 等均可达 |
+| Enter                  | 执行动作     | follow、promote 或打开 source                     |
+| reduced motion         | 降级         | 直接到目标 pose，语义不变                         |
 
 文字区域拖选优先于相机拖动；空白 stage 才操作相机。触屏上单指在正文滚动，双指在空场景平移/缩放。原始 viewer 说明“interface uses keystrokes only, except for turning the view”（[viewer 页面](https://xanadu.com/xuspViewer.html)），所以关键动作应保留键盘入口，并提供可发现的按钮、aria-label 和 focus ring。
 
@@ -252,4 +254,3 @@ A v1/A1 与 B v1/B1 有 link；编辑 A 产生 A v2。打开连接的 A v1，再
 - [The Edit Decision List](https://xanadu.com/xuEDL.html)
 - [Understanding Xanalinks](https://xanadu.com/xanaLinks.html)
 - [Xanalogical Structure, Needed Now More than Ever：Nelson 署名的平行文档、transpointing windows、link/transclusion 和版本说明](https://cs.brown.edu/memex/ACM_HypertextTestbed/papers/60.html)
-

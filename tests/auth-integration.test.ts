@@ -142,7 +142,7 @@ async function callMcp(
 test("MCP tools expose output schemas and the exact empty/ready union", async () => {
   const list = await callMcp(fixture.store, fixture.env, "tools/list", {});
   const tools = list.result?.tools ?? [];
-  assert.equal(tools.length, 15);
+  assert.equal(tools.length, 16);
   for (const tool of tools) {
     assert.equal(tool.outputSchema?.type, "object", tool.name);
   }

@@ -84,6 +84,156 @@ test("open returns an explicit empty union before the first document", async () 
   assert.deepEqual(result, { status: "empty" });
 });
 
+test("neighborhood follows exact revision edges, keeps archive metadata, and paginates", async () => {
+  const center = (
+    await store.execute("write", {
+      path: "/neighborhood/center.md",
+      title: "Neighborhood center",
+      content: "center text",
+    })
+  ).document;
+  const target = (
+    await store.execute("write", {
+      path: "/neighborhood/target.md",
+      title: "Neighborhood target",
+      content: "target v1",
+    })
+  ).document;
+  const archive = (
+    await store.execute("write", {
+      path: "/neighborhood/archive.md",
+      title: "Neighborhood archive",
+      content: "archive text",
+    })
+  ).document;
+  const targetV2 = (
+    await store.execute("edit", {
+      documentId: target.id,
+      expectedRevisionId: target.revisionId,
+      start: 8,
+      end: 9,
+      expectedText: "1",
+      replacement: "2",
+    })
+  ).document;
+  await store.execute("link", {
+    from: { revisionId: center.revisionId, start: 0, end: 6, quote: "center" },
+    to: { revisionId: target.revisionId, start: 0, end: 6, quote: "target" },
+  });
+  await store.execute("link", {
+    from: { revisionId: target.revisionId, start: 0, end: 6, quote: "target" },
+    to: {
+      revisionId: archive.revisionId,
+      start: 0,
+      end: 7,
+      quote: "archive",
+    },
+  });
+  await store.execute("archive", { documentId: archive.id, archived: true });
+
+  // Distinct passage edges must not consume multiple node-page slots or
+  // multiply the second-hop expansion through the same immutable revision.
+  await store.execute("link", {
+    from: { revisionId: center.revisionId, start: 0, end: 6, quote: "center" },
+    to: { revisionId: target.revisionId, start: 0, end: 9, quote: "target v1" },
+    relation: "contrast",
+  });
+
+  const first = await store.execute("neighborhood", {
+    revisionId: center.revisionId,
+    limit: 1,
+  });
+  assert.equal(first.centerRevisionId, center.revisionId);
+  assert.equal(first.nodes.length, 1);
+  assert.ok(first.nextCursor);
+  const direct = first.nodes[0];
+  assert.equal(direct.distance, 1);
+  assert.equal(direct.revisionId, target.revisionId);
+  assert.equal(direct.sequence, 1);
+  assert.equal(direct.viaRevisionId, null);
+  assert.equal(direct.document.revisionId, targetV2.revisionId);
+  assert.equal(direct.document.archived, false);
+  assert.equal(Object.hasOwn(direct, "quote"), false);
+  assert.equal(Object.hasOwn(direct.document, "content"), false);
+
+  const second = await store.execute("neighborhood", {
+    revisionId: center.revisionId,
+    limit: 1,
+    cursor: first.nextCursor!,
+  });
+  assert.equal(second.nextCursor, null);
+  assert.equal(second.nodes.length, 1);
+  const secondHop = second.nodes[0];
+  assert.equal(secondHop.distance, 2);
+  assert.equal(secondHop.revisionId, archive.revisionId);
+  assert.equal(secondHop.viaRevisionId, target.revisionId);
+  assert.equal(secondHop.document.archived, true);
+
+  await assert.rejects(
+    () =>
+      store.execute("neighborhood", {
+        revisionId: target.revisionId,
+        limit: 1,
+        cursor: first.nextCursor!,
+      }),
+    /cursor/i,
+  );
+});
+
+test("answerFor only reports a verified answer arrival", async () => {
+  const source = (
+    await store.execute("write", {
+      path: "/answer-arrival/source.md",
+      title: "Arrival source",
+      content: "question source",
+    })
+  ).document;
+  const answer = (
+    await store.execute("write", {
+      path: "/answer-arrival/answer.md",
+      title: "Arrival answer",
+      content: "answer text",
+    })
+  ).document;
+  const question = (
+    await store.execute("ask", {
+      anchor: {
+        revisionId: source.revisionId,
+        start: 0,
+        end: 8,
+        quote: "question",
+      },
+      body: "Why?",
+    })
+  ).question;
+  await store.execute("answer", {
+    questionId: question.id,
+    documentId: answer.id,
+  });
+  const normal = await store.execute("open_document", {
+    documentId: answer.id,
+  });
+  assert.equal(normal.status, "ready");
+  if (normal.status !== "ready") return;
+  assert.equal(Object.hasOwn(normal, "arrival"), false);
+  const arrived = await store.execute("open_document", {
+    documentId: answer.id,
+    answerFor: question.id,
+  });
+  assert.equal(arrived.status, "ready");
+  if (arrived.status !== "ready") return;
+  assert.equal(arrived.arrival?.question.id, question.id);
+  assert.deepEqual(arrived.arrival?.question.answers, [answer.id]);
+  await assert.rejects(
+    () =>
+      store.execute("open_document", {
+        documentId: source.id,
+        answerFor: question.id,
+      }),
+    /associated|answer/i,
+  );
+});
+
 test("locators and UTF-16 anchors stay checked at the domain boundary", async () => {
   const content = "汉字😀 and punctuation?!";
   const revisionId = uuid(RevisionId);

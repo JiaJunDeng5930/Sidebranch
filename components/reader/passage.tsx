@@ -1,6 +1,16 @@
 "use client";
 
-import React, { memo, useId, useLayoutEffect, useMemo, useRef } from "react";
+import React, {
+  memo,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
+import "./passage.css";
 import type { AnchorInput, DocumentRevision } from "../../lib/domain/model";
 import { isValidRenderedTextOffsets } from "../../lib/domain/text-offsets";
 import {
@@ -10,11 +20,13 @@ import {
 } from "../../lib/reader/render-markdown";
 import { DocumentBody } from "./document-virtualizer";
 import { sourceRanges } from "../../lib/reader/render-dom";
+import { passageHighlightRuns } from "../../lib/reader/passage-highlights";
 
 export interface PassageMark {
   id: string;
   anchor: AnchorInput;
   color: string;
+  label?: string;
 }
 
 export interface PassageProps {
@@ -65,7 +77,13 @@ function parseIntegerAttribute(span: HTMLElement, name: string): number {
   return value;
 }
 
-function sourceMap(span: HTMLElement, renderedLength: number): number[] {
+const sourceMapCache = new WeakMap<HTMLElement, readonly number[]>();
+
+function sourceOffsetAt(
+  span: HTMLElement,
+  renderedLength: number,
+  renderedIndex: number,
+): number {
   if (span.dataset.sourceMapState === "unmapped")
     throw new RendererMappingError(
       "This rendered Markdown text has no checked source mapping",
@@ -73,28 +91,33 @@ function sourceMap(span: HTMLElement, renderedLength: number): number[] {
   const encoded = span.dataset.sourceMap;
   if (!encoded) {
     const start = parseIntegerAttribute(span, "sourceStart");
-    return Array.from(
-      { length: renderedLength + 1 },
-      (_, index) => index + start,
-    );
+    return start + renderedIndex;
   }
-  let offsets: unknown;
-  try {
-    offsets = JSON.parse(encoded);
-  } catch {
-    throw new RendererMappingError("Malformed rendered-to-source map");
-  }
-  if (
-    !Array.isArray(offsets) ||
-    !isValidRenderedTextOffsets(
-      offsets,
-      renderedLength,
-      parseIntegerAttribute(span, "sourceEnd") -
-        parseIntegerAttribute(span, "sourceStart"),
+  let offsets = sourceMapCache.get(span);
+  if (!offsets) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(encoded);
+    } catch {
+      throw new RendererMappingError("Malformed rendered-to-source map");
+    }
+    if (
+      !Array.isArray(decoded) ||
+      !isValidRenderedTextOffsets(
+        decoded,
+        renderedLength,
+        parseIntegerAttribute(span, "sourceEnd") -
+          parseIntegerAttribute(span, "sourceStart"),
+      )
     )
-  )
-    throw new RendererMappingError("Invalid rendered-to-source map");
-  return offsets as number[];
+      throw new RendererMappingError("Invalid rendered-to-source map");
+    offsets = decoded;
+    sourceMapCache.set(span, offsets);
+  }
+  const relative = offsets[renderedIndex];
+  if (!Number.isInteger(relative))
+    throw new RendererMappingError("Rendered endpoint has no source boundary");
+  return parseIntegerAttribute(span, "sourceStart") + relative;
 }
 
 function pointInSpan(span: HTMLElement, node: Node, offset: number): SpanPoint {
@@ -117,11 +140,7 @@ function pointInSpan(span: HTMLElement, node: Node, offset: number): SpanPoint {
   const renderedIndex = prefix.toString().length;
   if (renderedIndex > renderedLength)
     throw new RendererMappingError("Rendered endpoint exceeds source span");
-  const offsets = sourceMap(span, renderedLength);
-  const relative = offsets[renderedIndex];
-  if (!Number.isInteger(relative))
-    throw new RendererMappingError("Rendered endpoint has no source boundary");
-  const source = span.dataset.sourceMap ? sourceStart + relative : relative;
+  const source = sourceOffsetAt(span, renderedLength, renderedIndex);
   if (source < sourceStart || source > sourceEnd)
     throw new RendererMappingError("Source endpoint exceeds source span");
   return {
@@ -207,6 +226,20 @@ export function selectionAnchor(
     throw new RendererMappingError(
       "Selection source range is outside revision",
     );
+  // A native range can cross a virtual spacer (for example with Select All).
+  // Its endpoints are valid individually, but the unseen middle was not
+  // actually selected. Never turn that discontinuous range into a quotation.
+  for (const gap of root.querySelectorAll<HTMLElement>(
+    "[data-source-gap-start]",
+  )) {
+    if (
+      Number(gap.dataset.sourceGapStart) < end &&
+      Number(gap.dataset.sourceGapEnd) > start
+    )
+      throw new RendererMappingError(
+        "Selection crosses text that is not displayed",
+      );
+  }
   const anchor: AnchorInput = {
     revisionId: doc.revisionId,
     start,
@@ -307,6 +340,7 @@ function sameMarks(
     return (
       mark.id === other.id &&
       mark.color === other.color &&
+      mark.label === other.label &&
       sameAnchor(mark.anchor, other.anchor)
     );
   });
@@ -321,6 +355,42 @@ function PassageImpl({
   onGeometryChange,
 }: PassageProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [choices, setChoices] = useState<readonly PassageMark[]>([]);
+  const [choiceQuery, setChoiceQuery] = useState("");
+  const [choicePage, setChoicePage] = useState(0);
+  const choiceRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!choices.length) return;
+    choiceRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+    const outside = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !choiceRef.current?.contains(event.target)
+      )
+        setChoices([]);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setChoices([]);
+        rootRef.current
+          ?.closest<HTMLElement>("[data-document-scroll]")
+          ?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape, true);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape, true);
+    };
+  }, [choices]);
+  useEffect(() => {
+    if (!selectionError) return;
+    const timeout = window.setTimeout(() => setSelectionError(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [selectionError]);
   const onSelectRef = useRef(onSelect);
   const onActivateMarkRef = useRef(onActivateMark);
   useLayoutEffect(() => {
@@ -335,6 +405,17 @@ function PassageImpl({
   const checkedMarks = useMemo(
     () => validateMarks(doc.content, doc.revisionId, marks),
     [doc.content, doc.revisionId, marks],
+  );
+  const highlightRuns = useMemo(
+    () =>
+      passageHighlightRuns(
+        checkedMarks.map((mark) => ({
+          start: mark.anchor.start,
+          end: mark.anchor.end,
+          color: mark.color,
+        })),
+      ),
+    [checkedMarks],
   );
   if (currentFocus)
     assertRendererAnchor(doc.content, currentFocus, doc.revisionId);
@@ -358,7 +439,25 @@ function PassageImpl({
     const annotate = () => {
       clear();
       const rules: string[] = [];
-      const register = (suffix: string, ranges: Range[], color: string) => {
+      const mapped = new Map<string, Range[]>();
+      const rangesFor = (source: { start: number; end: number }) => {
+        const key = `${source.start}:${source.end}`;
+        let ranges = mapped.get(key);
+        if (!ranges) {
+          ranges = sourceRanges(root, {
+            ...source,
+            revisionId: doc.revisionId,
+          });
+          mapped.set(key, ranges);
+        }
+        return ranges;
+      };
+      const register = (
+        suffix: string,
+        ranges: Range[],
+        color: string,
+        ink?: string,
+      ) => {
         if (
           !ranges.length ||
           typeof Highlight === "undefined" ||
@@ -372,21 +471,28 @@ function PassageImpl({
           ? color
           : "#bd9c6666";
         rules.push(
-          `::highlight(${name}) { background-color: ${checkedColor}; }`,
+          // Highlight decorations are progressive enhancement. The color fill
+          // remains visible in engines that only implement highlight colors.
+          // https://www.w3.org/TR/css-pseudo-4/#highlight-styling
+          `::highlight(${name}) { background-color: ${checkedColor}; ${ink && CSS.supports("color", ink) ? `text-decoration: underline 2px ${ink}; text-underline-offset: 3px;` : ""} }`,
         );
       };
-      markRanges.current = checkedMarks.map((mark, index) => {
-        const ranges = sourceRanges(root, mark.anchor);
+      markRanges.current = checkedMarks.map((mark) => {
+        const ranges = rangesFor(mark.anchor);
+        return { id: mark.id, ranges };
+      });
+      highlightRuns.forEach((run, index) => {
+        const ranges = rangesFor(run);
         register(
           `mark${index}`,
           ranges,
-          `color-mix(in srgb, ${mark.color} 35%, transparent)`,
+          `color-mix(in srgb, ${run.color} 12%, transparent)`,
+          run.color,
         );
-        return { id: mark.id, ranges };
       });
       if (currentFocus) {
-        const ranges = sourceRanges(root, currentFocus);
-        register("focus", ranges, "#d49e6955");
+        const ranges = rangesFor(currentFocus);
+        register("focus", ranges, "#d6b36a29");
         if (ranges[0] && navigatedFocus.current !== focusKey) {
           scrollRangeWithinDocument(root, ranges[0]);
           navigatedFocus.current = focusKey;
@@ -396,14 +502,30 @@ function PassageImpl({
     };
     document.head.appendChild(style);
     annotate();
-    const observer = new MutationObserver(annotate);
+    let annotationFrame = 0;
+    const scheduleAnnotation = () => {
+      if (annotationFrame) return;
+      annotationFrame = requestAnimationFrame(() => {
+        annotationFrame = 0;
+        annotate();
+      });
+    };
+    const observer = new MutationObserver(scheduleAnnotation);
     observer.observe(root, { childList: true });
     return () => {
       observer.disconnect();
+      if (annotationFrame) cancelAnimationFrame(annotationFrame);
       clear();
       style.remove();
     };
-  }, [checkedMarks, currentFocus, doc.revisionId, focusKey, highlightId]);
+  }, [
+    checkedMarks,
+    highlightRuns,
+    currentFocus,
+    doc.revisionId,
+    focusKey,
+    highlightId,
+  ]);
 
   function captureSelection(): void {
     const root = rootRef.current;
@@ -413,33 +535,66 @@ function PassageImpl({
       if (!anchor) return;
       const selection = window.getSelection();
       const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-      if (range) onSelectRef.current(anchor, range.getBoundingClientRect());
+      if (range) {
+        setSelectionError(null);
+        onSelectRef.current(anchor, range.getBoundingClientRect());
+      }
     } catch (error) {
       // A malformed or virtualized endpoint is rejected instead of being
       // converted to an approximate saved anchor.
       if (!(error instanceof RendererMappingError)) throw error;
+      setSelectionError(
+        root.dataset.selectionLimit === "true"
+          ? "长选区已到本次上限，可分段选择。"
+          : "这次选区不能精确对应原文，请在连续显示的正文中分段选择。",
+      );
     }
   }
 
   function activateMark(event: React.MouseEvent<HTMLDivElement>): void {
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed) return;
-    const hit = markRanges.current.find((mark) =>
-      mark.ranges.some((range) =>
-        Array.from(range.getClientRects()).some(
-          (rect) =>
-            event.clientX >= rect.left &&
-            event.clientX <= rect.right &&
-            event.clientY >= rect.top &&
-            event.clientY <= rect.bottom,
-        ),
-      ),
+    if ((event.target as Element).closest("a,button,input,textarea")) return;
+    const geometry = new Map<Range, DOMRect[]>();
+    const hitRange = (range: Range) => {
+      let rects = geometry.get(range);
+      if (!rects) {
+        rects = Array.from(range.getClientRects());
+        geometry.set(range, rects);
+      }
+      return rects.some(
+        (rect) =>
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom,
+      );
+    };
+    const hits = markRanges.current.filter((mark) =>
+      mark.ranges.some((range) => hitRange(range)),
     );
-    if (hit && onActivateMarkRef.current) {
+    const unique = [...new Set(hits.map((mark) => mark.id))];
+    if (unique.length && onActivateMarkRef.current) {
       event.preventDefault();
-      onActivateMarkRef.current(hit.id);
+      if (unique.length === 1) onActivateMarkRef.current(unique[0]);
+      else {
+        setChoiceQuery("");
+        setChoicePage(0);
+        setChoices(
+          unique.flatMap((id) => {
+            const mark = checkedMarks.find((item) => item.id === id);
+            return mark ? [mark] : [];
+          }),
+        );
+      }
     }
   }
+
+  const matchingChoices = choices.filter((mark) =>
+    (mark.label ?? mark.anchor.quote)
+      .toLocaleLowerCase()
+      .includes(choiceQuery.toLocaleLowerCase()),
+  );
 
   return (
     <div
@@ -447,6 +602,7 @@ function PassageImpl({
       ref={rootRef}
       className="document-content"
       data-revision-id={doc.revisionId}
+      data-hit-role="text"
       onPointerUp={captureSelection}
       onKeyUp={(event) => {
         if (
@@ -468,6 +624,77 @@ function PassageImpl({
         focus={currentFocus}
         onGeometryChange={onGeometryChange}
       />
+      {selectionError &&
+        createPortal(
+          <p className="passage-selection-note" role="status">
+            {selectionError}
+          </p>,
+          document.body,
+        )}
+      {choices.length > 0 &&
+        createPortal(
+          <div
+            ref={choiceRef}
+            className="passage-relation-choices"
+            role="dialog"
+            aria-label="选择这段文字的连接"
+            data-hit-role="control"
+          >
+            <header>
+              <span>这段文字的 {choices.length} 条连接</span>
+              <button aria-label="收起连接选择" onClick={() => setChoices([])}>
+                ×
+              </button>
+            </header>
+            <input
+              aria-label="筛选这段文字的连接"
+              placeholder="找一个连接…"
+              value={choiceQuery}
+              onChange={(event) => {
+                setChoiceQuery(event.target.value);
+                setChoicePage(0);
+              }}
+            />
+            <div className="passage-choice-items">
+              {matchingChoices
+                .slice(choicePage * 8, choicePage * 8 + 8)
+                .map((mark) => (
+                  <button
+                    key={mark.id}
+                    onClick={() => {
+                      setChoices([]);
+                      onActivateMarkRef.current?.(mark.id);
+                    }}
+                  >
+                    {mark.label ?? mark.anchor.quote}
+                  </button>
+                ))}
+              {!matchingChoices.length && <p>没有匹配的连接。</p>}
+            </div>
+            {matchingChoices.length > 8 && (
+              <footer>
+                <button
+                  disabled={choicePage === 0}
+                  onClick={() => setChoicePage((page) => page - 1)}
+                >
+                  上一组
+                </button>
+                <span>
+                  {choicePage * 8 + 1}–
+                  {Math.min(matchingChoices.length, choicePage * 8 + 8)} /{" "}
+                  {matchingChoices.length}
+                </span>
+                <button
+                  disabled={(choicePage + 1) * 8 >= matchingChoices.length}
+                  onClick={() => setChoicePage((page) => page + 1)}
+                >
+                  下一组
+                </button>
+              </footer>
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

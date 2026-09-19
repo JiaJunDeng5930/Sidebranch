@@ -19,6 +19,7 @@ import {
   type ReadingView,
   type RequiredLocator,
 } from "./model";
+import { NeighborhoodResultSchema, type NeighborhoodResult } from "./space";
 import {
   AnchorSchema,
   ConnectionSchema,
@@ -43,6 +44,13 @@ export const commandSchemas = {
       offset: z.number().int().min(0).max(100_000).default(0),
       cursor: z.string().max(2_000).optional(),
       archived: z.boolean().default(false),
+    })
+    .strict(),
+  neighborhood: z
+    .object({
+      revisionId: RevisionId,
+      cursor: z.string().max(2_000).optional(),
+      limit: z.number().int().min(1).max(200).default(100),
     })
     .strict(),
   cat: locateObject().extend({ revisionId: RevisionId.optional() }),
@@ -115,6 +123,7 @@ export const commandSchemas = {
     .object({
       ...locateShape,
       revisionId: RevisionId.optional(),
+      answerFor: QuestionId.optional(),
       connectionsCursor: z.string().max(2_000).optional(),
       questionsCursor: z.string().max(2_000).optional(),
       connectionsLimit: z.number().int().min(1).max(200).default(200),
@@ -155,6 +164,7 @@ export interface CommandResults {
     nextOffset: number | null;
     nextCursor: string | null;
   };
+  neighborhood: NeighborhoodResult;
   cat: { document: DocumentRevision };
   grep: {
     matches: {
@@ -184,6 +194,8 @@ export interface CommandResults {
 
 export const commandDescriptions: Record<CommandName, string> = {
   ls: "List metadata by absolute path prefix with keyset pagination. Same persistent space across conversations. No shell execution.",
+  neighborhood:
+    "Read the two-hop neighborhood of an exact revision through real passage connections. Returns revision identities and latest document metadata only; it never returns document content or quotes. Archived documents remain eligible.",
   cat: "Read a document by documentId OR absolute path; optionally read an immutable revision. Content offsets use JavaScript UTF-16 code units.",
   grep: "Search literal case-sensitive text in current document titles, paths and contents. Returns exact UTF-16 content offsets and a continuation cursor.",
   write:
@@ -203,13 +215,14 @@ export const commandDescriptions: Record<CommandName, string> = {
   answer:
     "Associate an existing independent document with a question as its answer. First write the document; separately use link for the relevant passages.",
   open_document:
-    "Open a document and batched connected passages. With no locator, open the most recently updated active document or return status empty. The catalogue is loaded independently with ls.",
+    "Set the current document in the reading App and return its connected passages. With no locator, select the most recently updated active document or return status empty. Space membership is loaded independently with ls. When presenting a newly associated answer, pass answerFor with its question ID to announce arrival without interrupting reading; the service verifies the answer association. Without answerFor, this is an explicit navigation to the document.",
   import_file:
     "Import UTF-8 TXT, Markdown or a PDF as base64 (max 10 MiB). Preserves the original file and creates an ordinary editable document. PDFs need a text layer; scanned PDFs require OCR before import.",
 };
 
 export const readOnlyCommands = new Set<CommandName>([
   "ls",
+  "neighborhood",
   "cat",
   "grep",
   "history",
@@ -270,6 +283,7 @@ export const commandResultSchemas = {
       nextCursor: z.string().nullable(),
     })
     .strict(),
+  neighborhood: NeighborhoodResultSchema,
   cat: z.object({ document: DocumentRevisionSchema }).strict(),
   grep: z
     .object({

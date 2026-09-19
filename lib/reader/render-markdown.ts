@@ -38,7 +38,9 @@ export class RendererMappingError extends Error {
   }
 }
 
-const DEFAULT_CHUNK_SIZE = 4_096;
+// Keep first-time Markdown parsing within a frame-sized unit. Structural
+// blocks (lists, quotes, fences) still remain intact across this soft limit.
+const DEFAULT_CHUNK_SIZE = 2_048;
 const MAX_CHUNK_SIZE = 64 * 1024;
 
 function sourceOffset(value: number): SourceOffset {

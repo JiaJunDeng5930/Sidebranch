@@ -14,7 +14,7 @@ import {
   type CommandInput,
   type CommandResults,
 } from "../lib/domain/commands";
-import type { Question } from "../lib/domain/model";
+import type { DocumentId, Question } from "../lib/domain/model";
 import { createHostAnswer } from "./ui-host-answer";
 import "../app/globals.css";
 import appHtml from "../.app-build/reader.html?raw";
@@ -47,6 +47,9 @@ function Harness() {
   const [mobile, setMobile] = useState(false);
   const [message, setMessage] = useState("");
   const [question, setQuestion] = useState<Question | null>(null);
+  const [answerDocumentId, setAnswerDocumentId] = useState<DocumentId | null>(
+    null,
+  );
   const [hostStatus, setHostStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -117,19 +120,43 @@ function Harness() {
       await bridgeRef.current.sendToolInput({
         arguments:
           result.status === "ready"
-            ? { documentId: result.view.document.id }
+            ? { documentId: result.view.document.id, answerFor: question.id }
             : {},
       });
       await bridgeRef.current.sendToolResult({
         content: [
           {
             type: "text",
-            text: "Answer written, associated and linked; document opened.",
+            text: "Answer written, associated and linked; arrival announced.",
           },
         ],
         structuredContent: { ...result },
       });
-      setHostStatus("Host answer opened");
+      if (result.status === "ready")
+        setAnswerDocumentId(result.view.document.id);
+      setHostStatus("Host answer announced");
+    } catch (error) {
+      setHostStatus(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function locateAnswer() {
+    if (!answerDocumentId || !bridgeRef.current) return;
+    setBusy(true);
+    try {
+      const result = await client.invoke("open_document", {
+        documentId: answerDocumentId,
+      });
+      await bridgeRef.current.sendToolInput({
+        arguments: { documentId: answerDocumentId },
+      });
+      await bridgeRef.current.sendToolResult({
+        content: [{ type: "text", text: "Navigate to this document." }],
+        structuredContent: { ...result },
+      });
+      setHostStatus("Host explicit navigation sent");
     } catch (error) {
       setHostStatus(String(error));
     } finally {
@@ -190,6 +217,11 @@ function Harness() {
         {question && mode === "app" && (
           <button disabled={busy} onClick={() => void respond()}>
             Respond as QA host
+          </button>
+        )}
+        {answerDocumentId && mode === "app" && (
+          <button disabled={busy} onClick={() => void locateAnswer()}>
+            Locate answer as host
           </button>
         )}
         {hostStatus && <span>{hostStatus}</span>}

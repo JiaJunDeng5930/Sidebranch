@@ -5,7 +5,7 @@ export function longMarkdown(sections = 1000): string {
   return Array.from(
     { length: sections },
     (_, i) =>
-      `## 第 ${i + 1} 节：文档与连接\n\n文档具有稳定的身份。每次修改产生一个不可变版本，连接以具体的文字范围作为两端，保留形成时的语境。阅读位置属于视图，不属于内容本身。当前文档改变时，其他已打开的文章应该留在原处。\n\n这是一个包含 **加粗文字**、\`inline code\` 和 [外部引用](https://xanadu.com) 的段落，用于验证长文档中的选择、编辑与滚动。\n\n`,
+      `## 第 ${i + 1} 节：文档与连接\n\n文档具有稳定的身份。每次修改产生一个不可变版本，连接以具体的文字范围作为两端，保留形成时的语境。阅读位置不属于内容本身。当前文档改变时，其余文档退到周边折页，仍然属于同一个空间。\n\n这是一个包含 **加粗文字**、\`inline code\` 和 [外部引用](https://xanadu.com) 的段落，用于验证长文档中的选择、编辑与滚动。\n\n`,
   ).join("");
 }
 
@@ -68,5 +68,66 @@ export async function seedBenchmark(store: DocumentStore) {
       label: `第 ${i + 1} 处关系`,
     });
     start += quote.length;
+  }
+  // A crowded edge must represent distinct documents, not eighty links to
+  // the same two papers. These one hundred equal-hop leaves exercise fan
+  // pagination and long titles with a bounded number of mounted bodies.
+  const sourceAnchorId = crypto.randomUUID();
+  const sourceStart = large.indexOf(quote);
+  await db
+    .prepare(
+      "INSERT INTO anchors(id,revision_id,start,end,quote) VALUES(?,?,?,?,?)",
+    )
+    .bind(
+      sourceAnchorId,
+      ids[0].revision,
+      sourceStart,
+      sourceStart + quote.length,
+      quote,
+    )
+    .run();
+  const relations = [
+    "reference",
+    "explanation",
+    "question",
+    "contrast",
+    "continuation",
+  ] as const;
+  for (let offset = 3; offset < 103; offset += 20) {
+    const statements = ids
+      .slice(offset, Math.min(offset + 20, 103))
+      .flatMap((id, local) => {
+        const i = offset + local;
+        const targetQuote = `资料 ${i + 1}`;
+        const anchorId = crypto.randomUUID();
+        return [
+          db
+            .prepare(
+              "INSERT INTO anchors(id,revision_id,start,end,quote) VALUES(?,?,0,?,?)",
+            )
+            .bind(anchorId, id.revision, targetQuote.length, targetQuote),
+          db
+            .prepare(
+              "INSERT INTO connections(id,from_id,to_id,relation,label,created_at) VALUES(?,?,?,?,?,?)",
+            )
+            .bind(
+              crypto.randomUUID(),
+              sourceAnchorId,
+              anchorId,
+              relations[i % relations.length],
+              `近缘文档 ${i - 2} 的文字连接`,
+              new Date().toISOString(),
+            ),
+          db
+            .prepare("UPDATE documents SET title=? WHERE id=?")
+            .bind(
+              i % 11 === 0
+                ? `近缘 ${String(i - 2).padStart(3, "0")} · 一个关于不可变版本、连续阅读与原文来处的很长标题 Long title without losing its identity`
+                : `近缘 ${String(i - 2).padStart(3, "0")}`,
+              id.document,
+            ),
+        ];
+      });
+    await db.batch(statements);
   }
 }

@@ -140,7 +140,12 @@ export interface ReadingView {
 }
 
 export type OpenDocumentResult =
-  { status: "empty" } | { status: "ready"; view: ReadingView };
+  | { status: "empty" }
+  | {
+      status: "ready";
+      view: ReadingView;
+      arrival?: { question: Question };
+    };
 
 export class DomainError extends Error {
   constructor(

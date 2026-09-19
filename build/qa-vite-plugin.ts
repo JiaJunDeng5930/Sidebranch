@@ -15,10 +15,19 @@ export function qaPreview(): Plugin {
       });
       server.middlewares.use(async (req, res, next) => {
         const path = req.url?.split("?")[0];
-        if (path === "/__qa" || path === "/__renderer") {
+        if (path === "/__qa" || path === "/__renderer" || path === "/__space") {
           try {
             res.setHeader("Content-Type", "text/html");
-            res.end(await readFile(path === "/__renderer" ? ".qa-build/renderer/reader.html" : ".qa-build/reader.html", "utf8"));
+            res.end(
+              await readFile(
+                path === "/__renderer"
+                  ? ".qa-build/renderer/reader.html"
+                  : path === "/__space"
+                    ? ".qa-build/space/reader.html"
+                    : ".qa-build/reader.html",
+                "utf8",
+              ),
+            );
           } catch {
             res.statusCode = 503;
             res.end("Run npm run build:qa first.");

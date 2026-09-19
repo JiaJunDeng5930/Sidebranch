@@ -1,6 +1,22 @@
 @import "tailwindcss";
 @custom-variant dark (&:is(.dark *));
 :root {
+  --space-stage: #151a20;
+  --space-stage-raised: #1b222b;
+  --space-paper: #f3f0e8;
+  --space-paper-near: #ece9e1;
+  --space-paper-edge: #d8d7d2;
+  --space-ink: #2b3036;
+  --space-muted: #666c72;
+  --space-rule: rgba(43, 48, 54, 0.18);
+  --space-focus: #e7b879;
+  --paper-focus: #7a4b1d;
+  --reading-serif:
+    ui-serif, "Iowan Old Style", "Source Han Serif SC", "Noto Serif CJK SC",
+    "Songti SC", STSong, serif;
+  --reading-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --background: #f5f5f2;
   --foreground: #222724;
   --card: #fff;
@@ -90,8 +106,8 @@ button:disabled {
   opacity: 0.55;
 }
 ::selection {
-  background: #d8b18a;
-  color: #22272c;
+  background: #b8d7ee;
+  color: #2b3036;
 }
 h1,
 h2,
@@ -155,7 +171,37 @@ p {
   font-size: 14px;
 }
 
-.empty-space { min-height: 100svh; display: grid; align-content: center; justify-content: center; padding: 28px; background: #171c23; color: #f1ede4; }
-.empty-space p { max-width: 36em; color: #b9bdc3; line-height: 1.8; }
-.app-connection-error { position: fixed; z-index: 100; top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; max-width: calc(100% - 24px); padding: 12px 16px; background: #462b29; color: #ffe7dc; border: 1px solid #a96a57; font-size: 13px; }
-.app-connection-error button { flex: none; padding: 4px; }
+.empty-space {
+  min-height: 100svh;
+  display: grid;
+  align-content: center;
+  justify-content: center;
+  padding: 28px;
+  background: #171c23;
+  color: #f1ede4;
+}
+.empty-space p {
+  max-width: 36em;
+  color: #b9bdc3;
+  line-height: 1.8;
+}
+.app-connection-error {
+  position: fixed;
+  z-index: 100;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100% - 24px);
+  padding: 12px 16px;
+  background: #462b29;
+  color: #ffe7dc;
+  border: 1px solid #a96a57;
+  font-size: 13px;
+}
+.app-connection-error button {
+  flex: none;
+  padding: 4px;
+}

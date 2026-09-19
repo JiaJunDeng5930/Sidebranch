@@ -6,7 +6,7 @@ import type {
   ConnectionId,
   DocumentRevision,
 } from "../../lib/domain/model";
-import { relationColors } from "../../lib/reader/relations";
+import { relationInkColors, relationNames } from "../../lib/reader/relations";
 import { Passage } from "./passage";
 
 /** Text geometry depends on the immutable revision and its anchors, not camera or composer state. */
@@ -37,7 +37,8 @@ export const DocumentPassage = memo(function DocumentPassage({
           .map((anchor) => ({
             id: connection.id,
             anchor,
-            color: relationColors[connection.relation],
+            color: relationInkColors[connection.relation],
+            label: `${relationNames[connection.relation]} · ${connection.label || (connection.from === anchor ? connection.to.quote : connection.from.quote)}`,
           })),
       ),
     [connections, document.revisionId],

@@ -7,6 +7,7 @@ A single-owner document space on ChatGPT Sites, with an authenticated MCP server
 - Passage connections are independent, bidirectional entities. Questions reference passages; answers reference independently created documents.
 - The website supports browsing, literal full-text search, editing, imports, version history, paths and archiving.
 - The ChatGPT App uses the same reader. Selecting text opens a question composer; submitting saves the question and sends a user message through the MCP Apps bridge.
+- Every document belongs to the paper field. The current document and a companion remain readable; other documents gather as folded sheets at the edges. There is no open-file list, close-file action or overview mode. Continuing in the companion leaves an exact return position.
 
 ## Connect ChatGPT
 
@@ -27,8 +28,9 @@ Add the endpoint as a custom MCP connection in ChatGPT with OAuth. Sign in with 
 | `link`, `unlink`             | Create or remove a connection between two exact passages                |
 | `ask`, `questions`, `answer` | Save questions, find them, associate an existing answer document        |
 | `open_document`              | Display a document or historical revision in the reading App            |
+| `neighborhood`               | Read a paginated, two-hop projection of real revision connections       |
 
-Names resemble filesystem commands; no shell is executed. To answer a question: read its source, `write` an answer, call `answer` with the question and document IDs, `link` relevant passages, then `open_document`. Creating a document never implicitly creates a connection.
+Names resemble filesystem commands; no shell is executed. To answer a question: read its source, `write` an answer, call `answer` with the question and document IDs, `link` relevant passages, then call `open_document` with `documentId` and `answerFor`. This announces the answer without interrupting reading. Without `answerFor`, `open_document` explicitly requests a new current document; protected drafts and selections require accepting that navigation in the reader. Creating a document never implicitly creates a connection.
 
 Offsets are zero-based UTF-16 code units, matching JavaScript string indexing and DOM selection. Ranges are half-open `[start,end)`. A change inside or around a connected passage does not transfer the connection to a different revision. Follow a connection to read its historical endpoint; choose the latest version explicitly when needed. Renaming a path retains the document's stable ID.
 
@@ -55,7 +57,7 @@ Runtime configuration:
 
 Sites dispatch supplies verified user headers. A standalone deployment must provide an equivalent trusted identity boundary and strip client-supplied identity headers. Browser cookies are not accepted as MCP bearer tokens. All document commands, downloads and authorization consent check the owner server-side. OAuth uses DCR, authorization code + PKCE S256, one-hour opaque access tokens and rotating refresh tokens. Read/write scopes are persisted and enforced. Only official ChatGPT callbacks are accepted. `MCP_FILE_DOWNLOAD_ORIGINS` optionally supplies comma-separated exact HTTPS origins for host attachment downloads; redirects and private network addresses remain restricted. Actual ChatGPT attachment URL compatibility must be checked with the host.
 
-`pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness can switch to a 390-pixel frame and an official `AppBridge` host, and can seed an isolated stress fixture of 260 documents, three 1,000-section documents and 80 passage connections. This validates the bridge contract, not installation in the actual ChatGPT account.
+`pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness can switch to a 390-pixel frame and an official `AppBridge` host, and can seed an isolated stress fixture of 260 documents, three 1,000-section documents, 80 passage connections and 100 additional distinct neighboring documents. This validates the bridge contract, not installation in the actual ChatGPT account. `node --import tsx scripts/build-qa.mjs space` builds `/__space`, a standalone 120-document interaction specimen; the `renderer` argument builds `/__renderer` for long-text selection and scrolling measurements.
 
 ## Bounds
 

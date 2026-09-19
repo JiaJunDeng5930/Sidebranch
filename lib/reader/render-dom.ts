@@ -6,6 +6,32 @@ export interface SourceSelectionRange {
   end: number;
 }
 
+const sourceMapCache = new WeakMap<HTMLElement, readonly number[]>();
+
+function checkedSourceMap(
+  span: HTMLElement,
+  renderedLength: number,
+  sourceLength: number,
+): readonly number[] | null {
+  const encoded = span.dataset.sourceMap;
+  if (!encoded) return null;
+  const cached = sourceMapCache.get(span);
+  if (cached) return cached;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(encoded);
+  } catch {
+    return null;
+  }
+  if (
+    !Array.isArray(raw) ||
+    !isValidRenderedTextOffsets(raw, renderedLength, sourceLength)
+  )
+    return null;
+  sourceMapCache.set(span, raw);
+  return raw;
+}
+
 /** The same checked projection supplies highlights, hit testing and connection geometry. */
 export function sourceRanges(
   root: HTMLElement,
@@ -31,27 +57,14 @@ export function sourceRanges(
     )
       continue;
     const length = span.textContent?.length ?? 0;
-    let map: number[];
-    if (span.dataset.sourceMap) {
-      let raw: unknown;
-      try {
-        raw = JSON.parse(span.dataset.sourceMap);
-      } catch {
-        continue;
-      }
-      if (
-        !Array.isArray(raw) ||
-        !isValidRenderedTextOffsets(raw, length, end - start)
-      )
-        continue;
-      map = raw;
-    } else {
-      if (end - start !== length) continue;
-      map = Array.from({ length: length + 1 }, (_, index) => index);
-    }
+    const encodedMap = span.dataset.sourceMap;
+    const map = encodedMap ? checkedSourceMap(span, length, end - start) : null;
+    if (encodedMap && !map) continue;
+    if (!encodedMap && end - start !== length) continue;
     const boundary = (offset: number) => {
-      let low = 0,
-        high = map.length - 1;
+      if (!map) return Math.max(0, Math.min(length, offset));
+      let low = 0;
+      let high = map.length - 1;
       while (low < high) {
         const middle = (low + high) >>> 1;
         if (map[middle] < offset) low = middle + 1;
@@ -62,11 +75,14 @@ export function sourceRanges(
     const from = boundary(Math.max(0, source.start - start));
     const to = boundary(Math.min(end, source.end) - start);
     if (from >= to) continue;
+    const textNodes: Text[] = [];
+    const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+    let textNode: Node | null;
+    while ((textNode = walker.nextNode())) {
+      if (textNode instanceof Text) textNodes.push(textNode);
+    }
     const point = (offset: number): { node: Text; offset: number } | null => {
-      const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
-      let node: Node | null;
-      while ((node = walker.nextNode())) {
-        if (!(node instanceof Text)) continue;
+      for (const node of textNodes) {
         if (offset <= node.length) return { node, offset };
         offset -= node.length;
       }

@@ -9,140 +9,82 @@ import React, {
   useState,
 } from "react";
 import {
-  Archive,
   ArrowLeft,
   ArrowRight,
-  Check,
-  ChevronDown,
-  ChevronRight,
   FilePlus2,
-  FolderOpen,
   History,
-  Link2,
-  LoaderCircle,
   Menu,
-  MoreHorizontal,
-  PanelLeft,
-  PanelRight,
-  PenLine,
-  Plus,
   Search,
-  Send,
   Settings2,
   Upload,
   X,
 } from "lucide-react";
 import {
-  ReaderDialog,
-  ReaderDialogContent,
-  ReaderDialogDescription,
-  ReaderDialogTitle,
   ReaderMenu,
   ReaderMenuItem,
   ReaderMenuLink,
   ReaderMenuSeparator,
 } from "./workspace-controls";
 import {
-  readerSessionReducer,
-  createContextFromView,
   emptySession,
-  type ConnectionDraft,
-  type ReaderSession,
-  type ReaderViewTarget,
+  hasProtectedDraft,
+  isEditorDirty,
+  readerSessionReducer,
+  type AnswerNotification,
+  type ImportTask,
+  type PendingNavigation,
+  type ReaderSessionAction,
+  type SearchMatch,
 } from "../../lib/reader/session";
 import { SpatialScene } from "./spatial-scene";
-import type {
-  RelatedProjection,
-  SpatialSceneController,
-} from "./spatial-scene";
-import {
-  createViewId,
-  emptyScene,
-  sceneReducer,
-  type DocumentView,
-  type SceneAction,
-  type SceneState,
-  type ViewId,
-} from "../../lib/reader/scene";
 import { DocumentPassage } from "./document-passage";
-import { relationNames, relationColors } from "../../lib/reader/relations";
 import { registerReadingTools } from "../../lib/client/webmcp";
-import type { ReaderClient } from "../../lib/client/reader-client";
-import { questionPrompt } from "../../lib/client/reader-client";
+import {
+  questionPrompt,
+  type ReaderClient,
+} from "../../lib/client/reader-client";
 import type { CommandInput } from "../../lib/domain/commands";
 import {
   AnchorInput,
   Path,
   RevisionId,
-  validateAnchor,
   type Connection,
   type DocumentId,
   type DocumentRevision,
-  type DocumentSummary,
   type OpenDocumentResult,
   type Question,
   type ReadingView,
 } from "../../lib/domain/model";
+import {
+  readingPosition,
+  returnHistoryIndex,
+  type AttentionAction,
+  type ReadingPosition,
+  type SurfaceRole,
+} from "../../lib/reader/attention";
+import type { DocumentTarget } from "../../lib/reader/space-index";
+import type {
+  PendingSurface,
+  ReadingSurface,
+  ReturnLeaf,
+  SpatialSceneController,
+} from "./spatial-scene";
+import {
+  answerArrival,
+  errorMessage,
+  isReady,
+  makeAnchor,
+  summaryFor,
+} from "./reader-model";
+import {
+  EmptyWorkspace,
+  PlaneMenu,
+  SelectionComposer,
+} from "./reader-overlays";
+import { ReaderDialogs } from "./reader-dialogs";
 import "./reader.css";
 
-type Relation = Connection["relation"];
 const NO_CONNECTIONS: readonly Connection[] = [];
-
-type Match = {
-  document: DocumentSummary;
-  excerpt: string;
-  start: number;
-  end: number;
-  revisionId?: RevisionId;
-};
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "操作失败，请重试。";
-}
-
-function isReady(
-  result: OpenDocumentResult,
-): result is Extract<OpenDocumentResult, { status: "ready" }> {
-  return result.status === "ready";
-}
-
-function makeAnchor(
-  document: DocumentRevision,
-  start: number,
-  end: number,
-): AnchorInput | null {
-  if (start < 0 || end <= start || end > document.content.length) return null;
-  const quote = document.content.slice(start, end);
-  try {
-    validateAnchor(document.content, {
-      revisionId: document.revisionId,
-      start,
-      end,
-      quote,
-    });
-    return { revisionId: document.revisionId, start, end, quote };
-  } catch {
-    return null;
-  }
-}
-
-function folderName(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 1 ? parts.slice(0, -1).join(" / ") : "根目录";
-}
-
-function targetFromScene(
-  view: DocumentView,
-  role: "current" | "companion",
-): ReaderViewTarget {
-  return {
-    viewId: view.id,
-    document: view.document,
-    role,
-    focus: view.focus,
-    scrollTop: view.scrollTop,
-  };
-}
 
 export function Reader({
   client,
@@ -158,171 +100,472 @@ export function Reader({
     undefined,
     emptySession,
   );
-  const [scene, setScene] = useState<SceneState>(emptyScene);
-  const [searchMatches, setSearchMatches] = useState<readonly Match[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
   const [historyItems, setHistoryItems] = useState<
     readonly Omit<DocumentRevision, "content">[]
   >([]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [archiveOpen, setArchiveOpen] = useState(false);
-  const [importReport, setImportReport] = useState<readonly string[]>([]);
+  const [pendingSurface, setPendingSurface] = useState<PendingSurface | null>(
+    null,
+  );
+  const [importInputKey, setImportInputKey] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const [pointerSelecting, setPointerSelecting] = useState(false);
 
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const controllerRef = useRef<SpatialSceneController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const sceneControllerRef = useRef<SpatialSceneController | null>(null);
-  const cataloguePromiseRef = useRef<{
-    archived: boolean;
-    promise: Promise<void>;
-  } | null>(null);
-  const catalogueRequestRef = useRef(0);
-  const searchRequestRef = useRef(0);
+  const initialResultRef = useRef<OpenDocumentResult | null>(null);
+  const initialOpenRef = useRef(false);
+  const cataloguePromisesRef = useRef(
+    new Map<"active" | "archived", Promise<void>>(),
+  );
+  const catalogueRequestRef = useRef({ active: 0, archived: 0 });
   const openRequestRef = useRef(0);
-  const questionSubmissionRef = useRef<Promise<void> | null>(null);
+  const compareRequestRef = useRef(0);
+  const relationRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
   const historyRequestRef = useRef(0);
-  const relatedRequestRef = useRef(0);
+  const questionSubmissionRef = useRef<Promise<void> | null>(null);
   const revisionPromisesRef = useRef(
     new Map<string, Promise<DocumentRevision>>(),
   );
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
-  const sceneRef = useRef(scene);
-  sceneRef.current = scene;
-  const initialResultRef = useRef<OpenDocumentResult | null>(null);
-  const navigationEpochRef = useRef(0);
-  const relationRequestRef = useRef(0);
-  const loadedRelationsRef = useRef<RevisionId | null>(null);
-  const historyRevisionRequestRef = useRef(0);
-  const dispatchScene = useCallback((action: SceneAction) => {
-    const next = sceneReducer(sceneRef.current, action);
-    if (next === sceneRef.current) return;
-    sceneRef.current = next;
-    setScene(next);
+  const ensuredRevisionRef = useRef(new Set<RevisionId>());
+
+  const dispatch = useCallback((action: ReaderSessionAction) => {
+    dispatchSession(action);
   }, []);
-  const firstDocumentOpenedRef = useRef(false);
-  const dispatchSceneAction = useCallback(
-    (action: SceneAction) => {
-      const navigation = [
-        "history-back",
-        "history-forward",
-        "promote-view",
-        "close-view",
-      ].includes(action.type);
-      if (navigation) {
-        navigationEpochRef.current++;
-        openRequestRef.current++;
-        relatedRequestRef.current++;
-      }
-      dispatchScene(action);
-      if (navigation) syncSessionToScene(sceneRef.current);
+
+  const dispatchAttention = useCallback((action: AttentionAction) => {
+    dispatchSession({ type: "attention", action });
+  }, []);
+
+  const loadCatalogue = useCallback(
+    async (scope: "active" | "archived", force = false): Promise<void> => {
+      const existing = cataloguePromisesRef.current.get(scope);
+      if (existing && !force) return existing;
+      const requestId = catalogueRequestRef.current[scope] + 1;
+      catalogueRequestRef.current[scope] = requestId;
+      const run = (async () => {
+        dispatch({ type: "catalogue/load-start", scope });
+        let cursor: string | undefined;
+        let offset = 0;
+        const seen = new Set<string>();
+        try {
+          for (;;) {
+            const args: CommandInput<"ls"> & { cursor?: string } = {
+              limit: 200,
+              offset,
+              archived: scope === "archived",
+            };
+            if (cursor) args.cursor = cursor;
+            const result = await client.invoke("ls", args);
+            if (catalogueRequestRef.current[scope] !== requestId) return;
+            dispatch({
+              type: "catalogue/page",
+              scope,
+              documents: result.documents,
+              complete: false,
+            });
+            const nextCursor = result.nextCursor;
+            const nextOffset = result.nextOffset;
+            if (nextCursor) {
+              if (seen.has(`cursor:${nextCursor}`)) break;
+              seen.add(`cursor:${nextCursor}`);
+              cursor = nextCursor;
+              offset = 0;
+              continue;
+            }
+            if (nextOffset !== null) {
+              if (seen.has(`offset:${nextOffset}`)) break;
+              seen.add(`offset:${nextOffset}`);
+              offset = nextOffset;
+              continue;
+            }
+            break;
+          }
+          if (catalogueRequestRef.current[scope] === requestId)
+            dispatch({
+              type: "catalogue/page",
+              scope,
+              documents: [],
+              complete: true,
+            });
+        } catch (error) {
+          if (catalogueRequestRef.current[scope] === requestId)
+            dispatch({
+              type: "catalogue/error",
+              scope,
+              message: errorMessage(error),
+            });
+        } finally {
+          if (catalogueRequestRef.current[scope] === requestId)
+            cataloguePromisesRef.current.delete(scope);
+        }
+      })();
+      cataloguePromisesRef.current.set(scope, run);
+      return run;
     },
-    [dispatchScene],
+    [client, dispatch],
   );
 
-  function syncSessionToScene(next: SceneState) {
-    if (!next.currentViewId) {
-      dispatchSession({
-        type: "context/sync-scene",
-        current: null,
-        companion: null,
-      });
-      return;
-    }
-    const current = next.views.find((view) => view.id === next.currentViewId);
-    if (!current) return;
-    const companion = next.companionViewId
-      ? (next.views.find((view) => view.id === next.companionViewId) ?? null)
-      : null;
-    dispatchSession({
-      type: "context/sync-scene",
-      current: targetFromScene(current, "current"),
-      companion: companion ? targetFromScene(companion, "companion") : null,
-    });
-  }
-
-  const commitViewToSession = useCallback(
-    (view: ReadingView, viewId?: ViewId, focus?: AnchorInput | null) => {
-      loadedRelationsRef.current =
-        view.connectionsNextCursor || view.questionsNextCursor
-          ? null
-          : view.document.revisionId;
-      const previous = sessionRef.current.active;
-      const nextViewId =
-        viewId ??
-        sceneRef.current.views.find(
-          (item) => item.document.revisionId === view.document.revisionId,
-        )?.id ??
-        createViewId(
-          view.document.id + ":" + view.document.revisionId + ":current",
-        );
-      const previousCurrent =
-        previous &&
-        previous.current.document.revisionId !== view.document.revisionId
-          ? { ...previous.current, role: "companion" as const }
-          : null;
-      const preservedCompanion =
-        previous?.companion &&
-        previous.companion.document.revisionId !== view.document.revisionId
-          ? { ...previous.companion, role: "companion" as const }
-          : null;
-      const catalogue = sessionRef.current.documents;
-      const base = createContextFromView(view, catalogue, nextViewId);
-      const previousTarget =
-        previous?.current.document.revisionId === view.document.revisionId
-          ? previous.current
-          : sceneRef.current.views.find(
-              (item) => item.document.revisionId === view.document.revisionId,
-            );
-      const context = {
-        ...base,
-        current: {
-          ...base.current,
-          focus: focus === undefined ? (previousTarget?.focus ?? null) : focus,
-          scrollTop: previousTarget?.scrollTop ?? 0,
-        },
-        companion: previousCurrent ?? preservedCompanion,
-        mode: previous?.mode ?? base.mode,
+  const readOpenResult = useCallback(
+    async (
+      args: CommandInput<"open_document">,
+    ): Promise<ReadingView | null> => {
+      type PagedArgs = CommandInput<"open_document"> & {
+        connectionsCursor?: string;
+        questionsCursor?: string;
+        connectionsLimit?: number;
+        questionsLimit?: number;
       };
-      dispatchSession({ type: "cache/revision", revision: view.document });
-      dispatchSession({
-        type: "context/open",
-        context,
+      let connectionsCursor: string | undefined;
+      let questionsCursor: string | undefined;
+      let connectionsDone = false;
+      let questionsDone = false;
+      const seen = new Set<string>();
+      let merged: ReadingView | null = null;
+      for (;;) {
+        const request: PagedArgs = {
+          ...args,
+          connectionsLimit: 200,
+          questionsLimit: 100,
+        };
+        if (connectionsCursor) request.connectionsCursor = connectionsCursor;
+        if (questionsCursor) request.questionsCursor = questionsCursor;
+        const raw = await client.invoke("open_document", request);
+        if (!isReady(raw)) return merged;
+        if (!merged) {
+          merged = {
+            ...raw.view,
+            connections: [...raw.view.connections],
+            questions: [...raw.view.questions],
+          };
+        } else {
+          const previous: ReadingView = merged;
+          const connectionMap: Map<Connection["id"], Connection> = new Map(
+            previous.connections.map((connection) => [
+              connection.id,
+              connection,
+            ]),
+          );
+          const questionMap: Map<Question["id"], Question> = new Map(
+            previous.questions.map((question) => [question.id, question]),
+          );
+          raw.view.connections.forEach((connection) =>
+            connectionMap.set(connection.id, connection),
+          );
+          raw.view.questions.forEach((question) =>
+            questionMap.set(question.id, question),
+          );
+          merged = {
+            ...previous,
+            document: raw.view.document,
+            connections: [...connectionMap.values()],
+            questions: [...questionMap.values()],
+          };
+        }
+        const nextConnections: string | null = connectionsDone
+          ? null
+          : raw.view.connectionsNextCursor;
+        const nextQuestions: string | null = questionsDone
+          ? null
+          : raw.view.questionsNextCursor;
+        connectionsDone ||= nextConnections === null;
+        questionsDone ||= nextQuestions === null;
+        if (connectionsDone && questionsDone) {
+          const complete = merged;
+          if (!complete) return null;
+          return {
+            ...complete,
+            connectionsNextCursor: null,
+            questionsNextCursor: null,
+          };
+        }
+        const key = `${nextConnections ?? ""}|${nextQuestions ?? ""}`;
+        if (seen.has(key)) return merged;
+        seen.add(key);
+        if (nextConnections) connectionsCursor = nextConnections;
+        if (nextQuestions) questionsCursor = nextQuestions;
+      }
+    },
+    [client],
+  );
+
+  const fetchRevision = useCallback(
+    async (target: { id: DocumentId; revisionId?: RevisionId }) => {
+      const requestedRevision =
+        target.revisionId ??
+        sessionRef.current.documents.find((item) => item.id === target.id)
+          ?.revisionId;
+      const cached = requestedRevision
+        ? sessionRef.current.revisionCache.get(requestedRevision)
+        : [...sessionRef.current.revisionCache.values()].find(
+            (entry) => entry.document.id === target.id,
+          );
+      if (cached) return cached.document;
+      const key = String(requestedRevision ?? target.id);
+      const existing = revisionPromisesRef.current.get(key);
+      if (existing) return existing;
+      const promise = client
+        .invoke("cat", {
+          documentId: target.id,
+          revisionId: requestedRevision,
+        })
+        .then((result) => {
+          dispatch({ type: "cache/revision", revision: result.document });
+          return result.document;
+        })
+        .finally(() => revisionPromisesRef.current.delete(key));
+      revisionPromisesRef.current.set(key, promise);
+      return promise;
+    },
+    [client, dispatch],
+  );
+
+  const loadNeighborhood = useCallback(
+    async (revisionId: RevisionId): Promise<void> => {
+      const requestId = relationRequestRef.current + 1;
+      relationRequestRef.current = requestId;
+      dispatch({ type: "relations/loading", centerRevisionId: revisionId });
+      try {
+        let cursor: string | undefined;
+        let nodes: import("../../lib/domain/space").NeighborhoodNode[] = [];
+        for (;;) {
+          const result = await client.invoke("neighborhood", {
+            revisionId,
+            cursor,
+            limit: 100,
+          });
+          if (requestId !== relationRequestRef.current) return;
+          if (result.centerRevisionId !== revisionId) return;
+          nodes = [...nodes, ...result.nodes];
+          if (!result.nextCursor) {
+            dispatch({
+              type: "relations/set",
+              knowledge: {
+                kind: "complete",
+                centerRevisionId: revisionId,
+                nodes,
+              },
+            });
+            return;
+          }
+          cursor = result.nextCursor;
+        }
+      } catch (error) {
+        if (requestId !== relationRequestRef.current) return;
+        const existing = sessionRef.current.neighborhood;
+        dispatch({
+          type: "relations/set",
+          knowledge: {
+            kind: "failed",
+            centerRevisionId: revisionId,
+            nodes:
+              existing.kind !== "idle" &&
+              existing.centerRevisionId === revisionId
+                ? existing.nodes
+                : [],
+            message: errorMessage(error),
+          },
+        });
+      }
+    },
+    [client, dispatch],
+  );
+
+  const commitView = useCallback(
+    (
+      view: ReadingView,
+      mode: "navigate" | "compare",
+      focus: AnchorInput | null = null,
+      reason: Extract<
+        import("../../lib/reader/attention").ComparisonReason,
+        { kind: "connection" | "document" | "revision" | "answer" }
+      > = { kind: "document" },
+    ) => {
+      dispatch({ type: "cache/revision", revision: view.document });
+      const position = readingPosition(view.document, focus);
+      if (mode === "navigate")
+        dispatchAttention({ type: "navigate", position });
+      else dispatchAttention({ type: "compare", position, reason });
+      dispatch({
+        type: "data/merge",
+        connections: view.connections,
+        questions: view.questions,
+      });
+      // The neighborhood is centered on the current surface.  Comparing a
+      // companion enriches its cache and relations without moving that
+      // center; promotion or navigation will trigger the current revision's
+      // relation refresh through the attention effect below.
+      if (mode === "navigate") void loadNeighborhood(view.document.revisionId);
+    },
+    [dispatch, dispatchAttention, loadNeighborhood],
+  );
+
+  const deferNavigation = useCallback(
+    (view: ReadingView, message: string) => {
+      const pending: PendingNavigation = {
+        target: {
+          documentId: view.document.id,
+          revisionId: view.document.revisionId,
+          focus: null,
+        },
+        title: view.document.title,
+        revision: view.document,
+        message,
+      };
+      dispatch({ type: "navigation/defer", navigation: pending });
+      dispatch({
+        type: "status",
+        message: `已收到“${view.document.title}”的定位；当前草稿保存或关闭后继续。`,
       });
     },
-    [],
+    [dispatch],
+  );
+
+  const openDocument = useCallback(
+    async (
+      target: { id: DocumentId; revisionId?: RevisionId },
+      focus: AnchorInput | null = null,
+      options: { force?: boolean } = {},
+    ): Promise<boolean> => {
+      if (!options.force && hasProtectedDraft(sessionRef.current)) {
+        const cachedRevision = target.revisionId
+          ? sessionRef.current.revisionCache.get(target.revisionId)?.document
+          : undefined;
+        const cachedSummary = sessionRef.current.documents.find(
+          (item) => item.id === target.id,
+        );
+        dispatch({
+          type: "navigation/defer",
+          navigation: {
+            target: {
+              documentId: target.id,
+              revisionId:
+                target.revisionId ??
+                cachedRevision?.revisionId ??
+                cachedSummary?.revisionId ??
+                ("" as RevisionId),
+              focus,
+            },
+            title: cachedRevision?.title ?? cachedSummary?.title ?? "目标文档",
+            revision: cachedRevision ?? null,
+            message: "当前有未保存草稿。",
+          },
+        });
+        dispatch({
+          type: "status",
+          message: "当前草稿已保留；保存或关闭后再打开目标。",
+        });
+        return false;
+      }
+      const requestId = openRequestRef.current + 1;
+      openRequestRef.current = requestId;
+      dispatch({ type: "loading", loading: true });
+      dispatch({ type: "error", message: null });
+      try {
+        const view = await readOpenResult({
+          documentId: target.id,
+          revisionId: target.revisionId,
+        });
+        if (requestId !== openRequestRef.current || !view) return false;
+        commitView(view, "navigate", focus);
+        dispatch({ type: "navigation/clear" });
+        dispatch({ type: "loading", loading: false });
+        dispatch({ type: "status", message: null });
+        if (client.mode === "website" && typeof window !== "undefined") {
+          const url = new URL(window.location.href);
+          url.searchParams.set("document", view.document.id);
+          url.searchParams.set("revision", view.document.revisionId);
+          window.history.replaceState(null, "", url);
+          window.localStorage.setItem(
+            "xanadu-current-document",
+            view.document.id,
+          );
+        }
+        return true;
+      } catch (error) {
+        if (requestId === openRequestRef.current) {
+          dispatch({ type: "loading", loading: false });
+          dispatch({ type: "error", message: errorMessage(error) });
+        }
+        return false;
+      }
+    },
+    [client, commitView, dispatch, readOpenResult],
   );
 
   const acceptHostResult = useCallback(
-    (result: OpenDocumentResult) => {
-      navigationEpochRef.current++;
-      openRequestRef.current++;
-      relatedRequestRef.current++;
+    (result: OpenDocumentResult): void => {
       if (!isReady(result)) {
-        dispatchSession({ type: "loading", loading: false });
-        dispatchSession({
+        dispatch({ type: "loading", loading: false });
+        dispatch({
           type: "status",
-          message: "文档空间还是空的，可以从目录新建或导入一份文档。",
+          message: "文档空间为空，可以新建或导入一份文档。",
         });
         return;
       }
-      const document = result.view.document;
-      const id =
-        sceneRef.current.views.find(
-          (view) => view.document.revisionId === document.revisionId,
-        )?.id ??
-        createViewId(document.id + ":" + document.revisionId + ":host");
-      dispatchScene({
-        type: "open-document",
-        document,
-        viewId: id,
-        role: "current",
-      });
-      commitViewToSession(result.view, id);
-      if (document.isCurrent)
-        dispatchSession({ type: "catalogue/merge", documents: [document] });
-      dispatchSession({ type: "status", message: null });
+      const answer = answerArrival(result);
+      if (answer) {
+        const notification: AnswerNotification = {
+          questionId: answer.id,
+          answerDocumentId: result.view.document.id,
+          answerRevisionId: result.view.document.revisionId,
+          title: result.view.document.title,
+          status: "unseen",
+        };
+        dispatch({ type: "question/answered", question: answer });
+        dispatch({ type: "answer/arrived", notification });
+        dispatch({
+          type: "status",
+          message: `问题“${answer.body.slice(0, 40)}”已有回答。`,
+        });
+        dispatch({ type: "cache/revision", revision: result.view.document });
+        dispatch({
+          type: "data/merge",
+          connections: result.view.connections,
+          questions: result.view.questions,
+        });
+        return;
+      }
+      if (
+        hasProtectedDraft(sessionRef.current) ||
+        composing ||
+        pointerSelecting
+      ) {
+        deferNavigation(result.view, "当前有未完成的阅读操作。");
+        return;
+      }
+      commitView(result.view, "navigate");
+      dispatch({ type: "loading", loading: false });
+      dispatch({ type: "status", message: null });
     },
-    [commitViewToSession, dispatchScene],
+    [commitView, composing, deferNavigation, dispatch, pointerSelecting],
   );
+
+  const openLatest = useCallback(async (): Promise<void> => {
+    try {
+      const view = await readOpenResult({});
+      if (!view) {
+        dispatch({ type: "loading", loading: false });
+        dispatch({
+          type: "status",
+          message: "文档空间为空，可以新建或导入一份文档。",
+        });
+        return;
+      }
+      commitView(view, "navigate");
+      dispatch({ type: "loading", loading: false });
+    } catch (error) {
+      dispatch({ type: "loading", loading: false });
+      dispatch({ type: "error", message: errorMessage(error) });
+    }
+  }, [commitView, dispatch, readOpenResult]);
+
+  useEffect(() => {
+    void loadCatalogue("active");
+    void loadCatalogue("archived");
+  }, [loadCatalogue]);
 
   useEffect(() => {
     if (!onReady) return;
@@ -330,8 +573,12 @@ export function Reader({
   }, [acceptHostResult, onReady]);
 
   useEffect(() => {
-    if (initialView === undefined || initialView === null) return;
-    if (initialResultRef.current === initialView) return;
+    if (
+      initialView === undefined ||
+      initialView === null ||
+      initialResultRef.current === initialView
+    )
+      return;
     initialResultRef.current = initialView;
     acceptHostResult(initialView);
   }, [acceptHostResult, initialView]);
@@ -342,606 +589,217 @@ export function Reader({
   }, [acceptHostResult, client]);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
+    const keydown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        dispatchSession({ type: "dialog/open-search" });
-        return;
+        dispatch({ type: "dialog/open-search" });
       }
       if (event.key === "Escape") {
         const current = sessionRef.current;
         if (
-          current.selection.kind === "selected" ||
           current.question.kind !== "closed" ||
           current.connection.kind !== "closed"
-        ) {
-          dispatchSession({ type: "selection/clear" });
-        }
+        )
+          dispatch({ type: "selection/clear" });
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  const loadCatalogue = useCallback(
-    async (archived = sessionRef.current.archived, force = false) => {
-      if (!force && cataloguePromiseRef.current?.archived === archived)
-        return cataloguePromiseRef.current.promise;
-      const requestId = catalogueRequestRef.current + 1;
-      catalogueRequestRef.current = requestId;
-      const run = (async () => {
-        dispatchSession({ type: "catalogue/load-start", archived });
-        let cursor: string | undefined;
-        let offset = 0;
-        const seen = new Set<string>();
-        try {
-          for (;;) {
-            const args: CommandInput<"ls"> & {
-              cursor?: string;
-            } = { limit: 200, offset, archived };
-            if (cursor) args.cursor = cursor;
-            const result = await client.invoke("ls", args);
-            if (catalogueRequestRef.current !== requestId) return;
-            dispatchSession({
-              type: "catalogue/page",
-              documents: result.documents,
-              complete: false,
-            });
-            const nextCursor = (() => {
-              if (
-                typeof result === "object" &&
-                result !== null &&
-                "nextCursor" in result
-              ) {
-                const value = result.nextCursor;
-                return typeof value === "string" && value ? value : null;
-              }
-              return null;
-            })();
-            const nextOffset =
-              typeof result.nextOffset === "number" ? result.nextOffset : null;
-            if (nextCursor !== null) {
-              if (seen.has("cursor:" + nextCursor)) break;
-              seen.add("cursor:" + nextCursor);
-              cursor = nextCursor;
-              offset = 0;
-              continue;
-            }
-            if (nextOffset !== null) {
-              if (seen.has("offset:" + nextOffset)) break;
-              seen.add("offset:" + nextOffset);
-              offset = nextOffset;
-              continue;
-            }
-            break;
-          }
-          if (catalogueRequestRef.current === requestId)
-            dispatchSession({
-              type: "catalogue/page",
-              documents: [],
-              complete: true,
-            });
-        } catch (error) {
-          if (catalogueRequestRef.current === requestId)
-            dispatchSession({
-              type: "catalogue/error",
-              message: errorMessage(error),
-            });
-        } finally {
-          if (catalogueRequestRef.current === requestId)
-            cataloguePromiseRef.current = null;
-        }
-      })();
-      cataloguePromiseRef.current = { archived, promise: run };
-      return run;
-    },
-    [client],
-  );
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [dispatch]);
 
   useEffect(() => {
-    void loadCatalogue();
-  }, [loadCatalogue]);
-
-  const readOpenResult = useCallback(
-    async (
-      args: CommandInput<"open_document">,
-    ): Promise<ReadingView | null> => {
-      type PagedOpenArgs = CommandInput<"open_document"> & {
-        connectionsCursor?: string;
-        questionsCursor?: string;
-        connectionsLimit?: number;
-        questionsLimit?: number;
-      };
-      let connectionsCursor: string | undefined;
-      let questionsCursor: string | undefined;
-      let connectionsDone = false,
-        questionsDone = false;
-      const seen = new Set<string>();
-      let merged: ReadingView | null = null;
-      for (;;) {
-        const request: PagedOpenArgs = {
-          ...args,
-          connectionsLimit: 200,
-          questionsLimit: 100,
-        };
-        if (connectionsCursor) request.connectionsCursor = connectionsCursor;
-        if (questionsCursor) request.questionsCursor = questionsCursor;
-        const raw = await client.invoke("open_document", request);
-        const result = raw;
-        if (!isReady(result)) return merged;
-        const view = result.view;
-        if (!merged) {
-          merged = {
-            ...view,
-            connections: [...view.connections],
-            questions: [...view.questions],
-          };
-        } else {
-          const previous: ReadingView = merged;
-          const connections = new Map<Connection["id"], Connection>(
-            previous.connections.map((connection: Connection) => [
-              connection.id,
-              connection,
-            ]),
-          );
-          for (const connection of view.connections)
-            connections.set(connection.id, connection);
-          const questions = new Map<Question["id"], Question>(
-            previous.questions.map((question: Question) => [
-              question.id,
-              question,
-            ]),
-          );
-          for (const question of view.questions)
-            questions.set(question.id, question);
-          merged = {
-            ...previous,
-            document: view.document,
-            connections: [...connections.values()],
-            questions: [...questions.values()],
-          };
-        }
-        const nextConnections: string | null = connectionsDone
-          ? null
-          : view.connectionsNextCursor;
-        const nextQuestions: string | null = questionsDone
-          ? null
-          : view.questionsNextCursor;
-        connectionsDone ||= nextConnections === null;
-        questionsDone ||= nextQuestions === null;
-        if (connectionsDone && questionsDone)
-          return {
-            ...merged,
-            connectionsNextCursor: null,
-            questionsNextCursor: null,
-          };
-        const pair = `${nextConnections ?? ""}|${nextQuestions ?? ""}`;
-        if (seen.has(pair)) return merged;
-        seen.add(pair);
-        if (nextConnections) connectionsCursor = nextConnections;
-        if (nextQuestions) questionsCursor = nextQuestions;
-      }
-    },
-    [client],
-  );
-
-  const fetchRevision = useCallback(
-    async (document: { id: DocumentId; revisionId?: RevisionId }) => {
-      const requestedRevision =
-        document.revisionId ??
-        sessionRef.current.documents.find((item) => item.id === document.id)
-          ?.revisionId;
-      const cached = [...sessionRef.current.revisionCache.values()].find(
-        (item) =>
-          item.document.id === document.id &&
-          (!requestedRevision ||
-            item.document.revisionId === requestedRevision),
-      );
-      if (cached) return cached.document;
-      const key = String(requestedRevision ?? document.id);
-      const existing = revisionPromisesRef.current.get(key);
-      if (existing) return existing;
-      const promise = client
-        .invoke("cat", {
-          documentId: document.id,
-          revisionId: requestedRevision,
-        })
-        .then((result) => {
-          dispatchSession({
-            type: "cache/revision",
-            revision: result.document,
-          });
-          return result.document;
-        })
-        .finally(() => revisionPromisesRef.current.delete(key));
-      revisionPromisesRef.current.set(key, promise);
-      return promise;
-    },
-    [client],
-  );
-
-  const openDocument = useCallback(
-    async (
-      target: { id: DocumentId; revisionId?: RevisionId },
-      focus?: AnchorInput | null,
-    ) => {
-      navigationEpochRef.current++;
-      relatedRequestRef.current++;
-      const requestId = openRequestRef.current + 1;
-      openRequestRef.current = requestId;
-      dispatchSession({ type: "loading", loading: true });
-      dispatchSession({ type: "error", message: null });
-      try {
-        const view = await readOpenResult({
-          documentId: target.id,
-          revisionId: target.revisionId,
-        });
-        if (requestId !== openRequestRef.current) return;
-        if (!view) {
-          dispatchSession({
-            type: "status",
-            message: "没有找到可打开的文档版本。",
-          });
-          dispatchSession({ type: "loading", loading: false });
-          return;
-        }
-        const id =
-          sceneRef.current.views.find(
-            (item) => item.document.revisionId === view.document.revisionId,
-          )?.id ??
-          createViewId(target.id + ":" + view.document.revisionId + ":open");
-        dispatchScene({
-          type: "open-document",
-          document: view.document,
-          viewId: id,
-          ...(focus === undefined ? {} : { focus }),
-          role: "current",
-        });
-        if (focus) {
-          dispatchScene({ type: "focus-view", viewId: id, focus });
-        }
-        commitViewToSession(view, id, focus);
-        dispatchSession({ type: "loading", loading: false });
-        dispatchSession({ type: "status", message: null });
-        if (client.mode === "website") {
-          const url = new URL(window.location.href);
-          url.searchParams.set("document", view.document.id);
-          url.searchParams.set("revision", view.document.revisionId);
-          window.history.replaceState(null, "", url);
-          window.localStorage.setItem(
-            "xanadu-current-document",
-            view.document.id,
-          );
-        }
-        if (window.innerWidth < 760) setSidebarOpen(false);
-      } catch (error) {
-        if (requestId === openRequestRef.current) {
-          dispatchSession({ type: "loading", loading: false });
-          dispatchSession({ type: "error", message: errorMessage(error) });
-        }
-      }
-    },
-    [client, commitViewToSession, readOpenResult, dispatchScene],
-  );
-
-  const openHistoryRevision = useCallback(
-    async (item: Omit<DocumentRevision, "content">, ownerViewId: ViewId) => {
-      const requestId = ++historyRevisionRequestRef.current;
-      const originalOwner = sceneRef.current.views.find(
-        (view) => view.id === ownerViewId,
-      );
-      const navigationEpoch = navigationEpochRef.current;
-      try {
-        const view = await readOpenResult({
-          documentId: item.id,
-          revisionId: item.revisionId,
-        });
-        if (!view) throw new Error("没有找到可打开的历史版本。");
-        const owner = sceneRef.current.views.find(
-          (candidate) => candidate.id === ownerViewId,
-        );
-        if (
-          requestId !== historyRevisionRequestRef.current ||
-          navigationEpoch !== navigationEpochRef.current ||
-          !owner ||
-          owner.document.revisionId !== originalOwner?.document.revisionId
-        )
-          return;
-        dispatchScene({
-          type: "replace-document",
-          viewId: owner.id,
-          document: view.document,
-          focus: null,
-        });
-        dispatchSession({ type: "cache/revision", revision: view.document });
-        dispatchSession({
-          type: "context/replace-revision",
-          viewId: owner.id,
-          document: view.document,
-        });
-        if (owner.id === sceneRef.current.currentViewId)
-          dispatchSession({ type: "context/merge-view", view });
-      } catch (error) {
-        dispatchSession({ type: "error", message: errorMessage(error) });
-      }
-    },
-    [readOpenResult, dispatchScene],
-  );
-
-  useEffect(() => {
+    if (initialView !== undefined || initialOpenRef.current) return;
     if (
-      initialView !== undefined ||
-      firstDocumentOpenedRef.current ||
-      scene.views.length > 0 ||
-      session.catalogueLoading ||
-      !session.catalogueComplete ||
-      !session.documents.length
+      !session.catalogue.activeComplete ||
+      session.attention.attention.kind !== "empty"
     )
       return;
-    firstDocumentOpenedRef.current = true;
-    const params =
-      typeof window === "undefined"
-        ? null
-        : new URL(window.location.href).searchParams;
-    const requestedId = params?.get("document");
-    const requestedRevision = params?.get("revision");
-    const requested = requestedId
-      ? session.documents.find(
-          (document) =>
-            document.id === requestedId &&
-            (!requestedRevision || document.revisionId === requestedRevision),
-        )
-      : undefined;
-    const document = requested ?? session.documents[0];
-    void openDocument(
-      {
-        id: document.id,
-        revisionId: requested?.revisionId ?? document.revisionId,
-      },
-      null,
-    );
+    initialOpenRef.current = true;
+    void openLatest().catch(() => {
+      initialOpenRef.current = false;
+    });
   }, [
     initialView,
-    openDocument,
-    scene.views.length,
-    session.catalogueComplete,
-    session.catalogueLoading,
-    session.documents,
+    openLatest,
+    session.attention.attention.kind,
+    session.catalogue.activeComplete,
   ]);
 
-  const openRelated = useCallback(
-    async (connectionId: Connection["id"]) => {
-      const requestId = relatedRequestRef.current + 1;
-      relatedRequestRef.current = requestId;
-      const active = sessionRef.current.active;
-      const current = sceneRef.current.currentViewId
-        ? sceneRef.current.views.find(
-            (view) => view.id === sceneRef.current.currentViewId,
-          )
-        : undefined;
-      if (!active || !current) return;
-      const connection = active.connections.find(
-        (item) => item.id === connectionId,
-      );
-      if (!connection) return;
-      const source =
-        connection.from.revisionId === current.document.revisionId
-          ? connection.from
-          : connection.to.revisionId === current.document.revisionId
-            ? connection.to
-            : connection.from.documentId === current.document.id
-              ? connection.from
-              : connection.to.documentId === current.document.id
-                ? connection.to
-                : null;
-      if (!source) return;
-      const endpoint =
-        source === connection.from ? connection.to : connection.from;
-      const navigationEpoch = navigationEpochRef.current;
-      const [sourceDocument, document] = await Promise.all([
-        source.revisionId === current.document.revisionId
-          ? Promise.resolve(current.document)
-          : fetchRevision({
-              id: source.documentId,
-              revisionId: source.revisionId,
-            }),
-        fetchRevision({
-          id: endpoint.documentId,
-          revisionId: endpoint.revisionId,
-        }),
-      ]);
-      if (
-        relatedRequestRef.current !== requestId ||
-        navigationEpoch !== navigationEpochRef.current ||
-        sceneRef.current.currentViewId !== current.id
-      )
-        return;
-      if (sourceDocument.revisionId !== current.document.revisionId) {
-        const sourceViewId =
-          sceneRef.current.views.find(
-            (view) => view.document.revisionId === sourceDocument.revisionId,
-          )?.id ?? createViewId();
-        dispatchScene({
-          type: "open-document",
-          document: sourceDocument,
-          viewId: sourceViewId,
-          focus: source,
-        });
-        commitViewToSession(
-          {
-            document: sourceDocument,
-            connections: [...active.connections],
-            questions: [...active.questions],
-            connectionsNextCursor: null,
-            questionsNextCursor: null,
-          },
-          sourceViewId,
-          source,
-        );
-      } else {
-        dispatchScene({
-          type: "update-view",
-          viewId: current.id,
-          patch: { focus: source },
-        });
-      }
-      const targetViewId = createViewId(
-        endpoint.documentId + ":" + endpoint.revisionId + ":companion",
-      );
-      const existingView = sceneRef.current.views.find(
-        (view) => view.document.revisionId === document.revisionId,
-      );
-      if (existingView) {
-        dispatchScene({
-          type: "follow",
-          viewId: existingView.id,
-          focus: endpoint,
-          connectionId,
-        });
-      } else {
-        dispatchScene({
-          type: "open-new-view",
-          document,
-          viewId: targetViewId,
-          role: "companion",
-          focus: endpoint,
-        });
-      }
-      dispatchSession({ type: "cache/revision", revision: document });
-      dispatchSession({
-        type: "context/set-companion",
-        target: {
-          viewId: existingView?.id ?? targetViewId,
-          document,
-          role: "companion",
-          focus: endpoint,
-          scrollTop: 0,
-        },
-      });
-      dispatchSession({
-        type: "context/select-connection",
-        connectionId,
-      });
-    },
-    [fetchRevision, dispatchScene, commitViewToSession],
-  );
-
-  const onSceneActivateConnection = useCallback(
-    (connectionId: Connection["id"]) => {
-      void openRelated(connectionId).catch((error) =>
-        dispatchSession({ type: "error", message: errorMessage(error) }),
-      );
-    },
-    [openRelated],
-  );
-
-  const onSceneModeChange = useCallback((mode: "read" | "overview") => {
-    dispatchSession({ type: "context/mode", mode });
-  }, []);
-
   useEffect(() => {
-    if (!session.active || !scene.currentViewId) return;
-    const current = scene.views.find((view) => view.id === scene.currentViewId);
-    if (!current) return;
-    const companion = scene.companionViewId
-      ? scene.views.find((view) => view.id === scene.companionViewId)
-      : null;
-    const sameAnchor = (left: AnchorInput | null, right: AnchorInput | null) =>
-      left?.revisionId === right?.revisionId &&
-      left?.start === right?.start &&
-      left?.end === right?.end;
-    const sameTarget = (
-      left: ReaderViewTarget | null,
-      right: ReaderViewTarget | null,
-    ) =>
-      left?.viewId === right?.viewId &&
-      left?.document.revisionId === right?.document.revisionId &&
-      left?.scrollTop === right?.scrollTop &&
-      sameAnchor(left?.focus ?? null, right?.focus ?? null);
-    const nextCurrent = targetFromScene(current, "current");
-    const nextCompanion = companion
-      ? targetFromScene(companion, "companion")
-      : null;
-    if (
-      sameTarget(session.active.current, nextCurrent) &&
-      sameTarget(session.active.companion, nextCompanion)
-    )
-      return;
-    dispatchSession({
-      type: "context/sync-scene",
-      current: nextCurrent,
-      companion: nextCompanion,
-    });
-  }, [scene, session.active]);
-
-  const currentRevisionId = scene.views.find(
-    (view) => view.id === scene.currentViewId,
-  )?.document.revisionId;
-  useEffect(() => {
-    const current = sceneRef.current.views.find(
-      (view) => view.id === sceneRef.current.currentViewId,
+    const attention = session.attention.attention;
+    if (attention.kind !== "reading") return;
+    const positions = [attention.current, attention.companion?.position].filter(
+      (position): position is ReadingPosition => Boolean(position),
     );
-    if (!current || loadedRelationsRef.current === current.document.revisionId)
-      return;
-    const requestId = ++relationRequestRef.current;
+    for (const position of positions) {
+      if (
+        session.revisionCache.has(position.revisionId) ||
+        ensuredRevisionRef.current.has(position.revisionId)
+      )
+        continue;
+      ensuredRevisionRef.current.add(position.revisionId);
+      void fetchRevision({
+        id: position.documentId,
+        revisionId: position.revisionId,
+      }).catch(() => {
+        ensuredRevisionRef.current.delete(position.revisionId);
+      });
+    }
+  }, [fetchRevision, session.attention, session.revisionCache]);
+
+  const relationRevisionId =
+    session.attention.attention.kind === "reading"
+      ? session.attention.attention.current.revisionId
+      : null;
+  useEffect(() => {
+    if (!relationRevisionId) return;
+    const attention = sessionRef.current.attention.attention;
+    if (attention.kind !== "reading") return;
+    const requestRevision = relationRevisionId;
     let cancelled = false;
     void readOpenResult({
-      documentId: current.document.id,
-      revisionId: current.document.revisionId,
+      documentId: attention.current.documentId,
+      revisionId: requestRevision,
     })
       .then((view) => {
         if (
           cancelled ||
           !view ||
-          requestId !== relationRequestRef.current ||
-          sceneRef.current.currentViewId !== current.id
+          sessionRef.current.attention.attention.kind !== "reading" ||
+          sessionRef.current.attention.attention.current.revisionId !==
+            requestRevision
         )
           return;
-        loadedRelationsRef.current = current.document.revisionId;
-        dispatchSession({ type: "context/merge-view", view });
+        dispatch({
+          type: "data/merge",
+          connections: view.connections,
+          questions: view.questions,
+        });
+        void loadNeighborhood(requestRevision);
       })
       .catch((error) => {
-        if (!cancelled && requestId === relationRequestRef.current)
-          dispatchSession({ type: "error", message: errorMessage(error) });
+        if (!cancelled)
+          dispatch({ type: "error", message: errorMessage(error) });
       });
     return () => {
       cancelled = true;
     };
-  }, [currentRevisionId, scene.currentViewId, readOpenResult]);
+  }, [dispatch, loadNeighborhood, readOpenResult, relationRevisionId]);
+
+  const readBeside = useCallback(
+    async (
+      target: DocumentTarget,
+      reason: Extract<
+        import("../../lib/reader/attention").ComparisonReason,
+        { kind: "connection" | "document" | "revision" | "answer" }
+      > = { kind: "document" },
+    ): Promise<void> => {
+      const attention = sessionRef.current.attention.attention;
+      if (attention.kind !== "reading") return;
+      const requestId = compareRequestRef.current + 1;
+      compareRequestRef.current = requestId;
+      const summary = sessionRef.current.documents.find(
+        (document) => document.id === target.documentId,
+      );
+      setPendingSurface({
+        target,
+        title: summary?.title ?? "正在读取…",
+        error: null,
+      });
+      try {
+        const view = await readOpenResult({
+          documentId: target.documentId,
+          revisionId: target.revisionId,
+        });
+        const latest = sessionRef.current.attention.attention;
+        if (
+          requestId !== compareRequestRef.current ||
+          latest.kind !== "reading" ||
+          latest.current.revisionId !== attention.current.revisionId ||
+          !view
+        )
+          return;
+        commitView(view, "compare", target.focus, reason);
+        setPendingSurface(null);
+        dispatch({ type: "status", message: null });
+      } catch (error) {
+        if (requestId === compareRequestRef.current)
+          setPendingSurface((pending: PendingSurface | null) =>
+            pending ? { ...pending, error: errorMessage(error) } : pending,
+          );
+      }
+    },
+    [commitView, dispatch, readOpenResult],
+  );
+
+  const onFollow = useCallback(
+    (connectionId: Connection["id"]): void => {
+      const attention = sessionRef.current.attention.attention;
+      if (attention.kind !== "reading") return;
+      const connection = sessionRef.current.connections.find(
+        (item) => item.id === connectionId,
+      );
+      if (!connection) return;
+      const currentRevision = attention.current.revisionId;
+      const endpoint =
+        connection.from.revisionId === currentRevision
+          ? connection.to
+          : connection.to.revisionId === currentRevision
+            ? connection.from
+            : null;
+      if (!endpoint) return;
+      dispatch({ type: "connection/select", connectionId });
+      void readBeside(
+        {
+          documentId: endpoint.documentId,
+          revisionId: endpoint.revisionId,
+          focus: endpoint,
+        },
+        { kind: "connection", connectionId },
+      );
+    },
+    [dispatch, readBeside],
+  );
+
+  const onPromote = useCallback(() => {
+    if (sessionRef.current.attention.attention.kind !== "reading") return;
+    if (!sessionRef.current.attention.attention.companion) return;
+    dispatchAttention({ type: "promote" });
+    dispatch({ type: "status", message: null });
+  }, [dispatch, dispatchAttention]);
+
+  const onReturnToCurrent = useCallback(() => {
+    dispatchAttention({ type: "return-to-current" });
+    setPendingSurface(null);
+  }, [dispatchAttention]);
+
+  const onHistory = useCallback(
+    (index: number) => {
+      dispatchAttention({ type: "history", index });
+      setPendingSurface(null);
+    },
+    [dispatchAttention],
+  );
+
+  const onScroll = useCallback(
+    (role: SurfaceRole, scrollTop: number) => {
+      dispatchAttention({ type: "scroll", role, scrollTop });
+    },
+    [dispatchAttention],
+  );
+
+  const onCameraCheckpoint = useCallback(
+    (pose: import("../../lib/reader/attention").CameraPose) => {
+      dispatchAttention({ type: "camera", pose });
+    },
+    [dispatchAttention],
+  );
 
   const selectText = useCallback(
-    (anchor: AnchorInput, document: DocumentRevision, rect: DOMRect) => {
+    (anchor: AnchorInput, document: DocumentRevision, rect: DOMRect): void => {
+      setPointerSelecting(false);
       const connection = sessionRef.current.connection;
-      if (connection.kind === "first" && connection.first) {
-        // A second selection completes the independent connection draft.  Keep
-        // the selection visible so the confirmation sheet can show both exact
-        // UTF-16 endpoints; it must not become an implicit question/link.
-        dispatchSession({
-          type: "selection/set",
-          selection: {
-            kind: "selected",
-            anchor,
-            document,
-            preview:
-              typeof window === "undefined"
-                ? anchor.quote
-                : window.getSelection()?.toString() || anchor.quote,
-            rect: {
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-            },
-          },
-        });
-        dispatchSession({
-          type: "connection/open-second",
-          document,
-          anchor,
-        });
-        return;
-      }
-      dispatchSession({
+      dispatch({
         type: "selection/set",
         selection: {
           kind: "selected",
@@ -959,111 +817,83 @@ export function Reader({
           },
         },
       });
+      if (connection.kind === "first")
+        dispatch({ type: "connection/open-second", document, anchor });
     },
-    [],
+    [dispatch],
   );
 
+  const openQuestion = useCallback(() => {
+    const selection = sessionRef.current.selection;
+    if (selection.kind !== "selected") return;
+    dispatch({
+      type: "question/open",
+      document: selection.document,
+      anchor: selection.anchor,
+    });
+  }, [dispatch]);
+
   const selectSearchMatch = useCallback(
-    async (match: Match) => {
+    async (match: SearchMatch): Promise<void> => {
       const document = await fetchRevision({
         id: match.document.id,
-        revisionId: match.revisionId ?? match.document.revisionId,
+        revisionId: match.revisionId,
       });
       const anchor = makeAnchor(document, match.start, match.end);
-      await openDocument(
+      const opened = await openDocument(
         { id: document.id, revisionId: document.revisionId },
         anchor,
       );
-      dispatchSession({ type: "dialog/close" });
+      if (opened) dispatch({ type: "dialog/close" });
     },
-    [fetchRevision, openDocument],
+    [dispatch, fetchRevision, openDocument],
   );
 
-  function currentQuestionDraft(): ReaderSession["question"] {
-    return sessionRef.current.question;
-  }
-
-  const sendQuestion = useCallback(async () => {
+  const sendQuestion = useCallback(async (): Promise<void> => {
     if (questionSubmissionRef.current) return questionSubmissionRef.current;
     const run = (async () => {
       const draft = sessionRef.current.question;
       if (
-        (draft.kind !== "editing" &&
-          draft.kind !== "failed" &&
-          draft.kind !== "saved") ||
-        !draft.body.trim()
+        draft.kind !== "draft" &&
+        draft.kind !== "send_failed" &&
+        draft.kind !== "saved"
       )
         return;
       const body = draft.body.trim();
-      const questionDocumentId = draft.document.id;
+      if (!body) return;
       if (draft.saved && draft.sentBody === body) return;
-      dispatchSession({ type: "question/saving" });
+      dispatch({ type: "question/saving" });
       try {
         const question =
           draft.saved && draft.sentBody === null
             ? draft.saved
-            : (
-                await client.invoke("ask", {
-                  anchor: draft.anchor,
-                  body,
-                })
-              ).question;
+            : (await client.invoke("ask", { anchor: draft.anchor, body }))
+                .question;
+        const latest = sessionRef.current.question;
         if (
-          sessionRef.current.question.kind === "closed" ||
-          sessionRef.current.question.body.trim() !== body
+          latest.kind === "closed" ||
+          latest.body.trim() !== body ||
+          latest.anchor.revisionId !== draft.anchor.revisionId
         ) {
-          dispatchSession({
+          dispatch({
             type: "question/failure",
             message: "问题内容在保存期间发生了变化，请确认后重新发送。",
           });
           return;
         }
-        dispatchSession({ type: "context/add-question", question });
-        if (!draft.saved || draft.sentBody !== null)
-          dispatchSession({ type: "question/saved", question, body });
+        dispatch({ type: "question/saved", question, body });
         if (client.sendQuestion) {
+          dispatch({ type: "question/sending", body });
           await client.sendQuestion(question);
-          const latestQuestion = currentQuestionDraft();
-          if (
-            latestQuestion.kind === "closed" ||
-            latestQuestion.body.trim() !== body
-          ) {
-            dispatchSession({
-              type: "question/failure",
-              message: "问题内容已变化，上一条问题没有发送当前草稿。",
-            });
-            return;
-          }
-          dispatchSession({ type: "question/sent", body });
-          dispatchSession({
-            type: "status",
-            message: "问题已发送到当前对话。",
-          });
+          dispatch({ type: "question/sent", body });
+          dispatch({ type: "status", message: "问题已发送，等待回答。" });
         } else {
           await navigator.clipboard.writeText(questionPrompt(question));
-          dispatchSession({ type: "question/sent", body });
-          dispatchSession({
-            type: "status",
-            message: "问题已保存，提问内容已复制。",
-          });
-        }
-        try {
-          const active = sessionRef.current.active;
-          if (active?.current.document.id === questionDocumentId) {
-            const view = await readOpenResult({
-              documentId: questionDocumentId,
-              revisionId: active.current.document.revisionId,
-            });
-            if (view) dispatchSession({ type: "context/merge-view", view });
-          }
-        } catch {
-          // A successful host send remains final even if the refresh fails.
+          dispatch({ type: "question/sent", body });
+          dispatch({ type: "status", message: "问题已保存，提问内容已复制。" });
         }
       } catch (error) {
-        dispatchSession({
-          type: "question/failure",
-          message: errorMessage(error),
-        });
+        dispatch({ type: "question/failure", message: errorMessage(error) });
       }
     })();
     questionSubmissionRef.current = run;
@@ -1073,30 +903,22 @@ export function Reader({
       if (questionSubmissionRef.current === run)
         questionSubmissionRef.current = null;
     }
-    return run;
-  }, [client, readOpenResult]);
+  }, [client, dispatch]);
 
   const startConnection = useCallback(() => {
     const selection = sessionRef.current.selection;
-    if (
-      selection.kind !== "selected" ||
-      !selection.document ||
-      !selection.anchor
-    )
-      return;
-    dispatchSession({ type: "selection/clear" });
-    dispatchSession({
+    if (selection.kind !== "selected") return;
+    dispatch({
       type: "connection/open-first",
       document: selection.document,
       anchor: selection.anchor,
     });
-  }, []);
+  }, [dispatch]);
 
-  const saveConnection = useCallback(async () => {
+  const saveConnection = useCallback(async (): Promise<void> => {
     const draft = sessionRef.current.connection;
     if (draft.kind !== "second" && draft.kind !== "failed") return;
-    if (!draft.first || !draft.second) return;
-    dispatchSession({ type: "connection/saving" });
+    dispatch({ type: "connection/saving" });
     try {
       const result = await client.invoke("link", {
         from: draft.first.anchor,
@@ -1104,44 +926,18 @@ export function Reader({
         relation: draft.relation,
         label: draft.label,
       });
-      dispatchSession({ type: "connection/close" });
-      dispatchSession({
-        type: "context/add-connection",
-        connection: result.connection,
-      });
-      dispatchSession({ type: "status", message: "连接已建立。" });
-      const current = sceneRef.current.currentViewId
-        ? sceneRef.current.views.find(
-            (view) => view.id === sceneRef.current.currentViewId,
-          )
-        : undefined;
-      if (current) {
-        try {
-          const view = await readOpenResult({
-            documentId: current.document.id,
-            revisionId: current.document.revisionId,
-          });
-          if (view) {
-            dispatchSession({ type: "context/merge-view", view });
-          }
-        } catch {
-          // The link write is final; a relation refresh is only a convenience.
-          dispatchSession({
-            type: "status",
-            message: "连接已建立，关系列表稍后刷新。",
-          });
-        }
-      }
+      dispatch({ type: "connection/added", connection: result.connection });
+      dispatch({ type: "status", message: "连接已建立。" });
     } catch (error) {
-      dispatchSession({
-        type: "connection/failed",
-        message: errorMessage(error),
-      });
+      dispatch({ type: "connection/failed", message: errorMessage(error) });
     }
-  }, [client, readOpenResult]);
+  }, [client, dispatch]);
 
   const openHistory = useCallback(
-    async (document: DocumentRevision, ownerViewId?: ViewId) => {
+    async (
+      document: DocumentRevision,
+      owner: ReadingPosition | null,
+    ): Promise<void> => {
       const requestId = historyRequestRef.current + 1;
       historyRequestRef.current = requestId;
       try {
@@ -1157,27 +953,66 @@ export function Reader({
           revisions.push(...result.revisions);
           cursor = result.nextCursor ?? undefined;
         } while (cursor);
-        const owner =
-          ownerViewId ??
-          sceneRef.current.currentViewId ??
-          createViewId("history-owner");
         setHistoryItems(revisions);
-        dispatchSession({
-          type: "dialog/open-history",
-          document,
-          ownerViewId: owner,
-        });
+        dispatch({ type: "dialog/open-history", document, owner });
       } catch (error) {
-        dispatchSession({ type: "error", message: errorMessage(error) });
+        dispatch({ type: "error", message: errorMessage(error) });
       }
     },
-    [client],
+    [client, dispatch],
   );
 
-  const saveEditor = useCallback(async () => {
+  const openHistoryRevision = useCallback(
+    async (item: Omit<DocumentRevision, "content">): Promise<void> => {
+      dispatch({ type: "dialog/close" });
+      await openDocument({ id: item.id, revisionId: item.revisionId }, null);
+    },
+    [dispatch, openDocument],
+  );
+
+  const flushPendingNavigation = useCallback(() => {
+    const pending = sessionRef.current.pendingNavigation;
+    if (
+      !pending ||
+      hasProtectedDraft(sessionRef.current) ||
+      composing ||
+      pointerSelecting
+    )
+      return;
+    dispatch({ type: "navigation/clear" });
+    void openDocument(
+      {
+        id: pending.target.documentId,
+        revisionId: pending.target.revisionId || undefined,
+      },
+      pending.target.focus,
+      { force: true },
+    );
+  }, [composing, openDocument, pointerSelecting, dispatch]);
+
+  useEffect(() => {
+    const currentSession = sessionRef.current;
+    if (
+      !currentSession.pendingNavigation ||
+      hasProtectedDraft(currentSession) ||
+      composing ||
+      pointerSelecting
+    )
+      return;
+    flushPendingNavigation();
+  }, [
+    composing,
+    flushPendingNavigation,
+    pointerSelecting,
+    session.editor,
+    session.pendingNavigation,
+    session.question,
+  ]);
+
+  const saveEditor = useCallback(async (): Promise<void> => {
     const draft = sessionRef.current.editor;
     if (draft.kind === "closed") return;
-    dispatchSession({ type: "editor/saving" });
+    dispatch({ type: "editor/saving" });
     try {
       let document: DocumentRevision;
       if (draft.kind === "create") {
@@ -1190,7 +1025,6 @@ export function Reader({
           })
         ).document;
       } else if (draft.kind === "rename") {
-        if (!draft.document) throw new Error("没有可移动的文档。");
         document = (
           await client.invoke("mv", {
             documentId: draft.document.id,
@@ -1198,8 +1032,6 @@ export function Reader({
           })
         ).document;
       } else {
-        if (!draft.document || !draft.expectedRevisionId)
-          throw new Error("编辑目标已失效，请重新打开文档。");
         document = (
           await client.invoke("edit", {
             documentId: draft.document.id,
@@ -1211,61 +1043,85 @@ export function Reader({
           })
         ).document;
       }
-      dispatchSession({ type: "cache/revision", revision: document });
-      dispatchSession({ type: "editor/close" });
-      await loadCatalogue(sessionRef.current.archived, true);
-      const owner = draft.ownerViewId
-        ? sceneRef.current.views.find(
-            (view) =>
-              view.id === draft.ownerViewId &&
-              view.document.revisionId === draft.document?.revisionId,
-          )
-        : undefined;
-      if (owner) {
-        dispatchScene({
-          type: "replace-document",
-          viewId: owner.id,
-          document,
-          focus:
-            owner.focus?.revisionId === document.revisionId
-              ? owner.focus
-              : null,
-        });
-        dispatchSession({
-          type: "context/replace-revision",
-          viewId: owner.id,
-          document,
-        });
-      } else if (
-        draft.kind === "create" ||
-        sceneRef.current.views.length === 0
-      ) {
-        await openDocument({
-          id: document.id,
-          revisionId: document.revisionId,
-        });
-      }
-      dispatchSession({
+      dispatch({ type: "cache/revision", revision: document });
+      dispatch({
+        type: "catalogue/merge",
+        scope: "active",
+        documents: [document],
+      });
+      dispatch({ type: "editor/close" });
+      dispatch({
         type: "status",
         message:
-          draft.kind === "rename"
-            ? "文档已移动。"
-            : draft.kind === "create"
-              ? "文档已创建。"
+          draft.kind === "create"
+            ? "文档已创建；可从空间边缘旁读它。"
+            : draft.kind === "rename"
+              ? "文档已移动。"
               : "已保存新版本。",
       });
+      if (sessionRef.current.attention.attention.kind === "empty")
+        await openDocument(
+          { id: document.id, revisionId: document.revisionId },
+          null,
+          {
+            force: true,
+          },
+        );
+      else if (draft.kind === "edit" && draft.owner) {
+        const role: SurfaceRole =
+          sessionRef.current.attention.attention.kind === "reading" &&
+          sessionRef.current.attention.attention.current.revisionId ===
+            draft.owner.revisionId
+            ? "current"
+            : "companion";
+        dispatchAttention({
+          type: "replace-revision",
+          role,
+          position: readingPosition(document),
+        });
+      }
+      flushPendingNavigation();
     } catch (error) {
-      dispatchSession({ type: "editor/error", message: errorMessage(error) });
+      dispatch({ type: "editor/error", message: errorMessage(error) });
     }
-  }, [client, loadCatalogue, openDocument, dispatchScene]);
+  }, [
+    client,
+    dispatch,
+    dispatchAttention,
+    flushPendingNavigation,
+    openDocument,
+  ]);
+
+  const closeEditor = useCallback(() => {
+    const draft = sessionRef.current.editor;
+    if (isEditorDirty(draft)) {
+      dispatch({
+        type: "status",
+        message: "编辑草稿仍保留；选择“放弃草稿”才会清除。",
+      });
+      return;
+    }
+    dispatch({ type: "editor/close" });
+    flushPendingNavigation();
+  }, [dispatch, flushPendingNavigation]);
 
   const importFiles = useCallback(
-    async (files: FileList | null) => {
+    async (files: FileList | null): Promise<void> => {
       if (!files?.length) return;
-      const results: string[] = [];
-      const openImported = sceneRef.current.views.length === 0;
+      const incoming: ImportTask[] = Array.from(files).map((file, index) => ({
+        id: `${Date.now()}-${index}-${file.name}`,
+        name: file.name,
+        status: "queued",
+        message: null,
+      }));
+      dispatch({ type: "imports/set", imports: incoming });
       let firstImported: DocumentRevision | null = null;
-      for (const file of Array.from(files)) {
+      const emptyAtStart =
+        sessionRef.current.attention.attention.kind === "empty";
+      for (const [index, file] of Array.from(files).entries()) {
+        const task = incoming[index];
+        incoming[index] = { ...task, status: "importing" };
+        dispatch({ type: "imports/set", imports: [...incoming] });
         try {
           if (file.size > 10 * 1024 * 1024)
             throw new Error("单个文件超过 10 MiB。");
@@ -1288,47 +1144,59 @@ export function Reader({
           const document = (
             await client.invoke("import_file", {
               path: Path.parse(
-                "/imports/" + file.name.replace(/[\\/\x00-\x1f]/g, "_"),
+                `/imports/${file.name.replace(/[\\/\x00-\x1f]/g, "_")}`,
               ),
               title: file.name.replace(/\.[^.]+$/, ""),
               mime,
               base64: btoa(binary),
             })
           ).document;
-          results.push(file.name + "：已导入");
-          dispatchSession({ type: "cache/revision", revision: document });
-          if (openImported && !firstImported) firstImported = document;
+          incoming[index] = {
+            ...incoming[index],
+            status: "imported",
+            message: "已导入",
+          };
+          dispatch({ type: "cache/revision", revision: document });
+          dispatch({
+            type: "catalogue/merge",
+            scope: "active",
+            documents: [document],
+          });
+          if (emptyAtStart && !firstImported) firstImported = document;
         } catch (error) {
-          results.push(file.name + "：" + errorMessage(error));
+          incoming[index] = {
+            ...incoming[index],
+            status: "failed",
+            message: errorMessage(error),
+          };
         }
+        dispatch({ type: "imports/set", imports: [...incoming] });
       }
-      setImportReport(results);
-      await loadCatalogue(sessionRef.current.archived, true);
-      if (firstImported && sceneRef.current.views.length === 0) {
-        await openDocument({
-          id: firstImported.id,
-          revisionId: firstImported.revisionId,
-        });
-      }
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      await loadCatalogue("active", true);
+      if (firstImported)
+        await openDocument(
+          { id: firstImported.id, revisionId: firstImported.revisionId },
+          null,
+          { force: true },
+        );
+      setImportInputKey((value) => value + 1);
     },
-    [client, loadCatalogue, openDocument],
+    [client, dispatch, loadCatalogue, openDocument],
   );
 
   const runSearch = useCallback(
-    async (query: string) => {
+    async (query: string): Promise<void> => {
       const requestId = searchRequestRef.current + 1;
       searchRequestRef.current = requestId;
       if (!query.trim()) {
-        setSearchMatches([]);
-        setSearchLoading(false);
+        dispatch({ type: "search/clear" });
         return;
       }
-      setSearchLoading(true);
+      dispatch({ type: "search/querying", query, requestId });
       try {
         let cursor: string | undefined;
         const seen = new Set<string>();
-        const matches: Match[] = [];
+        const matches: SearchMatch[] = [];
         for (;;) {
           const args: CommandInput<"grep"> & { cursor?: string } = {
             query,
@@ -1347,67 +1215,18 @@ export function Reader({
               revisionId: match.document.revisionId,
             })),
           );
-          const nextCursor =
-            typeof result === "object" &&
-            result !== null &&
-            "nextCursor" in result &&
-            typeof result.nextCursor === "string" &&
-            result.nextCursor.length > 0
-              ? result.nextCursor
-              : null;
-          if (!nextCursor || seen.has(nextCursor)) break;
-          seen.add(nextCursor);
-          cursor = nextCursor;
+          if (!result.nextCursor || seen.has(result.nextCursor)) break;
+          seen.add(result.nextCursor);
+          cursor = result.nextCursor;
         }
-        setSearchMatches(matches);
+        dispatch({ type: "search/results", query, requestId, matches });
       } catch (error) {
         if (searchRequestRef.current === requestId)
-          dispatchSession({ type: "error", message: errorMessage(error) });
-      } finally {
-        if (searchRequestRef.current === requestId) setSearchLoading(false);
+          dispatch({ type: "search/failed", message: errorMessage(error) });
       }
     },
-    [client],
+    [client, dispatch],
   );
-
-  const related = useMemo<readonly RelatedProjection[]>(() => {
-    const active = session.active;
-    const current = scene.views.find((view) => view.id === scene.currentViewId);
-    if (!active || !current) return [];
-    const items: RelatedProjection[] = [];
-    for (const connection of active.connections) {
-      const endpoint =
-        connection.from.revisionId === current.document.revisionId
-          ? connection.to
-          : connection.to.revisionId === current.document.revisionId
-            ? connection.from
-            : null;
-      if (!endpoint) continue;
-      const summary = session.documents.find(
-        (doc) => doc.id === endpoint.documentId,
-      );
-      if (!summary) continue;
-      items.push({
-        document: summary,
-        anchor: endpoint,
-        connectionId: connection.id,
-        color: relationColors[connection.relation],
-      });
-    }
-    const seen = new Set<RevisionId>();
-    return items
-      .sort(
-        (a, b) =>
-          Number(b.connectionId === active.selectedConnectionId) -
-          Number(a.connectionId === active.selectedConnectionId),
-      )
-      .filter((item) => {
-        if (seen.has(item.anchor.revisionId)) return false;
-        seen.add(item.anchor.revisionId);
-        return true;
-      })
-      .slice(0, 12);
-  }, [scene, session.active, session.documents]);
 
   const archiveDocument = useCallback(
     async (document: DocumentRevision): Promise<void> => {
@@ -1418,101 +1237,184 @@ export function Reader({
             archived: !document.archived,
           })
         ).document;
-        for (const view of sceneRef.current.views) {
-          if (view.document.id !== document.id) continue;
-          const changed = { ...view.document, archived: updated.archived };
-          dispatchScene({
-            type: "replace-document",
-            viewId: view.id,
-            document: changed,
-          });
-          dispatchSession({
-            type: "context/replace-revision",
-            viewId: view.id,
-            document: changed,
-          });
-        }
-        await loadCatalogue(sessionRef.current.archived, true);
-        dispatchSession({
-          type: "status",
-          message: document.archived ? "文档已恢复。" : "文档已归档。",
+        dispatch({ type: "cache/revision", revision: updated });
+        dispatch({
+          type: "catalogue/merge",
+          scope: updated.archived ? "archived" : "active",
+          documents: [updated],
         });
+        dispatch({
+          type: "status",
+          message: updated.archived ? "文档已归档。" : "文档已恢复。",
+        });
+        await loadCatalogue("active", true);
+        await loadCatalogue("archived", true);
       } catch (error) {
-        dispatchSession({ type: "error", message: errorMessage(error) });
+        dispatch({ type: "error", message: errorMessage(error) });
       }
     },
-    [client, loadCatalogue, dispatchScene],
+    [client, dispatch, loadCatalogue],
   );
 
-  const measureScene = useCallback(
-    () => sceneControllerRef.current?.measure(),
-    [],
+  const openAnswer = useCallback(
+    (answer: AnswerNotification): void => {
+      dispatch({
+        type: "answer/status",
+        questionId: answer.questionId,
+        status: "reading",
+      });
+      void readBeside(
+        {
+          documentId: answer.answerDocumentId,
+          revisionId: answer.answerRevisionId,
+          focus: null,
+        },
+        { kind: "answer", questionId: answer.questionId },
+      );
+    },
+    [dispatch, readBeside],
   );
+
   const renderDocument = useCallback(
-    (view: DocumentView, detailed: boolean) => {
+    (surface: ReadingSurface, role: SurfaceRole): React.ReactNode => {
+      const document = surface.document;
       return (
         <article
-          className={
-            detailed ? "document-plane-body detailed" : "document-plane-body"
-          }
+          className={`document-plane-body ${role === "current" ? "detailed" : "detailed companion-body"}`}
         >
           <header className="plane-heading" data-view-handle>
-            <div>
-              <h1>{view.document.title}</h1>
+            <div className="plane-identity">
+              <h1>{document.title}</h1>
               <p>
-                {view.document.path} · v{view.document.sequence}
-                {!view.document.isCurrent ? " · 历史版本" : ""}
+                {document.path} · v{document.sequence}
+                {!document.isCurrent ? " · 历史版本" : ""}
+                {document.archived ? " · 已归档" : ""}
               </p>
             </div>
             <PlaneMenu
-              document={view.document}
+              document={document}
               onEdit={() =>
-                dispatchSession({
+                dispatch({
                   type: "editor/open-edit",
-                  document: view.document,
-                  ownerViewId: view.id,
+                  document,
+                  owner:
+                    sessionRef.current.attention.attention.kind === "reading"
+                      ? role === "current"
+                        ? sessionRef.current.attention.attention.current
+                        : (sessionRef.current.attention.attention.companion
+                            ?.position ?? null)
+                      : null,
                 })
               }
-              onHistory={() => void openHistory(view.document, view.id)}
+              onHistory={() =>
+                void openHistory(
+                  document,
+                  sessionRef.current.attention.attention.kind === "reading"
+                    ? role === "current"
+                      ? sessionRef.current.attention.attention.current
+                      : (sessionRef.current.attention.attention.companion
+                          ?.position ?? null)
+                    : null,
+                )
+              }
               onRename={() =>
-                dispatchSession({
+                dispatch({
                   type: "editor/open-rename",
-                  document: view.document,
-                  ownerViewId: view.id,
+                  document,
+                  owner:
+                    sessionRef.current.attention.attention.kind === "reading"
+                      ? role === "current"
+                        ? sessionRef.current.attention.attention.current
+                        : (sessionRef.current.attention.attention.companion
+                            ?.position ?? null)
+                      : null,
                 })
               }
-              onArchive={() => void archiveDocument(view.document)}
-              onDownload={() => downloadDocument(view.document)}
+              onArchive={() => void archiveDocument(document)}
+              onDownload={() => downloadDocument(document)}
               website={client.mode === "website"}
             />
           </header>
-          {detailed ? (
-            <DocumentPassage
-              document={view.document}
-              focus={view.focus}
-              connections={session.active?.connections ?? NO_CONNECTIONS}
-              onActivateConnection={onSceneActivateConnection}
-              onGeometryChange={measureScene}
-              onSelectText={selectText}
-            />
-          ) : (
-            <p className="peripheral-excerpt">
-              {view.document.content.slice(0, 360)}
-            </p>
-          )}
+          <DocumentPassage
+            document={document}
+            focus={surface.position.focus}
+            connections={
+              session.connections.length ? session.connections : NO_CONNECTIONS
+            }
+            onActivateConnection={onFollow}
+            onGeometryChange={() => controllerRef.current?.measure()}
+            onSelectText={selectText}
+          />
         </article>
       );
     },
     [
       archiveDocument,
       client.mode,
-      onSceneActivateConnection,
+      dispatch,
+      onFollow,
       openHistory,
-      measureScene,
       selectText,
-      session.active?.connections,
+      session.connections,
     ],
   );
+
+  const currentSurface = useMemo<ReadingSurface | null>(() => {
+    const attention = session.attention.attention;
+    if (attention.kind !== "reading") return null;
+    const cached = session.revisionCache.get(attention.current.revisionId);
+    return cached
+      ? { position: attention.current, document: cached.document }
+      : null;
+  }, [session.attention.attention, session.revisionCache]);
+
+  const companionSurface = useMemo<ReadingSurface | null>(() => {
+    const attention = session.attention.attention;
+    if (attention.kind !== "reading" || !attention.companion) return null;
+    const cached = session.revisionCache.get(
+      attention.companion.position.revisionId,
+    );
+    return cached
+      ? { position: attention.companion.position, document: cached.document }
+      : null;
+  }, [session.attention.attention, session.revisionCache]);
+
+  const previousLeaf = useMemo<ReturnLeaf | null>(() => {
+    const index = returnHistoryIndex(session.attention);
+    if (index === null) return null;
+    const snapshot = session.attention.history[index];
+    if (!snapshot || snapshot.attention.kind !== "reading") return null;
+    const position = snapshot.attention.current;
+    const document = summaryFor(
+      session.documents,
+      position,
+      session.revisionCache,
+    );
+    if (!document) return null;
+    return {
+      position,
+      document,
+      historyIndex: index,
+    };
+  }, [session.attention, session.documents, session.revisionCache]);
+
+  const historyBackIndex =
+    session.attention.historyIndex > 0
+      ? session.attention.historyIndex - 1
+      : null;
+  const historyForwardIndex =
+    session.attention.historyIndex < session.attention.history.length - 1
+      ? session.attention.historyIndex + 1
+      : null;
+  const searchDialog = session.dialog.kind === "search";
+  const historyDialog =
+    session.dialog.kind === "history" ? session.dialog : null;
+  const editorOpen = session.editor.kind !== "closed";
+  const activitiesOpen = session.dialog.kind === "activities";
+  const currentAttention =
+    session.attention.attention.kind === "reading"
+      ? session.attention.attention.current
+      : null;
 
   function downloadDocument(document: DocumentRevision): void {
     const blob = new Blob([document.content], {
@@ -1524,70 +1426,67 @@ export function Reader({
     const link = window.document.createElement("a");
     link.href = URL.createObjectURL(blob);
     const filename = document.path.split("/").pop() ?? "document";
-    const extension = document.format === "markdown" ? ".md" : ".txt";
     link.download = /\.(md|markdown|txt)$/i.test(filename)
       ? filename
-      : filename.replace(/\.[^.]+$/, "") + extension;
+      : `${filename.replace(/\.[^.]+$/, "")}.${document.format === "markdown" ? "md" : "txt"}`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
-  const currentDocument =
-    scene.views.find((view) => view.id === scene.currentViewId)?.document ??
-    session.active?.current.document ??
-    null;
-  const editorOpen = session.editor.kind !== "closed";
-  const searchDialog = session.dialog.kind === "search" ? session.dialog : null;
-
   return (
-    <main className={"reader-shell " + (sidebarOpen ? "has-sidebar" : "")}>
+    <main className="reader-shell">
       <header className="reader-topbar">
         <div className="brand-lockup">
           <button
+            type="button"
             className="brand-button"
-            onClick={() => sceneControllerRef.current?.resetCamera()}
+            onClick={() => controllerRef.current?.resetCamera()}
           >
             Xanadu<span>Sidebranch</span>
           </button>
-          <span className="workspace-count">
-            {session.documents.length} 份文档
+          <span className="space-state">
+            {session.catalogue.activeComplete ? "阅读空间" : "正在载入空间"}
           </span>
         </div>
         <div className="topbar-actions">
           <button
+            type="button"
             className="quiet-icon topbar-history"
             aria-label="返回上一个阅读上下文"
             title="返回"
-            disabled={!scene.currentViewId || scene.historyIndex <= 0}
-            onClick={() => dispatchSceneAction({ type: "history-back" })}
+            disabled={historyBackIndex === null}
+            onClick={() =>
+              historyBackIndex !== null && onHistory(historyBackIndex)
+            }
           >
-            <ArrowLeft size={15} />
+            <ArrowLeft size={16} />
           </button>
           <button
+            type="button"
             className="quiet-icon topbar-history"
             aria-label="前进到下一个阅读上下文"
             title="前进"
-            disabled={
-              !scene.currentViewId ||
-              scene.historyIndex >= scene.history.length - 1
+            disabled={historyForwardIndex === null}
+            onClick={() =>
+              historyForwardIndex !== null && onHistory(historyForwardIndex)
             }
-            onClick={() => dispatchSceneAction({ type: "history-forward" })}
           >
-            <ArrowRight size={15} />
+            <ArrowRight size={16} />
           </button>
           <button
+            type="button"
             className="topbar-button"
-            onClick={() => dispatchSession({ type: "dialog/open-search" })}
+            aria-label="搜索文档"
+            onClick={() => dispatch({ type: "dialog/open-search" })}
           >
-            <Search size={16} />
-            <span>搜索</span>
-            <kbd>⌘ K</kbd>
+            <Search size={16} /> <span>搜索</span> <kbd>⌘ K</kbd>
           </button>
           <ReaderMenu
             trigger={(toggle, open) => (
               <button
+                type="button"
                 className="account-button"
-                aria-label="空间菜单"
+                aria-label="空间命令"
                 aria-haspopup="menu"
                 aria-expanded={open}
                 onClick={toggle}
@@ -1598,7 +1497,11 @@ export function Reader({
           >
             <ReaderMenuItem
               onSelect={() =>
-                dispatchSession({ type: "editor/open-create", path: "/notes/" })
+                dispatch({
+                  type: "editor/open-create",
+                  path: "/notes/untitled.md",
+                  owner: currentAttention,
+                })
               }
             >
               <FilePlus2 size={15} /> 新建文档
@@ -1606,22 +1509,14 @@ export function Reader({
             <ReaderMenuItem onSelect={() => fileInputRef.current?.click()}>
               <Upload size={15} /> 导入文件
             </ReaderMenuItem>
+            <ReaderMenuItem
+              onSelect={() => dispatch({ type: "dialog/open-activities" })}
+            >
+              <History size={15} /> 连接与问题
+            </ReaderMenuItem>
             <ReaderMenuSeparator />
             <ReaderMenuItem
-              onSelect={() => {
-                const next = !archiveOpen;
-                setArchiveOpen(next);
-                dispatchSession({
-                  type: "catalogue/toggle-archived",
-                  archived: next,
-                });
-                void loadCatalogue(next);
-              }}
-            >
-              <Archive size={15} /> {archiveOpen ? "查看当前文档" : "查看归档"}
-            </ReaderMenuItem>
-            <ReaderMenuItem
-              onSelect={() => dispatchSession({ type: "dialog/open-settings" })}
+              onSelect={() => dispatch({ type: "dialog/open-settings" })}
             >
               <Settings2 size={15} /> 连接 ChatGPT
             </ReaderMenuItem>
@@ -1637,117 +1532,40 @@ export function Reader({
         </div>
       </header>
 
-      <div className="reader-main">
-        <aside className="catalogue" aria-label="文档目录">
-          <div className="catalogue-head">
-            <div>
-              <span className="catalogue-kicker">
-                {archiveOpen ? "ARCHIVE" : "LIBRARY"}
-              </span>
-              <strong>{archiveOpen ? "已归档" : "文档"}</strong>
-            </div>
-            <div className="catalogue-actions">
-              <button
-                className="quiet-icon"
-                onClick={() => fileInputRef.current?.click()}
-                aria-label="导入文件"
-              >
-                <Upload size={15} />
-              </button>
-              <button
-                className="quiet-icon"
-                onClick={() =>
-                  dispatchSession({
-                    type: "editor/open-create",
-                    path: "/notes/",
-                  })
-                }
-                aria-label="新建文档"
-              >
-                <Plus size={16} />
-              </button>
-            </div>
-          </div>
-          <nav className="catalogue-list">
-            {groupDocuments(session.documents).map((group) => (
-              <div className="catalogue-group" key={group.name}>
-                <div className="catalogue-folder">
-                  <ChevronDown size={13} />
-                  <span>{group.name}</span>
-                  <small>{group.documents.length}</small>
-                </div>
-                {group.documents.map((document) => (
-                  <button
-                    className={
-                      "catalogue-document " +
-                      (currentDocument?.id === document.id ? "active" : "")
-                    }
-                    key={document.id}
-                    onClick={() => void openDocument({ id: document.id })}
-                  >
-                    <span className="catalogue-dot" />
-                    <span>
-                      <strong>{document.title}</strong>
-                      <small>{document.path}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ))}
-            {!session.documents.length && !session.catalogueLoading && (
-              <div className="catalogue-empty">
-                <FolderOpen size={18} />
-                <p>还没有文档。</p>
-                <button
-                  onClick={() =>
-                    dispatchSession({
-                      type: "editor/open-create",
-                      path: "/notes/",
-                    })
-                  }
-                >
-                  写第一份
-                </button>
-              </div>
-            )}
-            {session.catalogueLoading && (
-              <p className="catalogue-loading">
-                <LoaderCircle size={15} className="spin" /> 正在读取目录…
-              </p>
-            )}
-          </nav>
-          <div className="catalogue-footer">
-            <button onClick={() => setSidebarOpen(false)} aria-label="收起目录">
-              <PanelLeft size={15} /> 收起目录
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,.markdown,.pdf"
-              multiple
-              hidden
-              onChange={(event) => void importFiles(event.target.files)}
-            />
-          </div>
-        </aside>
-
-        <section className="workspace-stage">
-          {!sidebarOpen && (
-            <button
-              className="catalogue-reopen"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="展开目录"
-            >
-              <PanelRight size={17} />
-            </button>
-          )}
-          {(session.error || session.catalogueError) && (
+      <section className="reader-main">
+        <input
+          key={importInputKey}
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.md,.markdown,.pdf"
+          multiple
+          hidden
+          onChange={(event) => void importFiles(event.target.files)}
+        />
+        <div
+          className="workspace-stage"
+          onPointerDown={(event) => {
+            if ((event.target as HTMLElement).closest("[data-document-text]")) {
+              setPointerSelecting(true);
+            }
+          }}
+          onPointerUp={() => setPointerSelecting(false)}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => {
+            setComposing(false);
+            flushPendingNavigation();
+          }}
+        >
+          {(session.error ||
+            session.catalogue.activeError ||
+            session.catalogue.archivedError) && (
             <div className="reader-alert error" role="alert">
-              {session.error ?? session.catalogueError}
+              {session.error ??
+                session.catalogue.activeError ??
+                session.catalogue.archivedError}
               <button
-                onClick={() =>
-                  dispatchSession({ type: "error", message: null })
-                }
+                type="button"
+                onClick={() => dispatch({ type: "error", message: null })}
                 aria-label="关闭错误"
               >
                 <X size={15} />
@@ -1758,691 +1576,119 @@ export function Reader({
             <div className="reader-alert status" role="status">
               {session.status}
               <button
-                onClick={() =>
-                  dispatchSession({ type: "status", message: null })
-                }
+                type="button"
+                onClick={() => dispatch({ type: "status", message: null })}
                 aria-label="关闭提示"
               >
                 <X size={15} />
               </button>
             </div>
           )}
-          {importReport.length > 0 && (
-            <div className="import-report" role="status">
-              <div>
-                <strong>导入结果</strong>
-                <button
-                  onClick={() => setImportReport([])}
-                  aria-label="关闭导入结果"
-                >
-                  <X size={15} />
-                </button>
-              </div>
-              {importReport.map((item) => (
-                <p key={item}>{item}</p>
+          {session.answers.some((answer) => answer.status === "unseen") && (
+            <div className="answer-notice" aria-live="polite">
+              {session.answers
+                .filter((answer) => answer.status === "unseen")
+                .map((answer) => (
+                  <div className="answer-notice-item" key={answer.questionId}>
+                    <span>已有回答：{answer.title}</span>
+                    <button type="button" onClick={() => openAnswer(answer)}>
+                      旁读答案
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      onClick={() =>
+                        dispatch({
+                          type: "answer/status",
+                          questionId: answer.questionId,
+                          status: "seen",
+                        })
+                      }
+                    >
+                      稍后阅读
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
+          {session.imports.length > 0 && (
+            <div className="import-progress" role="status">
+              {session.imports.map((task) => (
+                <p key={task.id}>
+                  <span>{task.name}</span>
+                  <small>
+                    {task.message ??
+                      (task.status === "importing" ? "正在导入…" : task.status)}
+                  </small>
+                </p>
               ))}
             </div>
           )}
-          {scene.views.length > 0 ? (
+          {currentSurface || session.attention.attention.kind === "reading" ? (
             <SpatialScene
-              state={scene}
-              dispatch={dispatchSceneAction}
-              connections={session.active?.connections ?? []}
-              mode={session.active?.mode ?? "read"}
-              onModeChange={onSceneModeChange}
+              current={currentSurface}
+              companion={companionSurface}
+              previous={previousLeaf}
+              camera={session.attention.camera}
+              documents={session.documents}
+              catalogue={session.catalogue}
+              neighborhood={session.neighborhood}
+              connections={session.connections}
+              selectedConnectionId={session.selectedConnectionId}
+              pending={pendingSurface}
+              onReadBeside={(target: DocumentTarget) => void readBeside(target)}
+              onPromote={onPromote}
+              onReturnToCurrent={onReturnToCurrent}
+              onFollow={onFollow}
+              onHistory={onHistory}
+              onScroll={onScroll}
+              onCameraCheckpoint={onCameraCheckpoint}
               renderDocument={renderDocument}
-              onActivateConnection={onSceneActivateConnection}
-              related={related}
-              onOpenRelated={onSceneActivateConnection}
-              controllerRef={sceneControllerRef}
+              controllerRef={controllerRef}
             />
           ) : (
             <EmptyWorkspace
-              loading={session.loading || session.catalogueLoading}
+              loading={session.loading || session.catalogue.loading}
               onCreate={() =>
-                dispatchSession({
+                dispatch({
                   type: "editor/open-create",
-                  path: "/notes/",
+                  path: "/notes/untitled.md",
+                  owner: null,
                 })
               }
               onImport={() => fileInputRef.current?.click()}
             />
           )}
-          <details
-            className="context-tray"
-            aria-label="当前连接和问题"
-            hidden={!session.active}
-          >
-            {session.active && (
-              <>
-                <summary className="tray-heading">
-                  <span>连接与提问</span>
-                  <small>
-                    {session.active.connections.length} 条连接 ·{" "}
-                    {session.active.questions.length} 个问题
-                  </small>
-                </summary>
-                <div className="tray-items">
-                  {session.active.connections.map((connection) => (
-                    <button
-                      className={
-                        "tray-item " +
-                        (session.active?.selectedConnectionId === connection.id
-                          ? "selected"
-                          : "")
-                      }
-                      key={connection.id}
-                      onClick={() =>
-                        void onSceneActivateConnection(connection.id)
-                      }
-                    >
-                      <span
-                        className="relation-swatch"
-                        style={{
-                          background: relationColors[connection.relation],
-                        }}
-                      />
-                      <span>
-                        <strong>
-                          {connection.label ||
-                            relationNames[connection.relation]}
-                        </strong>
-                        <small>{connection.from.quote.slice(0, 90)}</small>
-                      </span>
-                      <ChevronRight size={15} />
-                    </button>
-                  ))}
-                  {session.active.questions.map((question) => (
-                    <QuestionTrayItem
-                      key={question.id}
-                      question={question}
-                      answers={question.answers
-                        .map((id) =>
-                          session.documents.find(
-                            (document) => document.id === id,
-                          ),
-                        )
-                        .filter((document): document is DocumentSummary =>
-                          Boolean(document),
-                        )}
-                      onOpen={() =>
-                        void openDocument(
-                          {
-                            id: question.anchor.documentId,
-                            revisionId: question.anchor.revisionId,
-                          },
-                          {
-                            revisionId: question.anchor.revisionId,
-                            start: question.anchor.start,
-                            end: question.anchor.end,
-                            quote: question.anchor.quote,
-                          },
-                        )
-                      }
-                      onOpenAnswer={(document) =>
-                        void openDocument({
-                          id: document.id,
-                          revisionId: document.revisionId,
-                        })
-                      }
-                    />
-                  ))}
-                  {!session.active.connections.length &&
-                    !session.active.questions.length && (
-                      <p className="tray-empty">
-                        选择文字提问，或连接到另一段文字。
-                      </p>
-                    )}
-                </div>
-              </>
-            )}
-          </details>
-        </section>
-      </div>
+        </div>
+      </section>
 
       <SelectionComposer
         session={session}
-        dispatch={dispatchSession}
+        dispatch={dispatch}
+        onOpenQuestion={openQuestion}
         onSendQuestion={() => void sendQuestion()}
         onStartConnection={startConnection}
         onSaveConnection={() => void saveConnection()}
       />
 
-      <ReaderDialog
-        open={searchDialog !== null}
-        onOpenChange={(open: boolean) => {
-          if (!open) dispatchSession({ type: "dialog/close" });
-        }}
-      >
-        <ReaderDialogContent className="reader-dialog search-dialog">
-          <ReaderDialogTitle>搜索文档</ReaderDialogTitle>
-          <ReaderDialogDescription>
-            按路径、标题和全文搜索；选择结果会打开并聚焦命中范围。
-          </ReaderDialogDescription>
-          <input
-            className="workspace-input search-field"
-            autoFocus
-            value={searchDialog?.query ?? ""}
-            placeholder="搜索文字…"
-            onChange={(event) => {
-              const query = event.target.value;
-              dispatchSession({ type: "dialog/search-query", query });
-              void runSearch(query);
-            }}
-          />
-          {searchLoading && <p className="search-hint">正在搜索…</p>}
-          <div className="search-results">
-            {searchMatches.map((match) => (
-              <button
-                key={match.document.id + ":" + match.start + ":" + match.end}
-                onClick={() => void selectSearchMatch(match)}
-              >
-                <strong>{match.document.title}</strong>
-                <small>{match.document.path}</small>
-                {match.excerpt && <p>{match.excerpt}</p>}
-              </button>
-            ))}
-            {!searchLoading && searchDialog?.query && !searchMatches.length && (
-              <p className="search-hint">没有找到匹配的文档。</p>
-            )}
-          </div>
-        </ReaderDialogContent>
-      </ReaderDialog>
-
-      <ReaderDialog
-        open={session.dialog.kind === "history"}
-        onOpenChange={(open: boolean) =>
-          !open && dispatchSession({ type: "dialog/close" })
-        }
-      >
-        <ReaderDialogContent className="reader-dialog">
-          <ReaderDialogTitle>版本历史</ReaderDialogTitle>
-          <ReaderDialogDescription>
-            旧版本可读，连接仍指向当时的文字。
-          </ReaderDialogDescription>
-          <div className="history-list">
-            {historyItems.map((item) => (
-              <button
-                key={item.revisionId}
-                onClick={() => {
-                  const ownerViewId =
-                    session.dialog.kind === "history"
-                      ? session.dialog.ownerViewId
-                      : scene.currentViewId;
-                  dispatchSession({ type: "dialog/close" });
-                  void (ownerViewId
-                    ? openHistoryRevision(item, ownerViewId)
-                    : openDocument(
-                        { id: item.id, revisionId: item.revisionId },
-                        null,
-                      ));
-                }}
-              >
-                <span>
-                  v{item.sequence}
-                  {item.isCurrent ? " · 当前" : ""}
-                </span>
-                <small>
-                  {new Date(item.updatedAt).toLocaleString("zh-CN")}
-                </small>
-                <ChevronRight size={15} />
-              </button>
-            ))}
-          </div>
-        </ReaderDialogContent>
-      </ReaderDialog>
-
-      <ReaderDialog
-        open={editorOpen}
-        onOpenChange={(open: boolean) =>
-          !open && dispatchSession({ type: "editor/close" })
-        }
-      >
-        <ReaderDialogContent className="reader-dialog editor-dialog">
-          <ReaderDialogTitle>
-            {session.editor.kind === "create"
-              ? "新建文档"
-              : session.editor.kind === "rename"
-                ? "移动文档"
-                : "编辑文档"}
-          </ReaderDialogTitle>
-          <ReaderDialogDescription>
-            {session.editor.kind === "edit"
-              ? "保存为新版本，原有连接继续指向当时的文字。"
-              : "用路径整理文档；移动文档不会改变已有连接。"}
-          </ReaderDialogDescription>
-          <label className="workspace-label">
-            路径
-            <input
-              className="workspace-input"
-              readOnly={session.editor.kind === "edit"}
-              value={
-                session.editor.kind === "closed" ? "" : session.editor.path
-              }
-              onChange={(event) =>
-                dispatchSession({
-                  type: "editor/path",
-                  path: event.target.value,
-                })
-              }
-            />
-          </label>
-          {session.editor.kind !== "rename" && (
-            <label className="workspace-label">
-              标题
-              <input
-                className="workspace-input"
-                readOnly={session.editor.kind === "edit"}
-                value={
-                  session.editor.kind === "closed" ? "" : session.editor.title
-                }
-                onChange={(event) =>
-                  dispatchSession({
-                    type: "editor/title",
-                    title: event.target.value,
-                  })
-                }
-              />
-            </label>
-          )}
-          {session.editor.kind !== "rename" && (
-            <textarea
-              className="workspace-editor"
-              aria-label="文档正文"
-              value={
-                session.editor.kind === "closed" ? "" : session.editor.content
-              }
-              onChange={(event) =>
-                dispatchSession({
-                  type: "editor/content",
-                  content: event.target.value,
-                })
-              }
-            />
-          )}
-          {session.editor.kind !== "closed" && session.editor.error && (
-            <p className="dialog-error" role="alert">
-              {session.editor.error}
-            </p>
-          )}
-          <div className="dialog-actions">
-            <button
-              className="solid-button"
-              disabled={
-                session.editor.kind === "closed" ||
-                session.editor.saving === true
-              }
-              onClick={() => void saveEditor()}
-            >
-              <Check size={15} />{" "}
-              {session.editor.kind !== "closed" && session.editor.saving
-                ? "保存中…"
-                : "保存"}
-            </button>
-          </div>
-        </ReaderDialogContent>
-      </ReaderDialog>
-
-      <ReaderDialog
-        open={session.dialog.kind === "settings"}
-        onOpenChange={(open: boolean) =>
-          !open && dispatchSession({ type: "dialog/close" })
-        }
-      >
-        <ReaderDialogContent className="reader-dialog">
-          <ReaderDialogTitle>连接 ChatGPT</ReaderDialogTitle>
-          <ReaderDialogDescription>
-            网站可以独立阅读；在 ChatGPT App
-            中，选中文字后可把已保存问题发送到当前对话。
-          </ReaderDialogDescription>
-          <div className="settings-copy">
-            <p>在 ChatGPT 设置中添加自定义 MCP：</p>
-            <code>
-              {typeof window !== "undefined" ? window.location.origin : ""}
-              /api/mcp
-            </code>
-            <p>回答文档会独立保存；需要显式选择段落并建立连接。</p>
-          </div>
-        </ReaderDialogContent>
-      </ReaderDialog>
+      <ReaderDialogs
+        session={session}
+        dispatch={dispatch}
+        searchOpen={searchDialog}
+        historyOpen={historyDialog !== null}
+        editorOpen={editorOpen}
+        activitiesOpen={activitiesOpen}
+        historyItems={historyItems}
+        onSearch={(query) => void runSearch(query)}
+        onSelectSearchMatch={selectSearchMatch}
+        onOpenHistoryRevision={openHistoryRevision}
+        onCloseEditor={closeEditor}
+        onFlushPendingNavigation={flushPendingNavigation}
+        onSaveEditor={saveEditor}
+        onOpenAnswer={openAnswer}
+        onFollow={onFollow}
+        onOpenDocument={openDocument}
+      />
     </main>
-  );
-}
-
-function groupDocuments(documents: readonly DocumentSummary[]) {
-  const groups = new Map<string, DocumentSummary[]>();
-  for (const document of documents) {
-    const name = folderName(document.path);
-    const list = groups.get(name) ?? [];
-    list.push(document);
-    groups.set(name, list);
-  }
-  return [...groups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, items]) => ({ name, documents: items }));
-}
-
-function PlaneMenu({
-  document,
-  onEdit,
-  onHistory,
-  onRename,
-  onArchive,
-  onDownload,
-  website,
-}: {
-  document: DocumentRevision;
-  onEdit: () => void;
-  onHistory: () => void;
-  onRename: () => void;
-  onArchive: () => void;
-  onDownload: () => void;
-  website: boolean;
-}) {
-  return (
-    <ReaderMenu
-      trigger={(toggle, open) => (
-        <button
-          className="plane-menu"
-          aria-label="文档操作"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          onClick={toggle}
-        >
-          <MoreHorizontal size={17} />
-        </button>
-      )}
-    >
-      <ReaderMenuItem onSelect={onEdit} disabled={!document.isCurrent}>
-        <PenLine size={15} /> 编辑原文
-      </ReaderMenuItem>
-      <ReaderMenuItem onSelect={onHistory}>
-        <History size={15} /> 版本历史
-      </ReaderMenuItem>
-      <ReaderMenuItem onSelect={onRename}>移动 / 重命名</ReaderMenuItem>
-      <ReaderMenuItem onSelect={onDownload}>下载当前文本</ReaderMenuItem>
-      {website && document.assetId && (
-        <ReaderMenuLink href={"/api/assets/" + document.assetId}>
-          下载导入文件
-        </ReaderMenuLink>
-      )}
-      <ReaderMenuSeparator />
-      <ReaderMenuItem onSelect={onArchive}>
-        <Archive size={15} /> {document.archived ? "恢复文档" : "归档文档"}
-      </ReaderMenuItem>
-    </ReaderMenu>
-  );
-}
-
-function EmptyWorkspace({
-  loading,
-  onCreate,
-  onImport,
-}: {
-  loading: boolean;
-  onCreate: () => void;
-  onImport: () => void;
-}) {
-  if (loading)
-    return (
-      <div className="workspace-empty loading">
-        <LoaderCircle size={22} className="spin" />
-        <p>正在打开阅读空间…</p>
-      </div>
-    );
-  return (
-    <div className="workspace-empty">
-      <div className="empty-mark">X / S</div>
-      <p className="empty-kicker">A PRIVATE DOCUMENT SPACE</p>
-      <h1>让阅读从一份文档开始。</h1>
-      <p>文字可以并行、连接，也可以沿着问题继续生长。</p>
-      <div className="empty-actions">
-        <button className="solid-button" onClick={onImport}>
-          <Upload size={16} /> 导入文档
-        </button>
-        <button className="quiet-button" onClick={onCreate}>
-          <Plus size={16} /> 写一份新文档
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function QuestionTrayItem({
-  question,
-  onOpen,
-  answers,
-  onOpenAnswer,
-}: {
-  question: Question;
-  onOpen: () => void;
-  answers: readonly DocumentSummary[];
-  onOpenAnswer: (document: DocumentSummary) => void;
-}) {
-  return (
-    <div className="tray-question">
-      <button className="tray-item question-tray-item" onClick={onOpen}>
-        <span className="question-status">
-          {question.answers.length ? "已答" : "待答"}
-        </span>
-        <span>
-          <strong>{question.body}</strong>
-          <small>{question.anchor.quote.slice(0, 90)}</small>
-        </span>
-        <ChevronRight size={15} />
-      </button>
-      {answers.length > 0 && (
-        <div className="question-answers" aria-label="问题回答文档">
-          {answers.map((document) => (
-            <button
-              type="button"
-              className="answer-link"
-              key={document.id}
-              onClick={() => onOpenAnswer(document)}
-            >
-              <span>回答文档</span> {document.title}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SelectionComposer({
-  session,
-  dispatch,
-  onSendQuestion,
-  onStartConnection,
-  onSaveConnection,
-}: {
-  session: ReaderSession;
-  dispatch: React.Dispatch<Parameters<typeof readerSessionReducer>[1]>;
-  onSendQuestion: () => void;
-  onStartConnection: () => void;
-  onSaveConnection: () => void;
-}) {
-  const selection = session.selection;
-  const question = session.question;
-  const connection: ConnectionDraft = session.connection;
-  const first = connection.kind === "closed" ? null : connection.first;
-  const second =
-    connection.kind === "second" ||
-    connection.kind === "saving" ||
-    connection.kind === "failed"
-      ? connection.second
-      : null;
-  const connectionOpen = connection.kind !== "closed";
-  const displayDocument =
-    selection.kind === "selected"
-      ? selection.document
-      : (first?.document ??
-        (question.kind !== "closed" ? question.document : null));
-  const displayAnchor =
-    selection.kind === "selected"
-      ? selection.anchor
-      : (first?.anchor ??
-        (question.kind !== "closed" ? question.anchor : null));
-  const visible =
-    selection.kind === "selected" ||
-    question.kind !== "closed" ||
-    connectionOpen;
-  if (!visible || !displayDocument || !displayAnchor) return null;
-  const left = Math.max(
-    14,
-    Math.min(
-      (selection.kind === "selected" ? selection.rect?.left : null) ?? 24,
-      (typeof window === "undefined" ? 420 : window.innerWidth) - 382,
-    ),
-  );
-  const top = Math.max(
-    14,
-    Math.min(
-      ((selection.kind === "selected" ? selection.rect?.top : null) ?? 90) +
-        ((selection.kind === "selected" ? selection.rect?.height : null) ?? 0) +
-        12,
-      (typeof window === "undefined" ? 560 : window.innerHeight) - 260,
-    ),
-  );
-  const inConnection = connectionOpen;
-  return (
-    <aside
-      className="selection-composer"
-      style={{ left, top }}
-      role="dialog"
-      aria-label={inConnection ? "选择连接的第二段文字" : "对选中文字提问"}
-    >
-      <div className="composer-heading">
-        <div>
-          <span>SELECTED PASSAGE</span>
-          <p>
-            {(
-              (selection.kind === "selected" ? selection.preview : null) ||
-              displayAnchor.quote
-            ).slice(0, 180)}
-          </p>
-        </div>
-        <button
-          className="quiet-icon"
-          aria-label="关闭"
-          onClick={() => dispatch({ type: "selection/clear" })}
-        >
-          <X size={15} />
-        </button>
-      </div>
-      {inConnection ? (
-        <div className="connection-draft">
-          {first && (
-            <div className="connection-endpoints">
-              <p>
-                <strong>第一端</strong> {first.document.title} · v
-                {first.document.sequence}
-                <span>{first.anchor.quote.slice(0, 120)}</span>
-              </p>
-              {second && (
-                <p>
-                  <strong>第二端</strong> {second.document.title} · v
-                  {second.document.sequence}
-                  <span>{second.anchor.quote.slice(0, 120)}</span>
-                </p>
-              )}
-            </div>
-          )}
-          <p>
-            {second
-              ? "确认两段文字后建立连接。"
-              : "再选择另一份文档中的文字，建立" +
-                relationNames[connection.relation] +
-                "连接。"}
-          </p>
-          <label className="workspace-label">
-            关系
-            <select
-              className="workspace-input"
-              value={connection.relation}
-              onChange={(event) =>
-                dispatch({
-                  type: "connection/relation",
-                  relation: event.target.value as Relation,
-                })
-              }
-            >
-              {Object.entries(relationNames).map(([value, label]) => (
-                <option value={value} key={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="workspace-label">
-            标签（可选）
-            <input
-              className="workspace-input"
-              value={connection.label}
-              onChange={(event) =>
-                dispatch({
-                  type: "connection/label",
-                  label: event.target.value,
-                })
-              }
-            />
-          </label>
-          {second && (
-            <p className="composer-confirm">
-              已选第二段：{second.anchor.quote.slice(0, 100)}
-            </p>
-          )}
-          <button
-            className="solid-button full-button"
-            disabled={connection.kind !== "second"}
-            onClick={onSaveConnection}
-          >
-            <Link2 size={15} /> 建立连接
-          </button>
-        </div>
-      ) : (
-        <>
-          <textarea
-            className="question-input"
-            value={question.kind === "closed" ? "" : question.body}
-            autoFocus
-            placeholder="这段文字，让你想到了什么？"
-            onChange={(event) =>
-              dispatch({ type: "question/body", body: event.target.value })
-            }
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter")
-                onSendQuestion();
-            }}
-          />
-          {question.kind !== "closed" && question.error && (
-            <p className="dialog-error">{question.error}</p>
-          )}
-          <div className="composer-actions">
-            <button className="quiet-button" onClick={onStartConnection}>
-              <Link2 size={15} /> 连接文字
-            </button>
-            <button
-              className="solid-button"
-              disabled={
-                question.kind === "closed" ||
-                !question.body.trim() ||
-                question.kind === "saving" ||
-                question.sentBody === question.body.trim()
-              }
-              onClick={onSendQuestion}
-            >
-              <Send size={15} />{" "}
-              {question.kind !== "closed" &&
-              question.sentBody === question.body.trim()
-                ? "已发送"
-                : question.kind === "failed"
-                  ? "重试发送"
-                  : "问 ChatGPT"}
-            </button>
-          </div>
-        </>
-      )}
-    </aside>
   );
 }

@@ -14,7 +14,7 @@
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit",
     "build:app": "node scripts/build-app-ui.mjs",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import ./scripts/sites-env.mjs --import tsx --test tests/*.test.ts",
     "build:qa": "node --import tsx scripts/build-qa.mjs"
   },
   "dependencies": {

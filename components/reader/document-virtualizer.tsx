@@ -10,6 +10,8 @@ import { layoutTop } from "../../lib/reader/render-dom";
 import { DocumentMarkdownChunk, DocumentTextChunk } from "./document-markdown";
 
 export const VIRTUALIZATION_THRESHOLD = 16_384;
+export const MAX_VIEWPORT_CHUNKS = 7;
+export const MAX_SELECTION_CHUNKS = 12;
 function scrollerFor(root: HTMLElement) {
   return (
     root.closest<HTMLElement>("[data-document-scroll]") ??
@@ -21,15 +23,19 @@ function estimatedHeight(
   measured: number | undefined,
 ): number {
   if (measured !== undefined) return measured;
-  const lines = chunk.source.split("\n");
-  return Math.max(
-    60,
-    lines.reduce(
-      (height, line) =>
-        height + (line.length ? Math.ceil(line.length / 35) * 30 : 14),
-      0,
-    ),
-  );
+  // Keep the fallback cheap and allocation-free. This runs for every source
+  // chunk when a measured spacer changes; splitting each chunk here used to
+  // recreate one short-lived array per chunk on every scroll correction.
+  let height = 0;
+  let lineStart = 0;
+  for (let index = 0; index <= chunk.source.length; index += 1) {
+    if (index !== chunk.source.length && chunk.source.charCodeAt(index) !== 10)
+      continue;
+    const length = index - lineStart;
+    height += length ? Math.ceil(length / 35) * 30 : 14;
+    lineStart = index + 1;
+  }
+  return Math.max(60, height);
 }
 function indexAt(prefix: readonly number[], offset: number): number {
   let low = 0,
@@ -40,6 +46,73 @@ function indexAt(prefix: readonly number[], offset: number): number {
     else high = middle;
   }
   return low;
+}
+
+function firstChunkEndingAfter(
+  chunks: readonly RenderChunk[],
+  offset: number,
+): number {
+  let low = 0;
+  let high = chunks.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (chunks[middle].range.end <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function firstChunkStartingAtOrAfter(
+  chunks: readonly RenderChunk[],
+  offset: number,
+): number {
+  let low = 0;
+  let high = chunks.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (chunks[middle].range.start < offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** Return the source chunks touched by an anchor without scanning the plan. */
+export function focusChunkIndexes(
+  chunks: readonly RenderChunk[],
+  focus: AnchorInput,
+): readonly number[] {
+  const first = firstChunkEndingAfter(chunks, focus.start);
+  const exclusiveEnd = firstChunkStartingAtOrAfter(chunks, focus.end);
+  if (first >= exclusiveEnd || first >= chunks.length) return [];
+  return Array.from(
+    { length: exclusiveEnd - first },
+    (_, index) => first + index,
+  );
+}
+
+export interface SelectionCorridor {
+  readonly indexes: readonly number[];
+  readonly exceeded: boolean;
+}
+
+/** Keep one contiguous, bounded native-selection corridor in source order. */
+export function selectionCorridor(
+  anchorChunk: number | null,
+  focusChunk: number | null,
+  maxChunks = MAX_SELECTION_CHUNKS,
+): SelectionCorridor {
+  if (anchorChunk === null && focusChunk === null)
+    return { indexes: [], exceeded: false };
+  const anchor = anchorChunk ?? focusChunk!;
+  const focus = focusChunk ?? anchor;
+  const direction = focus < anchor ? -1 : 1;
+  const distance = Math.abs(focus - anchor) + 1;
+  const length = Math.min(distance, Math.max(1, maxChunks));
+  const indexes = Array.from(
+    { length },
+    (_, index) => anchor + index * direction,
+  ).sort((a, b) => a - b);
+  return { indexes, exceeded: distance > length };
 }
 export interface DocumentBodyProps {
   doc: DocumentRevision;
@@ -67,29 +140,46 @@ export const DocumentBody = memo(function DocumentBody({
   geometryCallback.current = onGeometryChange;
   const virtual =
     plan.sourceLength > VIRTUALIZATION_THRESHOLD && plan.chunks.length > 1;
+  const estimates = useMemo(
+    () => plan.chunks.map((chunk) => estimatedHeight(chunk, undefined)),
+    [plan],
+  );
   const prefix = useMemo(() => {
     const result = [0];
     for (const chunk of plan.chunks)
       result.push(
         result[result.length - 1] +
-          estimatedHeight(chunk, heights.get(chunk.index)),
+          (heights.get(chunk.index) ?? estimates[chunk.index]),
       );
     return result;
-  }, [plan, heights]);
-  const first = virtual
-    ? indexAt(prefix, Math.max(0, viewport.top - viewport.height))
-    : 0;
-  const last = virtual
-    ? indexAt(prefix, viewport.top + viewport.height * 2)
+  }, [estimates, heights, plan.chunks]);
+  const visibleFirst = virtual ? indexAt(prefix, Math.max(0, viewport.top)) : 0;
+  const visibleLast = virtual
+    ? indexAt(prefix, viewport.top + viewport.height)
     : plan.chunks.length - 1;
   const indexes = new Set<number>();
-  for (let index = first; index <= last; index++) indexes.add(index);
+  // Visible chunks and explicit destinations get the budget before overscan.
+  // A very small measured chunk must not create an unbounded render window.
+  for (
+    let index = visibleFirst;
+    index <= visibleLast &&
+    (!virtual || indexes.size < MAX_VIEWPORT_CHUNKS - 2);
+    index++
+  )
+    indexes.add(index);
   if (focus && virtual) {
-    const focused = plan.chunks.filter(
-      (chunk) => chunk.range.start < focus.end && chunk.range.end > focus.start,
-    );
-    if (focused[0]) indexes.add(focused[0].index);
-    if (focused.length > 1) indexes.add(focused[focused.length - 1].index);
+    const focused = focusChunkIndexes(plan.chunks, focus);
+    if (focused[0] !== undefined) indexes.add(focused[0]);
+    if (focused.length > 1) indexes.add(focused[focused.length - 1]);
+  }
+  if (virtual) {
+    for (const index of [visibleFirst - 1, visibleLast + 1])
+      if (
+        index >= 0 &&
+        index < plan.chunks.length &&
+        indexes.size < MAX_VIEWPORT_CHUNKS
+      )
+        indexes.add(index);
   }
   for (const index of selectionPins) indexes.add(index);
   const mounted = [...indexes].sort((a, b) => a - b);
@@ -155,6 +245,9 @@ export const DocumentBody = memo(function DocumentBody({
     const root = rootRef.current;
     if (!root) return;
     let dragging = false;
+    let origin: number | null = null;
+    let releaseIdle: number | null = null;
+    let releaseTimer = 0;
     const chunkAt = (node: Node | null) => {
       const element = node instanceof Element ? node : node?.parentElement;
       const chunk = element?.closest<HTMLElement>(
@@ -165,7 +258,6 @@ export const DocumentBody = memo(function DocumentBody({
         : null;
     };
     const selectionChanged = () => {
-      if (dragging) return;
       const selection = window.getSelection();
       const from =
         selection && !selection.isCollapsed
@@ -175,36 +267,78 @@ export const DocumentBody = memo(function DocumentBody({
         selection && !selection.isCollapsed
           ? chunkAt(selection.focusNode)
           : null;
-      const next =
-        from !== null && to !== null
-          ? Array.from(
-              { length: Math.abs(to - from) + 1 },
-              (_, i) => Math.min(from, to) + i,
-            )
-          : [];
+      // Keep a continuous corridor while the native Range grows. Pinning only
+      // the two endpoints would silently omit copied text between them. When
+      // the browser tries to cross the cap, keep the last precise corridor and
+      // let selectionAnchor reject the missing spacer instead of inventing an
+      // anchor for text that is not mounted.
+      const corridor = selectionCorridor(
+        from ?? (dragging ? origin : null),
+        to ?? (dragging ? origin : null),
+      );
+      const next = corridor.indexes;
+      root.dataset.selectionLimit = corridor.exceeded ? "true" : "false";
       setSelectionPins((old) =>
         old.join(",") === next.join(",") ? old : next,
       );
     };
-    const down = () => {
+    const down = (event: PointerEvent) => {
       dragging = true;
-      setSelectionPins(
-        [
-          ...root.querySelectorAll<HTMLElement>("[data-document-chunk-index]"),
-        ].map((node) => Number(node.dataset.documentChunkIndex)),
-      );
+      origin = chunkAt(event.target instanceof Node ? event.target : null);
+      selectionChanged();
     };
     const up = () => {
       dragging = false;
-      selectionChanged();
+      origin = null;
+      if (releaseIdle !== null) {
+        const cancelIdle = (
+          window as Window & { cancelIdleCallback?: (id: number) => void }
+        ).cancelIdleCallback;
+        cancelIdle?.(releaseIdle);
+        releaseIdle = null;
+      }
+      if (releaseTimer) window.clearTimeout(releaseTimer);
+      // Let the browser finish its Range before releasing extra DOM chunks.
+      // Idle cleanup avoids doing a synchronous unmount in the selection frame.
+      const requestIdle = (
+        window as Window & {
+          requestIdleCallback?: (
+            callback: () => void,
+            options?: { timeout: number },
+          ) => number;
+        }
+      ).requestIdleCallback;
+      if (requestIdle) {
+        releaseIdle = requestIdle(
+          () => {
+            releaseIdle = null;
+            selectionChanged();
+          },
+          { timeout: 160 },
+        );
+      } else {
+        releaseTimer = window.setTimeout(() => {
+          releaseTimer = 0;
+          selectionChanged();
+        }, 80);
+      }
     };
     root.addEventListener("pointerdown", down);
     document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", up);
     document.addEventListener("selectionchange", selectionChanged);
     return () => {
       root.removeEventListener("pointerdown", down);
       document.removeEventListener("pointerup", up);
+      document.removeEventListener("pointercancel", up);
       document.removeEventListener("selectionchange", selectionChanged);
+      if (releaseIdle !== null) {
+        const cancelIdle = (
+          window as Window & { cancelIdleCallback?: (id: number) => void }
+        ).cancelIdleCallback;
+        cancelIdle?.(releaseIdle);
+      }
+      if (releaseTimer) window.clearTimeout(releaseTimer);
     };
   }, [rootRef, doc.revisionId]);
 

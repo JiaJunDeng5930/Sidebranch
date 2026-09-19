@@ -2,7 +2,12 @@ import { build, mergeConfig } from "vite";
 import config from "../vite.app.config.ts";
 import { readFile, writeFile } from "node:fs/promises";
 const rendererOnly = process.argv[2] === "renderer";
-const output = rendererOnly ? ".qa-build/renderer" : ".qa-build";
+const spaceOnly = process.argv[2] === "space";
+const output = rendererOnly
+  ? ".qa-build/renderer"
+  : spaceOnly
+    ? ".qa-build/space"
+    : ".qa-build";
 await build(
   mergeConfig(config, {
     configFile: false,
@@ -11,7 +16,9 @@ await build(
       lib: {
         entry: rendererOnly
           ? "tests/renderer-harness.tsx"
-          : "tests/ui-harness.tsx",
+          : spaceOnly
+            ? "tests/space-design-harness.tsx"
+            : "tests/ui-harness.tsx",
       },
     },
   }),

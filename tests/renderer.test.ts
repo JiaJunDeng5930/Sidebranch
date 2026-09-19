@@ -11,6 +11,11 @@ import {
   DocumentMarkdownChunk,
   sourceSpansPlugin,
 } from "../components/reader/document-markdown";
+import {
+  focusChunkIndexes,
+  selectionCorridor,
+} from "../components/reader/document-virtualizer";
+import { RevisionId } from "../lib/domain/model";
 
 type TestTree = {
   children: Array<{ properties: Record<string, unknown> }>;
@@ -67,6 +72,34 @@ test("fence type, length and info text determine the closing fence", () => {
     "a shorter/different fence must not end the block",
   );
   assert.equal(plan.chunks.map((chunk) => chunk.source).join(""), source);
+});
+
+test("very long structural blocks stay parser units above the soft target", () => {
+  const fence =
+    "```md\n" +
+    Array.from({ length: 300 }, (_, index) => `line ${index}\n\n`).join("") +
+    "```\n\nAfter.";
+  const table =
+    "| left | right |\n| --- | --- |\n" +
+    Array.from(
+      { length: 180 },
+      (_, index) => `| ${index} | ${"value ".repeat(8)}|\n`,
+    ).join("") +
+    "\nAfter.";
+  for (const [source, marker] of [
+    [fence, "line 179"],
+    [table, "| 179 |"],
+  ] as const) {
+    const plan = createRenderPlan(source, "markdown");
+    const block = plan.chunks.find((chunk) => chunk.source.includes(marker));
+    assert.ok(block);
+    assert.ok(block.source.length > 2_048);
+    assert.equal(plan.chunks.map((chunk) => chunk.source).join(""), source);
+    assert.equal(
+      source.slice(block.range.start, block.range.end),
+      block.source,
+    );
+  }
 });
 
 test("CRLF fenced code closes without corrupting source ranges", () => {
@@ -256,4 +289,55 @@ test("large-source planning work scales linearly", () => {
     renderedTextOffsets("x &amp; y", "x & y"),
     [0, 1, 2, 7, 8, 9],
   );
+});
+
+test("focus projection touches only the source chunks containing the anchor", () => {
+  const plan = createRenderPlan(
+    Array.from(
+      { length: 8 },
+      (_, index) => `part-${index} ${"x".repeat(500)}\n\n`,
+    ).join(""),
+    "text",
+    1_024,
+  );
+  const [first, second, third] = plan.chunks;
+  assert.ok(first && second && third);
+  const revisionId = RevisionId.parse("11111111-1111-4111-8111-111111111111");
+  assert.deepEqual(
+    focusChunkIndexes(plan.chunks, {
+      revisionId,
+      start: second.range.start,
+      end: second.range.end,
+      quote: second.source,
+    }),
+    [1],
+  );
+  assert.deepEqual(
+    focusChunkIndexes(plan.chunks, {
+      revisionId,
+      start: first.range.end - 1,
+      end: third.range.start + 1,
+      quote: plan.chunks
+        .slice(0, 3)
+        .map((chunk) => chunk.source)
+        .join("")
+        .slice(-3),
+    }),
+    [0, 1, 2],
+  );
+});
+
+test("selection corridor remains contiguous and reports the bounded tail", () => {
+  assert.deepEqual(selectionCorridor(4, 8), {
+    indexes: [4, 5, 6, 7, 8],
+    exceeded: false,
+  });
+  assert.deepEqual(selectionCorridor(20, 1, 4), {
+    indexes: [17, 18, 19, 20],
+    exceeded: true,
+  });
+  assert.deepEqual(selectionCorridor(null, null), {
+    indexes: [],
+    exceeded: false,
+  });
 });

@@ -12,6 +12,7 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   EDIT_MISMATCH: "编辑范围与当前原文不一致，请重新读取。",
   INVALID_ANCHOR: "所选文字已变化，请重新选择。",
   INVALID_INPUT: "输入内容无法识别，请检查后重试。",
+  ANSWER_NOT_ASSOCIATED: "这份文档还没有关联为该问题的回答，请先建立回答关联。",
   INVALID_JSON: "请求格式无法识别，请刷新后重试。",
   TOO_LARGE: "请求或文件超过大小限制。",
   FILE_TOO_LARGE: "文件超过 10 MiB 限制。",

@@ -87,7 +87,13 @@ export const ReadingViewSchema = z
 
 export const OpenDocumentResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("empty") }).strict(),
-  z.object({ status: z.literal("ready"), view: ReadingViewSchema }).strict(),
+  z
+    .object({
+      status: z.literal("ready"),
+      view: ReadingViewSchema,
+      arrival: z.object({ question: QuestionSchema }).strict().optional(),
+    })
+    .strict(),
 ]);
 
 export type ProtocolDocumentSummary = z.infer<typeof DocumentSummarySchema>;
