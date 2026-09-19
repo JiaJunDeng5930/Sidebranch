@@ -1,6 +1,5 @@
 import React, {
   useCallback,
-  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -9,7 +8,6 @@ import React, {
 import { createRoot } from "react-dom/client";
 import {
   SpatialScene,
-  type ReadingSurface,
   type SpatialSceneController,
 } from "../components/reader/spatial-scene";
 import { DocumentPassage } from "../components/reader/document-passage";
@@ -17,8 +15,8 @@ import {
   attentionReducer,
   createConnectionInspection,
   emptyAttention,
-  readingPosition,
-  returnHistoryIndex,
+  focusedPosition,
+  primarySurfaceId,
   type AttentionAction,
 } from "../lib/reader/attention";
 import {
@@ -27,31 +25,23 @@ import {
   DocumentId,
   Path,
   RevisionId,
-  type AnchorInput,
   type Connection,
   type DocumentRevision,
 } from "../lib/domain/model";
-import type { NeighborhoodNode } from "../lib/domain/space";
-import type {
-  ConnectionActivation,
-  DocumentRenderContext,
-  PresentationRequest,
-  RelationNavigationState,
-  SurfaceInstanceId,
-} from "../lib/reader/spatial-contract";
 import {
-  createSurfaceInstanceId,
   relationNavigationItems,
-  surfaceInstanceId,
+  type ReadingSurface,
+  type ConnectionActivation,
+  type DocumentRenderContext,
+  type PresentationRequest,
+  type RelationNavigationState,
 } from "../lib/reader/spatial-contract";
-import type { DocumentTarget } from "../lib/reader/space-index";
 import { observeReaderPerformance } from "./ui-performance";
 import { QaPerformancePanel } from "./qa-performance-panel";
 import { readerPaletteStyle } from "../lib/reader/semantic-palette";
 import "../app/globals.css";
 import "../components/reader/reader.css";
 import "../components/reader/reader-palette.css";
-
 observeReaderPerformance();
 const uuid = (n: number) =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
@@ -107,373 +97,146 @@ const connections: Connection[] = documents
     label: `阅读 ${document.title}`,
     createdAt: "2026-09-18T00:00:00.000Z",
   }));
-const FIXTURE_CURRENT_SURFACE_ID = surfaceInstanceId("space-current");
 
 function SpaceDesignHarness() {
   const framed = new URLSearchParams(location.search).has("frame");
-  const [narrowFrame, setNarrowFrame] = useState(false);
-  const [shortFrame, setShortFrame] = useState(false);
-  const [inputOnlyControl, setInputOnlyControl] = useState(false);
-  const controllerRef = useRef<SpatialSceneController>(null);
+  const [narrowFrame, setNarrowFrame] = useState(false),
+    [shortFrame, setShortFrame] = useState(false),
+    [inputOnlyControl, setInputOnlyControl] = useState(false);
   const [selectedText, setSelectedText] = useState("");
-  const [state, dispatch] = useReducer(attentionReducer, undefined, () =>
-    attentionReducer(emptyAttention(), {
-      type: "navigate",
-      position: readingPosition(documents[0], FIXTURE_CURRENT_SURFACE_ID),
-    }),
-  );
-  const stateRef = useRef(state);
-  useLayoutEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-  const revisions = useMemo(
-    () => new Map(documents.map((document) => [document.revisionId, document])),
-    [],
-  );
-  const revisionRef = useRef(revisions);
+  const controllerRef = useRef<SpatialSceneController>(null);
+  const [state, dispatch] = useReducer(attentionReducer, undefined, () => {
+    let initial = attentionReducer(emptyAttention(), {
+      type: "catalogue",
+      documents,
+    });
+    initial = attentionReducer(initial, {
+      type: "bind-connections",
+      connections,
+    });
+    return attentionReducer(initial, {
+      type: "focus-surface",
+      surfaceId: primarySurfaceId(documents[0].id, documents[0].revisionId),
+    });
+  });
   const [presentation, setPresentation] = useState<PresentationRequest>({
     id: 0,
     kind: "layout",
   });
-  const presentationRef = useRef(presentation);
-  const presentationSequenceRef = useRef(0);
-  const requestPresentation = useCallback(
-    (
-      kind: PresentationRequest["kind"],
-      surfaces: readonly SurfaceInstanceId[] = [],
-    ) => {
-      const id = presentationSequenceRef.current + 1;
-      presentationSequenceRef.current = id;
-      const next: PresentationRequest =
-        kind === "align-ranges"
-          ? { id, kind, surfaces: [...new Set(surfaces)] }
-          : { id, kind };
-      presentationRef.current = next;
-      setPresentation(next);
-    },
+  const navigate = useCallback((action: AttentionAction) => {
+    controllerRef.current?.cancelInput();
+    setPresentation((previous) =>
+      action.type === "history"
+        ? { id: previous.id + 1, kind: "restore" }
+        : {
+            id: previous.id + 1,
+            kind: "align-ranges",
+            surfaces:
+              action.type === "inspect-connection"
+                ? [
+                    action.inspection.current.surfaceId,
+                    action.inspection.companion.surfaceId,
+                  ]
+                : action.type === "focus-surface"
+                  ? [action.surfaceId]
+                  : [],
+          },
+    );
+    dispatch(action);
+  }, []);
+  const revisions = useMemo(
+    () => new Map(documents.map((d) => [d.revisionId, d])),
     [],
   );
-  const resolve = (position: ReadingSurface["position"]): ReadingSurface => ({
-    surfaceId: position.surfaceId,
-    position,
-    document: revisions.get(position.revisionId)!,
-  });
-  const current =
-    state.attention.kind === "reading"
-      ? resolve(state.attention.current)
-      : null;
-  const companion =
-    state.attention.kind === "reading" && state.attention.companion
-      ? resolve(state.attention.companion.position)
-      : null;
-  const previousIndex = returnHistoryIndex(state);
-  const previous = previousIndex === null ? null : state.history[previousIndex];
-  const previousPosition =
-    previous?.attention.kind === "reading" ? previous.attention.current : null;
-  const nodes: NeighborhoodNode[] = connections.flatMap((connection) => {
-    if (!current) return [];
-    const endpoint =
-      connection.from.revisionId === current.position.revisionId
-        ? connection.to
-        : connection.to.revisionId === current.position.revisionId
-          ? connection.from
-          : null;
-    if (!endpoint) return [];
-    return [
-      {
-        document: revisions.get(endpoint.revisionId)!,
-        revisionId: endpoint.revisionId,
-        sequence: 1,
-        distance: 1 as const,
-        viaRevisionId: null,
-        connectionId: connection.id,
-      },
-    ];
-  });
-  const dispatchAttention = useCallback(
-    (action: AttentionAction) => {
-      const attention = stateRef.current.attention;
-      if (
-        action.type !== "scroll" &&
-        action.type !== "focus" &&
-        action.type !== "view"
-      )
-        controllerRef.current?.cancelInput();
-      if (action.type === "history") {
-        requestPresentation("restore");
-      } else if (
-        action.type === "navigate" ||
-        action.type === "compare" ||
-        action.type === "inspect-connection" ||
-        action.type === "promote" ||
-        action.type === "return-to-current" ||
-        action.type === "replace-revision"
-      ) {
-        const surfaces: SurfaceInstanceId[] = [];
-        if (action.type === "navigate")
-          surfaces.push(action.position.surfaceId);
-        else if (action.type === "compare") {
-          if (attention.kind === "reading")
-            surfaces.push(attention.current.surfaceId);
-          surfaces.push(action.position.surfaceId);
-        } else if (action.type === "inspect-connection") {
-          const inspection =
-            "inspection" in action ? action.inspection : action;
-          surfaces.push(
-            inspection.current.surfaceId,
-            inspection.companion.surfaceId,
-          );
-        } else if (attention.kind === "reading") {
-          surfaces.push(attention.current.surfaceId);
-          if (attention.companion)
-            surfaces.push(attention.companion.position.surfaceId);
-        }
-        requestPresentation("align-ranges", surfaces);
-      }
-      dispatch(action);
-    },
-    [requestPresentation],
+  const surfaces = useMemo(
+    () =>
+      [...state.space.surfaces.values()].map((position) => ({
+        surfaceId: position.surfaceId,
+        position,
+        metadata: position.metadata,
+        document: revisions.get(position.revisionId) ?? null,
+        payload: "ready" as const,
+        error: null,
+      })),
+    [state.space, revisions],
   );
-  const onReadBeside = useCallback(
-    (target: DocumentTarget) => {
-      const document = revisionRef.current.get(target.revisionId);
-      if (!document) return;
-      dispatchAttention({
-        type: "compare",
-        position: readingPosition(
-          document,
-          createSurfaceInstanceId("companion"),
-          target.focus,
-          0,
-        ),
-        reason: { kind: "document" },
-      });
-    },
-    [dispatchAttention],
+  const bindings = useMemo(
+    () =>
+      connections.flatMap((connection) => {
+        const bound = state.bindings.get(connection.id);
+        return bound
+          ? [
+              {
+                connectionId: connection.id,
+                from: { surfaceId: bound.from, anchor: connection.from },
+                to: { surfaceId: bound.to, anchor: connection.to },
+              },
+            ]
+          : [];
+      }),
+    [state.bindings],
   );
   const onFollow = useCallback(
     (activation: ConnectionActivation) => {
-      const attention = stateRef.current.attention;
       const connection = connections.find(
-        (item) => item.id === activation.connectionId,
+          (c) => c.id === activation.connectionId,
+        ),
+        bound = state.bindings.get(activation.connectionId);
+      if (!connection || !bound) return;
+      const endpoint =
+        activation.origin.kind === "surface"
+          ? activation.origin.endpoint
+          : state.view.focus === bound.to
+            ? "to"
+            : "from";
+      const source = state.space.surfaces.get(
+        activation.origin.kind === "surface"
+          ? activation.origin.surfaceId
+          : bound[endpoint],
       );
-      if (!connection || attention.kind !== "reading") return;
-
-      const endpointMatches = (
-        position: ReadingSurface["position"],
-        endpoint: "from" | "to",
-      ) => {
-        const anchor = connection[endpoint];
-        return (
-          position.documentId === anchor.documentId &&
-          position.revisionId === anchor.revisionId
-        );
-      };
-      let origin: ReadingSurface["position"] | null = null;
-      let endpoint: "from" | "to" | null = null;
-      if (activation.origin.kind === "surface") {
-        const surfaceId = activation.origin.surfaceId;
-        if (attention.current.surfaceId === surfaceId)
-          origin = attention.current;
-        else if (attention.companion?.position.surfaceId === surfaceId)
-          origin = attention.companion.position;
-        endpoint = activation.origin.endpoint;
-        if (!origin || !endpointMatches(origin, endpoint)) return;
-      } else {
-        for (const position of [
-          attention.current,
-          attention.companion?.position,
-        ]) {
-          if (!position) continue;
-          const matching = (["from", "to"] as const).find((candidate) =>
-            endpointMatches(position, candidate),
-          );
-          if (matching) {
-            origin = position;
-            endpoint = matching;
-            break;
-          }
-        }
-        if (!origin || !endpoint) return;
-      }
-
-      const targetEndpoint = endpoint === "from" ? "to" : "from";
-      const existing = [attention.current, attention.companion?.position].find(
-        (position) =>
-          position &&
-          position.surfaceId !== origin?.surfaceId &&
-          endpointMatches(position, targetEndpoint),
+      const target = state.space.surfaces.get(
+        bound[endpoint === "from" ? "to" : "from"],
       );
-      const companion = existing
-        ? { ...existing, focus: { ...connection[targetEndpoint] } }
-        : (() => {
-            const document = revisionRef.current.get(
-              connection[targetEndpoint].revisionId,
-            );
-            if (!document) return null;
-            return readingPosition(
-              document,
-              createSurfaceInstanceId("connection"),
-              connection[targetEndpoint],
-              0,
-            );
-          })();
-      if (!companion || !origin || !endpoint) return;
+      if (!source || !target) return;
       const inspection = createConnectionInspection(
         connection,
-        { ...origin, focus: { ...connection[endpoint] } },
-        companion,
+        source,
+        target,
         endpoint,
       );
-      if (!inspection) return;
-      dispatchAttention({ type: "inspect-connection", inspection });
+      if (inspection) navigate({ type: "inspect-connection", inspection });
     },
-    [dispatchAttention],
+    [state, navigate],
   );
-  const onSelect = useCallback(
-    (selection: AnchorInput) => setSelectedText(selection.quote),
-    [],
-  );
-  const onGeometryChange = useCallback(
-    () => controllerRef.current?.measure(),
-    [],
-  );
-  const onHistory = useCallback(
-    (index: number) => dispatchAttention({ type: "history", index }),
-    [dispatchAttention],
-  );
-  const onScroll = useCallback(
-    (
-      surfaceId: SurfaceInstanceId,
-      scrollTop: number,
-      presentationId: number,
-    ) => {
-      if (presentationId !== presentationRef.current.id) return;
-      dispatchAttention({ type: "scroll", surfaceId, scrollTop });
-    },
-    [dispatchAttention],
-  );
-  const onViewCheckpoint = useCallback(
-    ({
-      generation,
-      view,
-    }: import("../lib/reader/spatial-contract").ViewCheckpoint) => {
-      if (generation !== presentationRef.current.id) return;
-      dispatchAttention({ type: "view", view });
-    },
-    [dispatchAttention],
-  );
-
-  const onStepConnection = useCallback(
-    (direction: -1 | 1) => {
-      const attention = stateRef.current.attention;
-      if (attention.kind !== "reading") return;
-      const items = relationNavigationItems(
-        connections,
-        attention.current.revisionId,
-      );
-      if (!items.length) return;
-      let selected = -1;
-      if (attention.companion?.reason.kind === "connection") {
-        const reason = attention.companion.reason;
-        selected = items.findIndex(
-          (item) =>
-            item.connectionId === reason.connectionId &&
-            item.endpoint === reason.currentEndpoint,
-        );
-      }
-      const base =
-        selected >= 0
-          ? selected + direction
-          : direction > 0
-            ? items.findIndex(
-                (item) =>
-                  !attention.current.focus ||
-                  item.anchor.start >= attention.current.focus.start,
-              )
-            : ([...items]
-                .map((item, index) => ({ item, index }))
-                .reverse()
-                .find(
-                  ({ item }) =>
-                    !attention.current.focus ||
-                    item.anchor.start <= attention.current.focus.start,
-                )?.index ?? -1);
-      const target = items[base];
-      if (!target) return;
-      onFollow({
-        connectionId: target.connectionId,
-        origin: {
-          kind: "surface",
-          surfaceId: attention.current.surfaceId,
-          endpoint: target.endpoint,
-        },
-      });
-    },
-    [onFollow],
-  );
-  const relationNavigation: RelationNavigationState = (() => {
-    if (state.attention.kind !== "reading")
-      return {
-        items: [],
-        current: null,
-        ordinal: null,
-        total: 0,
-        canPrevious: false,
-        canNext: false,
-        loading: false,
-        error: null,
-      };
-    const items = relationNavigationItems(
-      connections,
-      state.attention.current.revisionId,
-    );
-    const reason = state.attention.companion?.reason;
-    const itemIndex =
-      reason?.kind === "connection"
-        ? items.findIndex(
-            (item) =>
-              item.connectionId === reason.connectionId &&
-              item.endpoint === reason.currentEndpoint,
-          )
-        : -1;
-    return {
-      items,
-      current: itemIndex >= 0 ? (items[itemIndex] ?? null) : null,
-      ordinal: itemIndex >= 0 ? itemIndex + 1 : null,
-      total: items.length,
-      canPrevious: itemIndex > 0,
-      canNext: itemIndex >= 0 && itemIndex < items.length - 1,
-      loading: false,
-      error: null,
-    };
-  })();
-  const renderedConnections = connections;
+  const current = focusedPosition(state);
+  const items = current
+    ? relationNavigationItems(connections, current.revisionId)
+    : [];
+  const relationNavigation: RelationNavigationState = {
+    items,
+    current: null,
+    ordinal: null,
+    total: items.length,
+    canPrevious: false,
+    canNext: items.length > 0,
+    loading: false,
+    error: null,
+  };
   const renderDocument = useCallback(
-    (
-      surface: ReadingSurface,
-      _role: "current" | "companion",
-      context: DocumentRenderContext,
-    ) => (
+    (surface: ReadingSurface, context: DocumentRenderContext) => (
       <article className="space-fixture-article">
         <DocumentPassage
           document={surface.document}
           surfaceId={surface.surfaceId}
           context={context}
           focus={surface.position.focus}
-          connections={renderedConnections}
-          onSelectText={onSelect}
+          connections={connections}
+          onSelectText={(anchor) => setSelectedText(anchor.quote)}
           onActivateConnection={onFollow}
-          onGeometryChange={onGeometryChange}
         />
       </article>
     ),
-    [onFollow, onSelect, onGeometryChange, renderedConnections],
-  );
-  const loadPreview = useCallback(
-    async (target: DocumentTarget): Promise<DocumentRevision | null> =>
-      revisionRef.current.get(target.revisionId) ?? null,
-    [],
+    [onFollow],
   );
   return (
     <main className="space-fixture reader-palette" style={readerPaletteStyle}>
@@ -525,17 +288,8 @@ function SpaceDesignHarness() {
         ) : (
           <SpatialScene
             controllerRef={controllerRef}
-            current={current}
-            companion={companion}
-            previous={
-              previousPosition && previousIndex !== null
-                ? {
-                    position: previousPosition,
-                    document: revisions.get(previousPosition.revisionId)!,
-                    historyIndex: previousIndex,
-                  }
-                : null
-            }
+            surfaces={surfaces}
+            bindings={bindings}
             view={state.view}
             documents={documents}
             catalogue={{
@@ -543,33 +297,28 @@ function SpaceDesignHarness() {
               archivedComplete: true,
               loading: false,
             }}
-            neighborhood={
-              current
-                ? {
-                    kind: "complete",
-                    centerRevisionId: current.position.revisionId,
-                    nodes,
-                  }
-                : { kind: "idle" }
+            neighborhood={{ kind: "idle" }}
+            connections={connections}
+            selectedConnectionId={state.selectedConnectionId}
+            onFocusSurface={(surfaceId) =>
+              navigate({ type: "focus-surface", surfaceId })
             }
-            connections={renderedConnections}
-            selectedConnectionId={
-              state.attention.kind === "reading" &&
-              state.attention.companion?.reason.kind === "connection"
-                ? state.attention.companion.reason.connectionId
-                : null
-            }
-            pending={null}
-            onReadBeside={onReadBeside}
+            onDemandSurfaces={() => {}}
+            onRetrySurface={() => {}}
             onFollow={onFollow}
-            onStepConnection={onStepConnection}
+            onStepConnection={() => {}}
             relationNavigation={relationNavigation}
             presentation={presentation}
-            onHistory={onHistory}
-            onScroll={onScroll}
-            onViewCheckpoint={onViewCheckpoint}
+            onHistory={(index) => navigate({ type: "history", index })}
+            onScroll={(surfaceId, scrollTop, generation) => {
+              if (generation === presentation.id)
+                dispatch({ type: "scroll", surfaceId, scrollTop });
+            }}
+            onViewCheckpoint={({ view, generation }) => {
+              if (generation === presentation.id)
+                dispatch({ type: "view", view });
+            }}
             renderDocument={renderDocument}
-            loadPreview={loadPreview}
           />
         )}
         {inputOnlyControl && (

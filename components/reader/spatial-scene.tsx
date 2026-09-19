@@ -11,11 +11,11 @@ import React, {
 import type {
   SpatialSceneProps as Contract,
   ReadingSurface,
+  SpaceSurface,
   PassageHandle,
   SurfaceInstanceId,
   DocumentRenderContext,
 } from "../../lib/reader/spatial-contract";
-import type { SurfaceRole } from "../../lib/reader/attention";
 import type { SpaceView } from "../../lib/reader/space-view";
 import {
   cameraTransform,
@@ -23,15 +23,13 @@ import {
   paperToWorld,
   paperPoint,
   worldToScreen,
-  focusCamera,
-  worldPoint,
-  orientation,
   type PaperPose,
   type CameraViewport,
 } from "../../lib/reader/camera";
 import { SceneGeometry } from "./scene-geometry";
 import { defaultPaperPose, rangeScrollTarget } from "./scene-presentation";
 import { SceneInteraction } from "./scene-interaction";
+import { desiredFullText } from "../../lib/reader/space-residency";
 import { relationStyle } from "../../lib/reader/semantic-palette";
 import "./spatial-scene.css";
 export interface SpatialSceneController {
@@ -45,24 +43,17 @@ export type SpatialSceneProps = Omit<
   controllerRef?: React.Ref<SpatialSceneController>;
   renderDocument(
     surface: ReadingSurface,
-    role: SurfaceRole,
     context: DocumentRenderContext,
   ): React.ReactNode;
-  renderDocumentMenu?(
-    surface: ReadingSurface,
-    role: SurfaceRole,
-  ): React.ReactNode;
+  renderDocumentMenu?(surface: ReadingSurface): React.ReactNode;
 };
-export type {
-  ReadingSurface,
-  ReturnLeaf,
-  PendingSurface,
-} from "../../lib/reader/spatial-contract";
-type Loaded = { surface: ReadingSurface; role: SurfaceRole };
+type Loaded = { surface: ReadingSurface };
 type Band = { id: string; path: string; color: string; label: string };
 const initialViewport = { width: 1280, height: 850 };
 function ScenePaper({
-  entry,
+  surface,
+  detailed,
+  onRetry,
   pose,
   viewport,
   register,
@@ -73,7 +64,9 @@ function ScenePaper({
   renderDocument,
   renderDocumentMenu,
 }: {
-  entry: Loaded;
+  surface: SpaceSurface;
+  detailed: boolean;
+  onRetry(id: SurfaceInstanceId): void;
   pose: PaperPose;
   viewport: CameraViewport;
   register(id: SurfaceInstanceId, node: HTMLElement | null): void;
@@ -84,9 +77,21 @@ function ScenePaper({
   renderDocument: SpatialSceneProps["renderDocument"];
   renderDocumentMenu: SpatialSceneProps["renderDocumentMenu"];
 }) {
-  const { surface, role } = entry;
-  const width = Math.min(600, Math.max(320, viewport.width - 48));
-  const height = Math.max(300, Math.min(780, viewport.height - 150));
+  const document = surface.document ?? surface.metadata;
+  const title = document?.title ?? "正在读取文档…";
+  const reading = surface.document
+    ? {
+        surfaceId: surface.surfaceId,
+        position: surface.position,
+        document: surface.document,
+      }
+    : null;
+  const width = detailed
+    ? Math.min(600, Math.max(320, viewport.width - 48))
+    : 205;
+  const height = detailed
+    ? Math.max(300, Math.min(780, viewport.height - 150))
+    : 116;
   const context = useMemo<DocumentRenderContext>(
     () => ({
       registerPassage: (handle) => registerPassage(surface.surfaceId, handle),
@@ -98,12 +103,21 @@ function ScenePaper({
   return (
     <article
       ref={(node) => register(surface.surfaceId, node)}
-      className="spatial-paper"
+      className={
+        detailed ? "spatial-paper" : "spatial-paper spatial-paper-fold"
+      }
       data-paper
+      tabIndex={detailed ? -1 : 0}
+      onKeyDown={(event) => {
+        if (!detailed && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          onFocus(surface.surfaceId);
+        }
+      }}
       data-surface-key={surface.surfaceId}
-      data-document-id={surface.document.id}
-      data-revision-id={surface.document.revisionId}
-      aria-label={surface.document.title}
+      data-document-id={surface.position.documentId}
+      data-revision-id={surface.position.revisionId}
+      aria-label={title}
       style={{ width, height, transform: paperTransform(pose, width, height) }}
       onPointerDown={(event) => {
         down.current = { x: event.clientX, y: event.clientY };
@@ -122,26 +136,39 @@ function ScenePaper({
           )
         )
           return;
-        if (window.getSelection()?.isCollapsed === false) return;
+        if (detailed && window.getSelection()?.isCollapsed === false) return;
         onFocus(surface.surfaceId);
       }}
     >
       <header className="spatial-paper-header">
         <div>
-          <h2>{surface.document.title}</h2>
-          <span>v{surface.document.sequence}</span>
+          <h2>{title}</h2>
+          <span>{document ? `v${document.sequence}` : "文档"}</span>
         </div>
-        {renderDocumentMenu?.(surface, role)}
+        {detailed && reading && renderDocumentMenu?.(reading)}
       </header>
-      <div
-        className="spatial-paper-scroll"
-        data-document-scroll
-        onScroll={(event) =>
-          onScroll(surface.surfaceId, event.currentTarget.scrollTop)
-        }
-      >
-        {renderDocument(surface, role, context)}
-      </div>
+      {detailed && (
+        <div
+          className="spatial-paper-scroll"
+          data-document-scroll
+          onScroll={(event) =>
+            detailed &&
+            reading &&
+            onScroll(surface.surfaceId, event.currentTarget.scrollTop)
+          }
+        >
+          {detailed && reading ? (
+            renderDocument(reading, context)
+          ) : detailed ? (
+            <p role="status">
+              {surface.error ?? "正在读取正文…"}
+              {surface.payload === "error" && (
+                <button onClick={() => onRetry(surface.surfaceId)}>重试</button>
+              )}
+            </p>
+          ) : null}
+        </div>
+      )}
       {(["top", "right", "bottom", "left"] as const).map((side, index) => (
         <div
           key={side}
@@ -149,7 +176,7 @@ function ScenePaper({
           className={`spatial-paper-edge spatial-paper-edge-${side}`}
           tabIndex={index === 0 ? 0 : -1}
           role="separator"
-          aria-label={`移动纸页：${surface.document.title}。方向键平移，Shift 加上下键调整远近。`}
+          aria-label={`移动纸页：${title}。方向键平移，Shift 加上下键调整远近。`}
           title="拖动纸边移动；Shift 拖动调整远近"
         />
       ))}
@@ -157,13 +184,6 @@ function ScenePaper({
   );
 }
 export function SpatialScene(props: SpatialSceneProps) {
-  const {
-    current: currentSurface,
-    companion: companionSurface,
-    pending,
-    documents,
-    onReadBeside,
-  } = props;
   const viewportRef = useRef<HTMLDivElement>(null),
     worldRef = useRef<HTMLDivElement>(null);
   const nodes = useRef(new Map<SurfaceInstanceId, HTMLElement>()),
@@ -171,23 +191,40 @@ export function SpatialScene(props: SpatialSceneProps) {
   const geometry = useRef(new SceneGeometry());
   const interaction = useRef(new SceneInteraction());
   const [viewport, setViewport] = useState(initialViewport),
-    [view, setView] = useState(props.view),
+    [draftView, setDraftView] = useState<{
+      base: SpaceView;
+      view: SpaceView;
+    } | null>(null),
     [bands, setBands] = useState<Band[]>([]),
     [measureEpoch, setMeasureEpoch] = useState(0);
+  const view = draftView?.base === props.view ? draftView.view : props.view;
   const live = useRef(view);
   const propsRef = useRef(props);
   const viewportValue = useRef(viewport);
-  const loaded = useMemo<Loaded[]>(
-    () => [
-      ...(currentSurface
-        ? [{ surface: currentSurface, role: "current" as const }]
-        : []),
-      ...(companionSurface
-        ? [{ surface: companionSurface, role: "companion" as const }]
-        : []),
-    ],
-    [currentSurface, companionSurface],
+  const desired = useMemo(
+    () => desiredFullText(props.surfaces, view, viewport),
+    [props.surfaces, view, viewport],
   );
+  const desiredIds = useMemo(() => new Set(desired), [desired]);
+  const loaded = useMemo<Loaded[]>(
+    () =>
+      props.surfaces.flatMap((surface) =>
+        surface.document && desiredIds.has(surface.surfaceId)
+          ? [
+              {
+                surface: {
+                  surfaceId: surface.surfaceId,
+                  position: surface.position,
+                  document: surface.document,
+                },
+              },
+            ]
+          : [],
+      ),
+    [props.surfaces, desiredIds],
+  );
+  const onDemandSurfaces = props.onDemandSurfaces;
+  useEffect(() => onDemandSurfaces(desired), [desired, onDemandSurfaces]);
   const loadedRef = useRef(loaded);
   useLayoutEffect(() => {
     propsRef.current = props;
@@ -209,7 +246,7 @@ export function SpatialScene(props: SpatialSceneProps) {
   );
   const paint = useCallback((value: SpaceView) => {
     live.current = value;
-    setView(value);
+    setDraftView({ base: propsRef.current.view, view: value });
   }, []);
   const checkpoint = useCallback(
     (value: SpaceView) => {
@@ -239,69 +276,13 @@ export function SpatialScene(props: SpatialSceneProps) {
     },
     [],
   );
-  const focus = useCallback(
-    (id: SurfaceInstanceId) => {
-      if (interaction.current.consumeClick()) return;
-      const current = live.current;
-      checkpoint({
-        ...current,
-        focus: id,
-        camera: focusCamera(current.camera, poseFor(current, id)),
-      });
-    },
-    [checkpoint, poseFor],
-  );
-  // Temporary loading adapter: Slice 2 replaces only this pair and the catalogue
-  // activation with persistent occurrences. Camera focus already leaves poses alone.
-  const seeded = useRef(false);
-  const initialFocus = useRef(false);
-  const requestedFocus = useRef<string | null>(null);
-  useEffect(() => {
-    if (seeded.current || !currentSurface || companionSurface || pending)
-      return;
-    const next = documents.find(
-      (doc) =>
-        !doc.archived && doc.revisionId !== currentSurface?.document.revisionId,
-    );
-    if (next) {
-      seeded.current = true;
-      onReadBeside({
-        documentId: next.id,
-        revisionId: next.revisionId,
-        focus: null,
-      });
-    }
-  }, [currentSurface, companionSurface, pending, documents, onReadBeside]);
+  const focus = useCallback((id: SurfaceInstanceId) => {
+    if (!interaction.current.consumeClick())
+      propsRef.current.onFocusSurface(id);
+  }, []);
   useLayoutEffect(() => {
-    const next = { ...props.view, placements: new Map(props.view.placements) };
-    for (const [index, { surface }] of loaded.entries())
-      if (!next.placements.has(surface.surfaceId))
-        next.placements.set(surface.surfaceId, defaultPaperPose(index));
-    let destination: SpaceView = next;
-    const requested = loaded.find(
-      (entry) => entry.surface.document.id === requestedFocus.current,
-    );
-    if ((!initialFocus.current && loaded.length) || requested) {
-      const surface = (requested ?? loaded[0]).surface;
-      initialFocus.current = true;
-      requestedFocus.current = null;
-      destination = {
-        ...next,
-        focus: surface.surfaceId,
-        camera: focusCamera(next.camera, poseFor(next, surface.surfaceId)),
-      };
-    }
-    live.current = destination;
-    setView(destination);
-    if (
-      destination !== next ||
-      next.placements.size !== props.view.placements.size
-    )
-      propsRef.current.onViewCheckpoint({
-        generation: propsRef.current.presentation.id,
-        view: destination,
-      });
-  }, [props.view, loaded, poseFor]);
+    live.current = props.view;
+  }, [props.view]);
   useLayoutEffect(() => {
     const node = viewportRef.current;
     if (!node) return;
@@ -371,6 +352,9 @@ export function SpatialScene(props: SpatialSceneProps) {
         ]),
       ]),
     );
+    for (const id of restored.current.keys())
+      if (!loaded.some((entry) => entry.surface.surfaceId === id))
+        restored.current.delete(id);
     const measure = geometryOwner.dirty;
     const restore = measure
       ? geometryOwner.measureLayout(
@@ -394,7 +378,11 @@ export function SpatialScene(props: SpatialSceneProps) {
         if (restored.current.get(surface.surfaceId) !== key) {
           scroll.scrollTop = surface.position.scrollTop;
           const anchor = surface.position.focus;
-          if (anchor && props.presentation.kind === "align-ranges") {
+          if (
+            anchor &&
+            props.presentation.kind === "align-ranges" &&
+            props.presentation.surfaces.includes(surface.surfaceId)
+          ) {
             const resolved = geometryOwner.resolveAnchor(
               surface.surfaceId,
               anchor,
@@ -420,8 +408,11 @@ export function SpatialScene(props: SpatialSceneProps) {
       for (const connection of props.connections)
         for (const endpoint of ["from", "to"] as const) {
           const anchor = connection[endpoint];
+          const binding = props.bindings.find(
+            (item) => item.connectionId === connection.id,
+          );
           const entry = loaded.find(
-            (item) => item.surface.document.revisionId === anchor.revisionId,
+            (item) => item.surface.surfaceId === binding?.[endpoint].surfaceId,
           );
           if (!entry) continue;
           const id = entry.surface.surfaceId,
@@ -504,6 +495,7 @@ export function SpatialScene(props: SpatialSceneProps) {
   }, [
     loaded,
     props.connections,
+    props.bindings,
     props.presentation,
     viewport,
     view,
@@ -514,12 +506,6 @@ export function SpatialScene(props: SpatialSceneProps) {
     propsRef.current.onScroll(id, top, propsRef.current.presentation.id);
     setMeasureEpoch((value) => value + 1);
   }, []);
-  const folds = props.documents.filter(
-    (doc) =>
-      !loaded.some(
-        (entry) => entry.surface.document.revisionId === doc.revisionId,
-      ),
-  );
   return (
     <div
       ref={viewportRef}
@@ -546,13 +532,14 @@ export function SpatialScene(props: SpatialSceneProps) {
         ref={worldRef}
         style={{ transform: cameraTransform(view.camera) }}
       >
-        {loaded.map((entry, index) => (
+        {props.surfaces.map((surface, index) => (
           <ScenePaper
-            key={entry.surface.surfaceId}
-            entry={entry}
+            key={surface.surfaceId}
+            surface={surface}
+            detailed={desiredIds.has(surface.surfaceId)}
+            onRetry={props.onRetrySurface}
             pose={
-              view.placements.get(entry.surface.surfaceId) ??
-              defaultPaperPose(index)
+              view.placements.get(surface.surfaceId) ?? defaultPaperPose(index)
             }
             viewport={viewport}
             register={register}
@@ -564,35 +551,6 @@ export function SpatialScene(props: SpatialSceneProps) {
             renderDocumentMenu={props.renderDocumentMenu}
           />
         ))}
-        {folds.map((document, index) => {
-          const pose = {
-            position: worldPoint(
-              ((index % 5) - 2) * 235,
-              Math.floor(index / 5) * 160 - 480,
-              -620 - (index % 3) * 110,
-            ),
-            orientation: orientation(6, ((index % 5) - 2) * 5),
-          };
-          return (
-            <button
-              key={document.id}
-              className="spatial-fold"
-              style={{ transform: paperTransform(pose, 205, 116) }}
-              onClick={() => {
-                requestedFocus.current = document.id;
-                props.onReadBeside({
-                  documentId: document.id,
-                  revisionId: document.revisionId,
-                  focus: null,
-                });
-              }}
-              aria-label={`打开文档：${document.title}`}
-            >
-              <span>{document.title}</span>
-              <small>v{document.sequence}</small>
-            </button>
-          );
-        })}
       </div>
       <svg
         className="spatial-bands"
@@ -618,16 +576,6 @@ export function SpatialScene(props: SpatialSceneProps) {
           </path>
         ))}
       </svg>
-      {props.pending && (
-        <div className="spatial-load-status" role="status">
-          {props.pending.error ?? `正在读取 ${props.pending.title}…`}
-          {props.pending.error && (
-            <button onClick={() => props.onReadBeside(props.pending!.target)}>
-              重试
-            </button>
-          )}
-        </div>
-      )}
       <p className="spatial-gesture-hint">
         拖动空白环顾 · Shift 拖动平移 · 滚轮靠近 · 拖动纸边移动 · Shift
         拖动纸边调整远近

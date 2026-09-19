@@ -8,9 +8,9 @@ import type {
   RevisionId,
 } from "../domain/model";
 import type { SpaceView } from "./space-view";
-import type { DocumentTarget, NeighborhoodKnowledge } from "./space-index";
+import type { NeighborhoodKnowledge } from "./space-index";
 import { relationNames } from "./relations";
-import type { ReadingPosition, SurfaceRole } from "./attention";
+import type { ReadingPosition } from "./attention";
 
 /** A front-end occurrence of a revision in the document space.
  *
@@ -63,16 +63,26 @@ export interface ReadingSurface {
   readonly document: DocumentRevision;
 }
 
-export interface ReturnLeaf {
+/** A retained occurrence, including those without a resident payload. */
+export interface SpaceSurface {
+  readonly surfaceId: SurfaceInstanceId;
   readonly position: ReadingPosition;
-  readonly document: DocumentSummary;
-  readonly historyIndex: number;
-}
-
-export interface PendingSurface {
-  readonly target: DocumentTarget;
-  readonly title: string;
+  readonly metadata: DocumentSummary | null;
+  readonly document: DocumentRevision | null;
+  readonly payloadSize?: number;
+  readonly payload: "unloaded" | "loading" | "ready" | "error";
   readonly error: string | null;
+}
+export interface BoundConnection {
+  readonly connectionId: ConnectionId;
+  readonly from: {
+    readonly surfaceId: SurfaceInstanceId;
+    readonly anchor: AnchorInput;
+  };
+  readonly to: {
+    readonly surfaceId: SurfaceInstanceId;
+    readonly anchor: AnchorInput;
+  };
 }
 
 export type AnchorCoverage = "complete" | "partial" | "unmounted" | "unmapped";
@@ -188,9 +198,11 @@ export interface ViewCheckpoint {
 
 /** The complete data contract consumed by SpatialScene. */
 export interface SpatialSceneProps<RenderedDocument = unknown> {
-  readonly current: ReadingSurface | null;
-  readonly companion: ReadingSurface | null;
-  readonly previous: ReturnLeaf | null;
+  readonly surfaces: readonly SpaceSurface[];
+  readonly bindings: readonly BoundConnection[];
+  readonly onFocusSurface: (id: SurfaceInstanceId) => void;
+  readonly onDemandSurfaces: (ids: readonly SurfaceInstanceId[]) => void;
+  readonly onRetrySurface: (id: SurfaceInstanceId) => void;
   readonly view: SpaceView;
   readonly documents: readonly DocumentSummary[];
   readonly catalogue: SpatialCatalogueState;
@@ -198,8 +210,6 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
   readonly connections: readonly Connection[];
   /** Read-only derivation from attention; no parallel session source. */
   readonly selectedConnectionId: ConnectionId | null;
-  readonly pending: PendingSurface | null;
-  readonly onReadBeside: (target: DocumentTarget) => void;
   readonly onFollow: (activation: ConnectionActivation) => void;
   readonly onStepConnection: (direction: -1 | 1) => void;
   readonly relationNavigation: RelationNavigationState;
@@ -214,17 +224,10 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
   readonly onViewCheckpoint: (checkpoint: ViewCheckpoint) => void;
   readonly renderDocument: (
     surface: ReadingSurface,
-    role: SurfaceRole,
     context: DocumentRenderContext,
   ) => RenderedDocument;
   /** Presentation-owned slot for the document's existing action menu. */
-  readonly renderDocumentMenu?: (
-    surface: ReadingSurface,
-    role: SurfaceRole,
-  ) => RenderedDocument;
-  readonly loadPreview: (
-    target: DocumentTarget,
-  ) => Promise<DocumentRevision | null>;
+  readonly renderDocumentMenu?: (surface: ReadingSurface) => RenderedDocument;
 }
 
 export type SurfacePositionTarget = Pick<

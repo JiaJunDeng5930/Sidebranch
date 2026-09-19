@@ -137,3 +137,12 @@ test("cancel restores gesture start and two touch pointers pan and pinch", () =>
   assert.notEqual(h.view.camera.target.x, 0);
   h.owner.cancel();
 });
+
+test("a prior drag does not swallow the next independent paper click", () => {
+  const h = setup();
+  h.owner.pointerDown(h.event(h.edge, 500, 400));
+  h.owner.pointerMove(h.event(h.edge, 560, 420));
+  h.owner.pointerUp({ pointerId: 1 });
+  h.owner.pointerDown(h.event(h.paper, 600, 450));
+  assert.equal(h.owner.consumeClick(), false);
+});

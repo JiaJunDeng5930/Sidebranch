@@ -24,11 +24,18 @@ import {
   readerSessionReducer,
   type ReaderSession,
 } from "../lib/reader/session";
-import { readingPosition, returnHistoryIndex } from "../lib/reader/attention";
+import {
+  readingPosition,
+  returnHistoryIndex,
+  focusedPosition,
+  primarySurfaceId,
+} from "../lib/reader/attention";
 import { surfaceInstanceId } from "../lib/reader/spatial-contract";
 
 let nextSurface = 0;
-function occurrenceId(prefix = "session"): ReturnType<typeof surfaceInstanceId> {
+function occurrenceId(
+  prefix = "session",
+): ReturnType<typeof surfaceInstanceId> {
   nextSurface += 1;
   return surfaceInstanceId(`${prefix}-${nextSurface}`);
 }
@@ -106,45 +113,40 @@ function startReading(state: ReaderSession, document: DocumentRevision) {
   });
 }
 
-test("attention owns current, companion, promote, and return history", () => {
-  const first = revision("000000000001");
-  const second = revision("000000000002");
+test("attention retains the source when another occurrence gains focus", () => {
+  const first = revision("000000000001"),
+    second = revision("000000000002");
   let state = startReading(emptySession(), first);
+  const sourceId = state.attention.view.focus!;
   state = readerSessionReducer(state, {
     type: "attention",
     action: {
-      type: "compare",
+      type: "navigate",
       position: readingPosition(
         second,
-        occurrenceId("companion"),
+        occurrenceId("second"),
         anchor(second),
         420,
       ),
-      reason: { kind: "document" },
     },
   });
-  assert.equal(state.attention.attention.kind, "reading");
-  if (state.attention.attention.kind !== "reading")
-    throw new Error("missing reading attention");
-  assert.equal(state.attention.attention.current.documentId, first.id);
+  assert.equal(focusedPosition(state.attention)?.documentId, second.id);
   assert.equal(
-    state.attention.attention.companion?.position.documentId,
-    second.id,
+    state.attention.space.surfaces.get(sourceId)?.documentId,
+    first.id,
   );
-  assert.equal(state.attention.history.length, 2);
-
+  assert.equal(returnHistoryIndex(state.attention), 0);
   state = readerSessionReducer(state, {
     type: "attention",
-    action: { type: "promote" },
+    action: { type: "history", index: 0 },
   });
-  assert.equal(state.attention.attention.kind, "reading");
-  if (state.attention.attention.kind !== "reading")
-    throw new Error("missing promoted attention");
-  assert.equal(state.attention.attention.current.documentId, second.id);
-  assert.equal(state.attention.attention.companion, null);
-  const back = returnHistoryIndex(state.attention);
-  assert.equal(back, 1);
-  assert.equal(state.attention.history[back!]?.attention.kind, "reading");
+  assert.equal(focusedPosition(state.attention)?.documentId, first.id);
+  assert.equal(
+    [...state.attention.space.surfaces.values()].some(
+      (p) => p.documentId === second.id,
+    ),
+    true,
+  );
 });
 
 test("scroll and focus update the live history entry without adding navigation", () => {
@@ -155,9 +157,7 @@ test("scroll and focus update the live history entry without adding navigation",
     type: "attention",
     action: {
       type: "scroll",
-      surfaceId: state.attention.attention.kind === "reading"
-        ? state.attention.attention.current.surfaceId
-        : occurrenceId("missing"),
+      surfaceId: state.attention.view.focus!,
       scrollTop: 180,
     },
   });
@@ -165,19 +165,15 @@ test("scroll and focus update the live history entry without adding navigation",
     type: "attention",
     action: {
       type: "focus",
-      surfaceId: state.attention.attention.kind === "reading"
-        ? state.attention.attention.current.surfaceId
-        : occurrenceId("missing"),
+      surfaceId: state.attention.view.focus!,
       focus: anchor(document),
     },
   });
   assert.equal(state.attention.history.length, before);
-  assert.equal(state.attention.attention.kind, "reading");
-  if (state.attention.attention.kind !== "reading")
-    throw new Error("missing reading attention");
-  assert.equal(state.attention.attention.current.scrollTop, 180);
+  assert.ok(focusedPosition(state.attention));
+  assert.equal(focusedPosition(state.attention)!.scrollTop, 180);
   assert.equal(
-    state.attention.attention.current.focus?.quote,
+    focusedPosition(state.attention)!.focus?.quote,
     anchor(document).quote,
   );
 });
@@ -190,6 +186,7 @@ test("selecting text only opens the action layer; question editing is explicit",
     type: "selection/set",
     selection: {
       kind: "selected",
+      surfaceId: state.attention.view.focus!,
       document,
       anchor: selected,
       preview: selected.quote,
@@ -221,7 +218,8 @@ test("late question save cannot replace a changed draft", () => {
     type: "question/body",
     body: "new body",
   });
-  if (state.question.kind !== "draft") throw new Error("missing question draft");
+  if (state.question.kind !== "draft")
+    throw new Error("missing question draft");
   const draftId = state.question.draftId;
   const persistenceAttemptId = questionPersistenceAttemptId(1);
   state = readerSessionReducer(state, {
@@ -263,7 +261,8 @@ test("persisted question states do not block a new destination", () => {
     type: "question/body",
     body: saved.body,
   });
-  if (state.question.kind !== "draft") throw new Error("missing question draft");
+  if (state.question.kind !== "draft")
+    throw new Error("missing question draft");
   const draftId = state.question.draftId;
   const persistenceAttemptId = questionPersistenceAttemptId(2);
   state = readerSessionReducer(state, {
@@ -338,7 +337,7 @@ test("answer arrival is a notification and preserves a different question draft"
     question: answered,
   });
   assert.equal(state.answers[0]?.status, "unseen");
-  assert.equal(state.attention.attention.kind, "reading");
+  assert.ok(focusedPosition(state.attention));
   if (state.question.kind === "closed") throw new Error("draft was lost");
   assert.equal(state.question.body, "draft in progress");
 });
@@ -525,6 +524,7 @@ test("dirty editor and question drafts are protected from deferred navigation", 
       intentId: navigationIntentId(1),
       target: {
         kind: "resolved",
+        surfaceId: primarySurfaceId(second.id, second.revisionId),
         target: {
           documentId: second.id,
           revisionId: second.revisionId,
@@ -543,10 +543,8 @@ test("dirty editor and question drafts are protected from deferred navigation", 
       : null,
     second.revisionId,
   );
-  assert.equal(state.attention.attention.kind, "reading");
-  if (state.attention.attention.kind !== "reading")
-    throw new Error("missing attention");
-  assert.equal(state.attention.attention.current.revisionId, first.revisionId);
+  assert.ok(focusedPosition(state.attention));
+  assert.equal(focusedPosition(state.attention)!.revisionId, first.revisionId);
 });
 
 test("deferred navigation has retryable attempts and identity-scoped cleanup", () => {
@@ -561,6 +559,7 @@ test("deferred navigation has retryable attempts and identity-scoped cleanup", (
       intentId,
       target: {
         kind: "resolved",
+        surfaceId: primarySurfaceId(second.id, second.revisionId),
         target: {
           documentId: second.id,
           revisionId: second.revisionId,
@@ -814,4 +813,48 @@ test("editing an existing title is read only and question close clears the draft
   state = readerSessionReducer(state, { type: "question/close" });
   assert.equal(state.question.kind, "closed");
   assert.equal(hasProtectedDraft(state), false);
+});
+
+test("bounded payload eviction preserves metadata, scroll and permits rehydration", () => {
+  const first = revision("000000000101");
+  let state = readerSessionReducer(emptySession(), {
+    type: "catalogue/merge",
+    scope: "active",
+    documents: [first],
+  });
+  const id = primarySurfaceId(first.id, first.revisionId);
+  state = readerSessionReducer(state, {
+    type: "cache/revision",
+    revision: first,
+  });
+  state = readerSessionReducer(state, {
+    type: "attention",
+    action: { type: "scroll", surfaceId: id, scrollTop: 321 },
+  });
+  const pose = state.attention.view.placements.get(id);
+  for (let i = 102; i < 132; i++)
+    state = readerSessionReducer(state, {
+      type: "cache/revision",
+      revision: revision(String(i).padStart(12, "0")),
+    });
+  assert.equal(state.revisionCache.has(first.revisionId), false);
+  assert.equal(state.revisionCache.size, 24);
+  assert.equal(
+    state.attention.space.surfaces.get(id)?.metadata?.title,
+    first.title,
+  );
+  assert.equal(state.attention.space.surfaces.get(id)?.scrollTop, 321);
+  state = readerSessionReducer(state, {
+    type: "payload/loading",
+    revisionId: first.revisionId,
+  });
+  state = readerSessionReducer(state, {
+    type: "cache/revision",
+    revision: first,
+  });
+  assert.equal(state.revisionCache.has(first.revisionId), true);
+  assert.equal(state.hydration.has(first.revisionId), false);
+  assert.equal(state.attention.space.surfaces.get(id)?.scrollTop, 321);
+  assert.deepEqual(state.attention.view.placements.get(id), pose);
+  assert.equal(state.attention.view.focus, null);
 });

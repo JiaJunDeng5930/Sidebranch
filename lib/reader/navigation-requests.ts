@@ -42,13 +42,14 @@ export function isCurrentRequest(
 export function changesReadingContext(action: AttentionAction): boolean {
   switch (action.type) {
     case "navigate":
-    case "compare":
     case "inspect-connection":
-    case "promote":
-    case "return-to-current":
+    case "focus-surface":
     case "history":
     case "replace-revision":
       return true;
+    case "bind-connections":
+    case "admit":
+    case "catalogue":
     case "scroll":
     case "focus":
     case "view":

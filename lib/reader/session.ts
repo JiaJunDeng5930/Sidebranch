@@ -13,9 +13,16 @@ import type {
   AttentionState,
   CameraPose,
   ReadingPosition,
-  SurfaceRole,
 } from "./attention";
-import { attentionReducer, emptyAttention } from "./attention";
+import {
+  attentionReducer,
+  emptyAttention,
+  findOccurrence,
+  focusedPosition,
+  primarySurfaceId,
+  readingPosition,
+} from "./attention";
+import type { SurfaceInstanceId } from "./spatial-contract";
 import type { DocumentTarget, NeighborhoodKnowledge } from "./space-index";
 
 /** A revision payload kept separately from attention so unmounted leaves stay readable. */
@@ -35,6 +42,7 @@ export type SelectionState =
   | { readonly kind: "none" }
   | {
       readonly kind: "selected";
+      readonly surfaceId: SurfaceInstanceId;
       readonly document: DocumentRevision;
       readonly anchor: AnchorInput;
       /** Browser text is display-only; the anchor quote remains source text. */
@@ -277,6 +285,7 @@ export function navigationAttemptId(value: number): NavigationAttemptId {
 export type PendingNavigationTarget =
   | {
       readonly kind: "resolved";
+      readonly surfaceId: SurfaceInstanceId;
       readonly target: DocumentTarget;
       readonly title: string;
       readonly revision: DocumentRevision | null;
@@ -338,6 +347,12 @@ export interface ReaderSession {
   readonly attention: AttentionState;
   readonly documents: readonly DocumentSummary[];
   readonly catalogue: CatalogueState;
+  readonly payloadSizes: ReadonlyMap<RevisionId, number>;
+  readonly hydration: ReadonlyMap<
+    RevisionId,
+    { readonly status: "loading" | "error"; readonly error: string | null }
+  >;
+  readonly desiredSurfaces: readonly SurfaceInstanceId[];
   readonly revisionCache: ReadonlyMap<RevisionId, CachedRevision>;
   readonly neighborhood: NeighborhoodKnowledge;
   readonly connections: readonly Connection[];
@@ -380,6 +395,9 @@ export const emptySession = (): ReaderSession => ({
   attention: emptyAttention(),
   documents: [],
   catalogue: emptyCatalogue(),
+  payloadSizes: new Map(),
+  hydration: new Map(),
+  desiredSurfaces: [],
   revisionCache: new Map(),
   neighborhood: { kind: "idle" },
   connections: [],
@@ -429,6 +447,16 @@ export type ReaderSessionAction =
   | {
       readonly type: "relations/set";
       readonly knowledge: NeighborhoodKnowledge;
+    }
+  | {
+      readonly type: "payload/demand";
+      readonly surfaces: readonly SurfaceInstanceId[];
+    }
+  | { readonly type: "payload/loading"; readonly revisionId: RevisionId }
+  | {
+      readonly type: "payload/error";
+      readonly revisionId: RevisionId;
+      readonly message: string;
     }
   | { readonly type: "cache/revision"; readonly revision: DocumentRevision }
   | {
@@ -617,10 +645,8 @@ export function readerSessionReducer(
       if (attention === state.attention) return state;
       const navigation = [
         "navigate",
-        "compare",
         "inspect-connection",
-        "promote",
-        "return-to-current",
+        "focus-surface",
         "history",
       ].includes(action.action.type);
       return {
@@ -630,14 +656,6 @@ export function readerSessionReducer(
           navigation && state.question.kind === "closed"
             ? { kind: "none" }
             : state.selection,
-        connections:
-          navigation && action.action.type === "navigate"
-            ? []
-            : state.connections,
-        questions:
-          navigation && action.action.type === "navigate"
-            ? []
-            : state.questions,
         loading: false,
       };
     }
@@ -673,6 +691,10 @@ export function readerSessionReducer(
       return {
         ...state,
         documents,
+        attention: attentionReducer(state.attention, {
+          type: "catalogue",
+          documents: action.documents,
+        }),
         catalogue: {
           ...state.catalogue,
           activeLoading,
@@ -694,6 +716,10 @@ export function readerSessionReducer(
       return {
         ...state,
         documents: mergeDocuments(state.documents, action.documents),
+        attention: attentionReducer(state.attention, {
+          type: "catalogue",
+          documents: action.documents,
+        }),
       };
     case "catalogue/error":
       return {
@@ -733,18 +759,75 @@ export function readerSessionReducer(
       };
     case "relations/set":
       return { ...state, neighborhood: action.knowledge };
-    case "cache/revision":
+    case "payload/demand":
+      return action.surfaces.join() === state.desiredSurfaces.join()
+        ? state
+        : { ...state, desiredSurfaces: action.surfaces };
+    case "payload/loading": {
+      const hydration = new Map(state.hydration);
+      hydration.set(action.revisionId, { status: "loading", error: null });
+      return { ...state, hydration };
+    }
+    case "payload/error": {
+      const hydration = new Map(state.hydration);
+      hydration.set(action.revisionId, {
+        status: "error",
+        error: action.message,
+      });
+      return { ...state, hydration };
+    }
+    case "cache/revision": {
+      const hydration = new Map(state.hydration);
+      hydration.delete(action.revision.revisionId);
+      const existing = findOccurrence(
+        state.attention,
+        action.revision.id,
+        action.revision.revisionId,
+      );
+      let attention = attentionReducer(state.attention, {
+        type: "admit",
+        position:
+          existing ??
+          readingPosition(
+            action.revision,
+            primarySurfaceId(action.revision.id, action.revision.revisionId),
+          ),
+        metadata: action.revision,
+      });
+      // Every duplicate occurrence of this exact revision shares payload, never position.
+      for (const surface of attention.space.surfaces.values())
+        if (
+          surface.documentId === action.revision.id &&
+          surface.revisionId === action.revision.revisionId &&
+          surface.surfaceId !== existing?.surfaceId
+        )
+          attention = attentionReducer(attention, {
+            type: "admit",
+            position: surface,
+            metadata: action.revision,
+          });
       return {
         ...state,
+        attention,
+        hydration,
+        payloadSizes: new Map(state.payloadSizes).set(
+          action.revision.revisionId,
+          action.revision.content.length,
+        ),
         revisionCache: cacheRevision(
           state.revisionCache,
           action.revision,
-          state.attention,
+          attention,
         ),
       };
+    }
     case "data/merge":
       return {
         ...state,
+        attention: attentionReducer(state.attention, {
+          type: "bind-connections",
+          connections: action.connections,
+        }),
         connections: mergeConnections(state.connections, action.connections),
         questions: mergeQuestions(state.questions, action.questions),
       };
@@ -756,32 +839,41 @@ export function readerSessionReducer(
         selection: { kind: "none" },
         connection: emptyConnectionDraft(),
       };
-    case "question/open":
-      {
-        const draftId = questionDraftId(state.questionDraftSequence + 1);
-        return {
-          ...state,
-          questionDraftSequence: state.questionDraftSequence + 1,
-          selection:
-            state.selection.kind === "selected"
-              ? state.selection
-              : {
-                  kind: "selected",
-                  document: action.document,
-                  anchor: action.anchor,
-                  preview: action.anchor.quote,
-                  rect: null,
-                },
-          question: {
-            kind: "draft",
-            draftId,
-            document: action.document,
-            anchor: action.anchor,
-            body: "",
-            error: null,
-          },
-        };
-      }
+    case "question/open": {
+      const draftId = questionDraftId(state.questionDraftSequence + 1);
+      return {
+        ...state,
+        questionDraftSequence: state.questionDraftSequence + 1,
+        selection:
+          state.selection.kind === "selected"
+            ? state.selection
+            : {
+                kind: "selected",
+                surfaceId:
+                  findOccurrence(
+                    state.attention,
+                    action.document.id,
+                    action.document.revisionId,
+                  )?.surfaceId ??
+                  primarySurfaceId(
+                    action.document.id,
+                    action.document.revisionId,
+                  ),
+                document: action.document,
+                anchor: action.anchor,
+                preview: action.anchor.quote,
+                rect: null,
+              },
+        question: {
+          kind: "draft",
+          draftId,
+          document: action.document,
+          anchor: action.anchor,
+          body: "",
+          error: null,
+        },
+      };
+    }
     case "question/body": {
       const question = state.question;
       if (question.kind === "closed") return state;
@@ -973,9 +1065,7 @@ export function readerSessionReducer(
                   ? (active.sentBody ?? active.body.trim())
                   : active.body.trim(),
               deliveryAttemptId:
-                "deliveryAttemptId" in active
-                  ? active.deliveryAttemptId
-                  : null,
+                "deliveryAttemptId" in active ? active.deliveryAttemptId : null,
               error: null,
             }
           : active,
@@ -1177,6 +1267,10 @@ export function readerSessionReducer(
         state.connection.saveRequestId === action.requestId;
       return {
         ...state,
+        attention: attentionReducer(state.attention, {
+          type: "bind-connections",
+          connections: [action.connection],
+        }),
         connection: accepted ? emptyConnectionDraft() : state.connection,
         connections: state.connections.some(
           (item) => item.id === action.connection.id,
@@ -1587,12 +1681,8 @@ function updateQuestionTask(
 }
 
 function attentionRevisionIds(attention: AttentionState): Set<RevisionId> {
-  const ids = new Set<RevisionId>();
-  if (attention.attention.kind !== "reading") return ids;
-  ids.add(attention.attention.current.revisionId);
-  if (attention.attention.companion)
-    ids.add(attention.attention.companion.position.revisionId);
-  return ids;
+  const focus = focusedPosition(attention);
+  return new Set(focus ? [focus.revisionId] : []);
 }
 
 function cacheRevision(
@@ -1622,10 +1712,4 @@ function cacheRevision(
   return next;
 }
 
-export type {
-  AttentionAction,
-  AttentionState,
-  CameraPose,
-  ReadingPosition,
-  SurfaceRole,
-};
+export type { AttentionAction, AttentionState, CameraPose, ReadingPosition };

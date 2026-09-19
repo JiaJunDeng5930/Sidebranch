@@ -97,6 +97,7 @@ export class SceneInteraction {
   }
   pointerDown(event: PointerInput) {
     if (event.button !== 0 || !(event.target instanceof Element)) return;
+    if (!this.gesture) this.suppressed = false;
     const edge = event.target.closest<HTMLElement>("[data-paper-grip]");
     if (
       !edge &&

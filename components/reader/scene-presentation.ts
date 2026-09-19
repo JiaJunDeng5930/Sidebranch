@@ -1,8 +1,3 @@
-import {
-  orientation,
-  worldPoint,
-  type PaperPose,
-} from "../../lib/reader/camera";
 export type { PaperPose } from "../../lib/reader/camera";
 export type PaperRect = {
   left: number;
@@ -16,18 +11,7 @@ export type SurfaceLayout = {
   scroll: PaperRect;
   maxScroll: number;
 };
-/** The two loaded occurrences are only a first-slice adapter. Their poses are
- * materialized in SpaceView and are never recalculated when focus changes. */
-export function defaultPaperPose(index: number): PaperPose {
-  return {
-    position: worldPoint(
-      index === 0 ? -300 : 360,
-      index === 0 ? -12 : 35,
-      index === 0 ? 110 : -260,
-    ),
-    orientation: index === 0 ? orientation(-2, 7, -1) : orientation(3, -13, 2),
-  };
-}
+export { defaultPaperPose } from "../../lib/reader/attention";
 export function rangeScrollTarget(
   top: number,
   bottom: number,

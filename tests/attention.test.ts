@@ -17,8 +17,10 @@ import {
   emptyAttention,
   readingPosition,
   returnHistoryIndex,
-  type AttentionState,
+  focusedPosition,
+  primarySurfaceId,
   type ReadingPosition,
+  type AttentionState,
 } from "../lib/reader/attention";
 import {
   formatConnectionLabel,
@@ -30,8 +32,8 @@ import {
   resolveEdgeActivation,
   type NeighborhoodKnowledge,
 } from "../lib/reader/space-index";
-import { createSpaceView, manualPlacement } from "../lib/reader/space-view";
-import { CAMERA_HOME, worldPoint, orientation } from "../lib/reader/camera";
+import { manualPlacement } from "../lib/reader/space-view";
+import { worldPoint } from "../lib/reader/camera";
 
 function id(prefix: string, value: number): string {
   return `${prefix}-0000-4000-8000-${value.toString(16).padStart(12, "0")}`;
@@ -101,116 +103,128 @@ function connectionBetween(
   };
 }
 
-test("attention preserves complete A/B reading context through promote and history", () => {
-  const a = summary(1, "Alpha"),
-    b = summary(2, "Beta");
-  let state = emptyAttention();
-  state = attentionReducer(state, {
-    type: "navigate",
-    position: position(a, 4),
+test("catalogue creates persistent occurrences before any payload and navigation retains A/B/C", () => {
+  const documents = [summary(1, "A"), summary(2, "B"), summary(3, "C")];
+  let state = attentionReducer(emptyAttention(), {
+    type: "catalogue",
+    documents,
   });
-  const inspection = createConnectionInspection(
-    connectionBetween(1, a, b),
-    position(a, 4),
-    position(b, 8),
-    "from",
-  );
-  assert.ok(inspection);
-  state = attentionReducer(state, {
-    type: "inspect-connection",
-    inspection,
-  });
-  assert.equal(state.history.length, 2);
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.current.documentId, a.id);
-  assert.equal(state.attention.companion?.position.documentId, b.id);
-
-  state = attentionReducer(state, { type: "promote" });
-  assert.equal(state.history.length, 3);
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.current.documentId, b.id);
-  assert.equal(state.attention.companion?.position.documentId, a.id);
+  assert.equal(state.space.surfaces.size, 3);
+  assert.equal(state.view.focus, null);
   assert.equal(
-    state.attention.companion?.reason.kind === "connection"
-      ? state.attention.companion.reason.currentEndpoint
-      : null,
-    "to",
+    new Set([...state.view.placements.values()].map((p) => p.position.x)).size,
+    3,
   );
-  assert.equal(returnHistoryIndex(state), 1);
-
+  const ids = documents.map((d) => primarySurfaceId(d.id, d.revisionId));
+  for (const surfaceId of ids)
+    state = attentionReducer(state, { type: "focus-surface", surfaceId });
+  const moved = manualPlacement(worldPoint(77, 88, 99));
+  state = attentionReducer(state, {
+    type: "view",
+    view: {
+      ...state.view,
+      placements: new Map(state.view.placements).set(ids[1], moved),
+    },
+  });
   state = attentionReducer(state, { type: "history", index: 1 });
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.current.documentId, a.id);
-  assert.equal(state.attention.current.scrollTop, 4);
-  assert.equal(state.attention.current.focus?.start, 0);
-  assert.equal(state.attention.companion?.position.documentId, b.id);
-  assert.equal(state.attention.companion?.position.scrollTop, 8);
-  assert.equal(state.history.length, 3, "history restore does not append");
+  assert.equal(focusedPosition(state)?.documentId, documents[1].id);
+  assert.equal(state.space.surfaces.size, 3);
+  assert.deepEqual(state.view.placements.get(ids[1]), moved);
+  state = attentionReducer(state, { type: "focus-surface", surfaceId: ids[0] });
+  assert.equal(state.history.length, 3);
+  assert.equal(state.space.surfaces.has(ids[2]), true);
+  assert.equal(returnHistoryIndex(state), 1);
 });
 
-test("connection inspection keeps occurrence identity, aligns twice without history, and swaps both ends", () => {
-  const a = summary(60, "Alpha");
-  const b = summary(61, "Beta");
-  const relation = connectionBetween(60, a, b);
-  const current = position(a, 2);
-  const companion = position(b, 4);
-  const inspection = createConnectionInspection(
-    relation,
-    { ...current, surfaceId: surfaceInstanceId("a-occurrence") },
-    { ...companion, surfaceId: surfaceInstanceId("b-occurrence") },
-    "from",
-  );
-  assert.ok(inspection);
+test("history restores focus, camera and scroll without restoring old paper poses", () => {
+  const a = position(summary(4, "A")),
+    b = position(summary(5, "B"));
   let state = attentionReducer(emptyAttention(), {
-    type: "inspect-connection",
-    inspection,
+    type: "navigate",
+    position: a,
   });
-  assert.equal(state.history.length, 1);
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.notEqual(
-    state.attention.current.surfaceId,
-    state.attention.companion?.position.surfaceId,
-  );
-  const realigned = createConnectionInspection(
-    relation,
-    { ...inspection.current, scrollTop: 140 },
-    { ...inspection.companion, scrollTop: 220 },
-    "from",
-  );
-  assert.ok(realigned);
   state = attentionReducer(state, {
-    type: "inspect-connection",
-    inspection: realigned,
+    type: "scroll",
+    surfaceId: a.surfaceId,
+    scrollTop: 240,
   });
-  assert.equal(state.history.length, 1, "alignment does not append history");
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.current.scrollTop, 140);
-  state = attentionReducer(state, { type: "promote" });
-  assert.equal(state.history.length, 2);
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.current.documentId, b.id);
-  assert.equal(state.attention.companion?.position.documentId, a.id);
+  const savedCamera = state.view.camera;
+  state = attentionReducer(state, { type: "navigate", position: b });
+  state = attentionReducer(state, {
+    type: "scroll",
+    surfaceId: a.surfaceId,
+    scrollTop: 700,
+  });
+  state = attentionReducer(state, { type: "history", index: 0 });
+  assert.equal(focusedPosition(state)?.scrollTop, 240);
+  assert.deepEqual(state.view.camera, savedCamera);
+  assert.equal(state.space.surfaces.size, 2);
+});
+
+test("same-revision connections bind two distinct retained occurrences and validate exact endpoints", () => {
+  const document = summary(6, "Self"),
+    other = summary(7, "Other");
+  const relation = connectionBetween(6, document, document);
+  let state = attentionReducer(emptyAttention(), {
+    type: "catalogue",
+    documents: [document],
+  });
+  state = attentionReducer(state, {
+    type: "bind-connections",
+    connections: [relation],
+  });
+  const binding = state.bindings.get(relation.id)!;
+  assert.notEqual(binding.from, binding.to);
+  assert.equal(state.space.surfaces.size, 2);
+  const from = state.space.surfaces.get(binding.from)!,
+    to = state.space.surfaces.get(binding.to)!;
+  assert.equal(createConnectionInspection(relation, from, from, "from"), null);
   assert.equal(
-    state.attention.companion?.reason.kind === "connection"
-      ? state.attention.companion.reason.currentEndpoint
-      : null,
-    "to",
-  );
-  assert.equal(
-    createConnectionInspection(
-      relation,
-      { ...inspection.current, documentId: b.id },
-      inspection.companion,
-      "from",
-    ),
+    createConnectionInspection(relation, from, position(other), "from"),
     null,
   );
+  const inspection = createConnectionInspection(relation, from, to, "from")!;
+  state = attentionReducer(state, { type: "inspect-connection", inspection });
+  assert.equal(state.view.focus, binding.to);
+  assert.equal(
+    state.space.surfaces.get(binding.from)?.focus?.start,
+    relation.from.start,
+  );
+  assert.equal(
+    state.space.surfaces.get(binding.to)?.focus?.start,
+    relation.to.start,
+  );
+  state = attentionReducer(state, {
+    type: "focus-surface",
+    surfaceId: binding.from,
+  });
+  assert.deepEqual(state.bindings.get(relation.id), binding);
+});
+
+test("new catalogue revisions and late payload metadata never overwrite occurrence identity or focus", () => {
+  const document = summary(8, "Old");
+  let state = attentionReducer(emptyAttention(), {
+    type: "catalogue",
+    documents: [document],
+  });
+  const oldId = state.space.primary.get(document.id)!;
+  state = attentionReducer(state, { type: "focus-surface", surfaceId: oldId });
+  const newer = {
+    ...document,
+    revisionId: summary(9, "New").revisionId,
+    sequence: 6,
+  };
+  state = attentionReducer(state, { type: "catalogue", documents: [newer] });
+  assert.equal(state.space.surfaces.size, 2);
+  assert.notEqual(state.space.primary.get(document.id), oldId);
+  assert.equal(state.view.focus, oldId);
+  const before = state;
+  state = attentionReducer(state, {
+    type: "admit",
+    position: readingPosition(newer, oldId),
+    metadata: newer,
+  });
+  assert.equal(state, before);
 });
 
 test("relation navigation keeps both endpoints and stable same-range order", () => {
@@ -241,107 +255,6 @@ test("relation navigation keeps both endpoints and stable same-range order", () 
     items[0]?.label,
     formatConnectionLabel(first, items[0]!.endpoint),
   );
-});
-
-test("scroll, focus, and camera replace the current history snapshot", () => {
-  const a = summary(3, "Alpha"),
-    b = summary(4, "Beta");
-  let state = emptyAttention();
-  state = attentionReducer(state, { type: "navigate", position: position(a) });
-  state = attentionReducer(state, {
-    type: "compare",
-    position: position(b),
-    reason: { kind: "document" },
-  });
-  const historyLength = state.history.length;
-  state = attentionReducer(state, {
-    type: "scroll",
-    surfaceId:
-      state.attention.kind === "reading"
-        ? state.attention.companion!.position.surfaceId
-        : surfaceInstanceId("missing"),
-    scrollTop: 120,
-  });
-  state = attentionReducer(state, {
-    type: "focus",
-    surfaceId:
-      state.attention.kind === "reading"
-        ? state.attention.current.surfaceId
-        : surfaceInstanceId("missing"),
-    focus: AnchorInput.parse({
-      revisionId: a.revisionId,
-      start: 2,
-      end: 4,
-      quote: "ab",
-    }),
-  });
-  state = attentionReducer(state, {
-    type: "view",
-    view: createSpaceView({
-      ...CAMERA_HOME,
-      position: worldPoint(3, -2, 1480 / 0.8),
-      orientation: orientation(-4, 12),
-    }),
-  });
-  assert.equal(state.history.length, historyLength);
-  const currentEntry = state.history[state.historyIndex];
-  assert.equal(currentEntry?.view.camera.position.z, 1850);
-  assert.equal(currentEntry?.attention.kind, "reading");
-  if (!currentEntry || currentEntry.attention.kind !== "reading") return;
-  assert.equal(currentEntry.attention.companion?.position.scrollTop, 120);
-  assert.equal(currentEntry.attention.current.focus?.start, 2);
-});
-
-test("loading destinations preserve camera checkpoints", () => {
-  const a = summary(30, "Alpha"),
-    b = summary(31, "Beta");
-  let state = attentionReducer(emptyAttention(), {
-    type: "navigate",
-    position: position(a),
-  });
-  const firstPose = {
-    ...CAMERA_HOME,
-    position: worldPoint(240, -90, 1480 / 0.8),
-    orientation: orientation(-4, 12),
-  };
-  state = attentionReducer(state, {
-    type: "view",
-    view: createSpaceView(firstPose),
-  });
-  state = attentionReducer(state, {
-    type: "compare",
-    position: position(b),
-    reason: { kind: "document" },
-  });
-  assert.deepEqual(
-    state.view.camera,
-    state.history[state.historyIndex - 1]?.view.camera,
-  );
-  assert.deepEqual(state.history[0]?.view, {
-    focus: null,
-    camera: firstPose,
-    placements: new Map(),
-  });
-
-  const comparePose = {
-    ...CAMERA_HOME,
-    position: worldPoint(-180, 64, 1480 / 1.2),
-    orientation: orientation(3, -8),
-  };
-  state = attentionReducer(state, {
-    type: "view",
-    view: createSpaceView(comparePose),
-  });
-  state = attentionReducer(state, { type: "promote" });
-  assert.deepEqual(
-    state.view.camera,
-    state.history[state.historyIndex - 1]?.view.camera,
-  );
-  assert.deepEqual(state.history[1]?.view, {
-    focus: null,
-    camera: comparePose,
-    placements: new Map(),
-  });
 });
 
 test("edge activation follows only an exact loaded current-to-target connection", () => {
@@ -388,110 +301,6 @@ test("edge activation follows only an exact loaded current-to-target connection"
       kind: "compare",
       target: { documentId: b.id, revisionId: b.revisionId, focus: null },
     },
-  );
-});
-
-test("return-to-current is reversible and branch navigation drops forward history", () => {
-  const a = summary(5, "Alpha"),
-    b = summary(6, "Beta"),
-    c = summary(7, "Gamma");
-  let state = emptyAttention();
-  state = attentionReducer(state, { type: "navigate", position: position(a) });
-  state = attentionReducer(state, {
-    type: "compare",
-    position: position(b),
-    reason: { kind: "revision" },
-  });
-  state = attentionReducer(state, { type: "return-to-current" });
-  assert.equal(state.history.length, 3);
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.companion, null);
-  state = attentionReducer(state, { type: "history", index: 1 });
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.companion?.position.documentId, b.id);
-
-  state = attentionReducer(state, { type: "navigate", position: position(c) });
-  assert.equal(state.history.length, 3);
-  assert.equal(state.historyIndex, 2);
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  assert.equal(state.attention.current.documentId, c.id);
-});
-
-test("space history carries occurrence placements without losing scroll", () => {
-  const a = summary(70, "Alpha"),
-    b = summary(71, "Beta");
-  let state = attentionReducer(emptyAttention(), {
-    type: "navigate",
-    position: position(a, 5),
-  });
-  state = attentionReducer(state, {
-    type: "compare",
-    position: position(b, 8),
-    reason: { kind: "document" },
-  });
-  assert.equal(state.attention.kind, "reading");
-  if (state.attention.kind !== "reading") return;
-  const currentId = state.attention.current.surfaceId;
-  const companionId = state.attention.companion!.position.surfaceId;
-  state = attentionReducer(state, {
-    type: "view",
-    view: createSpaceView(
-      {
-        ...CAMERA_HOME,
-        position: worldPoint(1_200, -900, 1480 / 1.4),
-        orientation: orientation(-4, 8),
-      },
-      new Map([
-        [currentId, manualPlacement(worldPoint(320, -140))],
-        [
-          surfaceInstanceId("stale-occurrence"),
-          manualPlacement(worldPoint(9, 9)),
-        ],
-      ]),
-    ),
-  });
-  state = attentionReducer(state, {
-    type: "scroll",
-    surfaceId: companionId,
-    scrollTop: 640,
-  });
-  const freeIndex = state.historyIndex;
-  assert.equal(state.history.length, 2);
-  assert.deepEqual(state.view.placements.get(currentId), {
-    position: worldPoint(320, -140),
-    orientation: [0, 0, 0, 1],
-  });
-  assert.equal(
-    state.view.placements.has(surfaceInstanceId("stale-occurrence")),
-    true,
-  );
-  assert.equal(
-    state.attention.kind === "reading"
-      ? state.attention.companion?.position.scrollTop
-      : null,
-    640,
-  );
-
-  const checkpoint = state.view;
-  state = attentionReducer(state, { type: "promote" });
-  assert.equal(state.history.length, 3);
-  assert.deepEqual(state.view, checkpoint);
-  assert.equal(
-    state.attention.kind === "reading"
-      ? state.attention.current.scrollTop
-      : null,
-    640,
-  );
-  state = attentionReducer(state, { type: "history", index: freeIndex });
-  assert.equal(state.view.camera.position.z, 1480 / 1.4);
-  assert.equal(
-    state.attention.kind === "reading"
-      ? state.attention.companion?.position.scrollTop
-      : null,
-    640,
   );
 });
 
