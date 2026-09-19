@@ -7,14 +7,11 @@ import type {
   QuestionId,
   RevisionId,
 } from "../domain/model";
-import type {
-  ConnectionEndpoint,
-  SurfaceInstanceId,
-} from "./spatial-contract";
+import type { ConnectionEndpoint, SurfaceInstanceId } from "./spatial-contract";
 import {
   copySpaceView,
   normalizeSpaceView,
-  readingView,
+  createSpaceView,
   sameSpaceView,
   type SpaceView,
 } from "./space-view";
@@ -32,13 +29,8 @@ export interface ReadingPosition {
 
 export type SurfaceRole = "current" | "companion";
 
-export interface CameraPose {
-  readonly x: number;
-  readonly y: number;
-  readonly yaw: number;
-  readonly pitch: number;
-  readonly zoom: number;
-}
+export type { CameraPose } from "./camera";
+import { CAMERA_HOME, type CameraPose } from "./camera";
 
 export type ComparisonReason =
   | {
@@ -98,7 +90,8 @@ export function createConnectionInspection(
 ): ConnectionInspection | null {
   if (current.surfaceId === companion.surfaceId) return null;
   const currentAnchor = connection[currentEndpoint];
-  const companionAnchor = connection[currentEndpoint === "from" ? "to" : "from"];
+  const companionAnchor =
+    connection[currentEndpoint === "from" ? "to" : "from"];
   if (
     current.documentId !== currentAnchor.documentId ||
     current.revisionId !== currentAnchor.revisionId ||
@@ -149,18 +142,10 @@ export type AttentionAction =
       readonly surfaceId: SurfaceInstanceId;
       readonly position: ReadingPosition;
     }
-  | { readonly type: "view"; readonly view: SpaceView }
-  /** Explicitly append a reading view so a preceding free arrangement is Back-reversible. */
-  | { readonly type: "return-to-reading" };
+  | { readonly type: "view"; readonly view: SpaceView };
 
 /** The initial presentation used before a document has been selected. */
-export const DEFAULT_CAMERA: CameraPose = {
-  x: 0,
-  y: 0,
-  yaw: 0,
-  pitch: 0,
-  zoom: 1,
-};
+export const DEFAULT_CAMERA: CameraPose = CAMERA_HOME;
 
 function finiteOr(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
@@ -238,21 +223,18 @@ function copySnapshot(snapshot: AttentionSnapshot): AttentionSnapshot {
     attention,
     view:
       attention.kind === "empty"
-        ? readingView(null)
+        ? createSpaceView()
         : copySpaceView(snapshot.view, activeSurfaceIds(attention)),
   };
 }
 
-function snapshotOf(
-  attention: Attention,
-  view: SpaceView,
-): AttentionSnapshot {
+function snapshotOf(attention: Attention, view: SpaceView): AttentionSnapshot {
   const copiedAttention = copyAttention(attention);
   return {
     attention: copiedAttention,
     view:
       copiedAttention.kind === "empty"
-        ? readingView(null)
+        ? createSpaceView()
         : normalizeSpaceView(view, activeSurfaceIds(copiedAttention)),
   };
 }
@@ -314,7 +296,7 @@ function sameAttention(left: Attention, right: Attention): boolean {
 export function emptyAttention(): AttentionState {
   return {
     attention: { kind: "empty" },
-    view: readingView(null),
+    view: createSpaceView(),
     history: [],
     historyIndex: -1,
   };
@@ -523,13 +505,8 @@ export function attentionReducer(
         current: normalizePosition(action.position),
         companion: null,
       };
-      if (sameAttention(state.attention, next)) {
-        const nextView = readingView(null);
-        return sameSpaceView(state.view, nextView)
-          ? state
-          : updateLive(state, next, nextView);
-      }
-      return append(state, next, readingView(null));
+      if (sameAttention(state.attention, next)) return state;
+      return append(state, next, state.view);
     }
     case "compare": {
       if (state.attention.kind === "empty") return state;
@@ -541,13 +518,8 @@ export function attentionReducer(
           reason: copyReason(action.reason),
         },
       };
-      if (sameAttention(state.attention, next)) {
-        const nextView = readingView(null);
-        return sameSpaceView(state.view, nextView)
-          ? state
-          : updateLive(state, next, nextView);
-      }
-      return append(state, next, readingView(null));
+      if (sameAttention(state.attention, next)) return state;
+      return append(state, next, state.view);
     }
     case "inspect-connection": {
       const inspection = action.inspection;
@@ -569,21 +541,14 @@ export function attentionReducer(
       if (
         state.attention.kind === "reading" &&
         state.attention.companion?.reason.kind === "connection" &&
-        sameReason(
-          state.attention.companion.reason,
-          nextCompanion!.reason,
-        ) &&
+        sameReason(state.attention.companion.reason, nextCompanion!.reason) &&
         state.attention.current.surfaceId === next.current.surfaceId &&
         state.attention.companion.position.surfaceId ===
           nextCompanion!.position.surfaceId
       )
-        return updateLive(state, next, readingView(null));
-      if (sameAttention(state.attention, next)) {
-        return sameSpaceView(state.view, readingView(null))
-          ? state
-          : updateLive(state, next, readingView(null));
-      }
-      return append(state, next, readingView(null));
+        return updateLive(state, next, state.view);
+      if (sameAttention(state.attention, next)) return state;
+      return append(state, next, state.view);
     }
     case "promote": {
       if (state.attention.kind === "empty" || !state.attention.companion)
@@ -603,14 +568,14 @@ export function attentionReducer(
             },
           },
         };
-        return append(state, next, readingView(null));
+        return append(state, next, state.view);
       }
       const next: Attention = {
         kind: "reading",
         current: copyPosition(companion.position),
         companion: null,
       };
-      return append(state, next, readingView(null));
+      return append(state, next, state.view);
     }
     case "return-to-current": {
       if (state.attention.kind === "empty" || !state.attention.companion)
@@ -620,13 +585,7 @@ export function attentionReducer(
         current: copyPosition(state.attention.current),
         companion: null,
       };
-      return append(state, next, readingView(null));
-    }
-    case "return-to-reading": {
-      if (state.attention.kind === "empty") return state;
-      const nextView = readingView(null);
-      if (sameSpaceView(state.view, nextView)) return state;
-      return append(state, state.attention, nextView);
+      return append(state, next, state.view);
     }
     case "history": {
       if (
@@ -692,11 +651,11 @@ export function attentionReducer(
     case "view": {
       const next =
         state.attention.kind === "empty"
-          ? readingView(null)
+          ? state.view
           : normalizeSpaceView(
               action.view,
               activeSurfaceIds(state.attention),
-              state.view.kind === "free" ? state.view.camera : DEFAULT_CAMERA,
+              state.view.camera,
             );
       if (sameSpaceView(next, state.view)) return state;
       return updateLive(state, state.attention, next);

@@ -52,7 +52,6 @@ export function changesReadingContext(action: AttentionAction): boolean {
     case "scroll":
     case "focus":
     case "view":
-    case "return-to-reading":
       return false;
   }
 }

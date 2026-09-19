@@ -1,13 +1,13 @@
-import type { Anchor } from "../../lib/domain/model";
+import type { AnchorInput } from "../../lib/domain/model";
 import type { CameraPose } from "../../lib/reader/attention";
 import {
   isProjectionSafe,
-  worldPoint,
   worldToScreen,
   type CameraViewport,
   type ScreenPoint,
+  type WorldPoint3,
 } from "../../lib/reader/camera";
-import type { RangeFragment, Point } from "../../lib/reader/range-geometry";
+import type { RangeFragment } from "../../lib/reader/range-geometry";
 import type {
   AnchorCoverage,
   PassageHandle,
@@ -25,7 +25,7 @@ type Rect = { left: number; top: number; right: number; bottom: number };
 
 /** A proxy can leave the paper safety domain; hide its whole primitive before projection. */
 export function projectScenePoints(
-  points: readonly Point[],
+  points: readonly WorldPoint3[],
   camera: CameraPose,
   viewport: CameraViewport,
 ): readonly ScreenPoint[] {
@@ -35,7 +35,7 @@ export function projectScenePoints(
     )
   )
     return [];
-  const world = points.map((point) => worldPoint(point.x, point.y));
+  const world = points;
   if (!isProjectionSafe(world, camera)) return [];
   return world.map((point) => worldToScreen(point, camera, viewport));
 }
@@ -112,18 +112,14 @@ export class SceneGeometry {
 
   resolveAnchor(
     surfaceId: SurfaceInstanceId,
-    anchor: Anchor,
+    anchor: AnchorInput,
     handle: PassageHandle | undefined,
     scroll: HTMLElement | null | undefined,
     layoutPass: boolean,
   ): CachedAnchorGeometry | undefined {
-    const key = [
-      surfaceId,
-      anchor.documentId,
-      anchor.revisionId,
-      anchor.start,
-      anchor.end,
-    ].join(":");
+    const key = [surfaceId, anchor.revisionId, anchor.start, anchor.end].join(
+      ":",
+    );
     let cached = this.ranges.get(key);
     // Only a neutral layout pass may read browser ranges. Hidden occurrences
     // retain their previous measurable coordinates until their layout changes.

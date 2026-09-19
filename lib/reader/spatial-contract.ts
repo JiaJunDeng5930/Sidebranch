@@ -12,7 +12,7 @@ import type { DocumentTarget, NeighborhoodKnowledge } from "./space-index";
 import { relationNames } from "./relations";
 import type { ReadingPosition, SurfaceRole } from "./attention";
 
-/** A front-end occurrence of a revision on the reading plane.
+/** A front-end occurrence of a revision in the document space.
  *
  * This is deliberately separate from `RevisionId`: the same immutable
  * revision may be rendered in both ends of an internal connection, and each
@@ -200,8 +200,6 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
   readonly selectedConnectionId: ConnectionId | null;
   readonly pending: PendingSurface | null;
   readonly onReadBeside: (target: DocumentTarget) => void;
-  readonly onPromote: () => void;
-  readonly onReturnToCurrent: () => void;
   readonly onFollow: (activation: ConnectionActivation) => void;
   readonly onStepConnection: (direction: -1 | 1) => void;
   readonly relationNavigation: RelationNavigationState;
@@ -214,7 +212,6 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
     presentationId: number,
   ) => void;
   readonly onViewCheckpoint: (checkpoint: ViewCheckpoint) => void;
-  readonly onReturnToReading: () => void;
   readonly renderDocument: (
     surface: ReadingSurface,
     role: SurfaceRole,

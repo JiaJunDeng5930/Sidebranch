@@ -2,7 +2,9 @@
 
 Date: 2026-09-20
 
-Status: accepted
+Status: superseded in its planar placement, two-surface and reading/free assumptions
+by [ADR 0006](0006-three-dimensional-document-space.md). The input transaction
+and independent reading-position requirements remain applicable.
 
 ## Context
 

@@ -1,124 +1,76 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import {
-  CAMERA_LIMITS,
-  constrainCameraPose,
-  poseForScreenAnchor,
-  projectionSafety,
-  screenPoint,
-  screenToWorld,
+  CAMERA_HOME,
   worldPoint,
   worldToScreen,
+  paperPoint,
+  paperToWorld,
+  screenToPlane,
+  orientation,
+  orbitCamera,
+  focusCamera,
+  cameraTransform,
+  paperTransform,
+  viewMatrix,
 } from "../lib/reader/camera";
-import type { CameraPose } from "../lib/reader/attention";
-
-const viewport = { width: 1363, height: 936 };
-
-function assertClose(actual: number, expected: number, message: string): void {
-  assert.ok(
-    Math.abs(actual - expected) < 1e-6,
-    `${message}: expected ${expected}, got ${actual}`,
-  );
-}
-
-test("camera projection is the inverse of the CSS perspective transform", () => {
-  const poses: CameraPose[] = [
-    { x: 0, y: 0, yaw: 0, pitch: 0, zoom: 1 },
-    { x: 120, y: -80, yaw: 18, pitch: -8, zoom: 1.3 },
-    { x: -340, y: 230, yaw: -20, pitch: 10, zoom: 0.6 },
-  ];
-  const points = [worldPoint(0, 0), worldPoint(300, -120), worldPoint(-700, 600)];
-
-  for (const pose of poses) {
-    for (const point of points) {
-      const screen = worldToScreen(point, pose, viewport);
-      const roundTrip = screenToWorld(screen, pose, viewport);
-      assertClose(roundTrip.x, point.x, "world x");
-      assertClose(roundTrip.y, point.y, "world y");
-    }
-  }
-});
-
-test("screen anchor remains fixed when zoom changes with yaw and pitch", () => {
-  const pose: CameraPose = {
-    x: 96,
-    y: -42,
-    yaw: 16,
-    pitch: -7,
-    zoom: 1,
+import { mat4, vec4 } from "gl-matrix";
+const viewport = { width: 1440, height: 900 };
+const close = (a: number, b: number) =>
+  assert.ok(Math.abs(a - b) < 0.002, `${a} != ${b}`);
+test("independent rotated paper points round trip through a camera ray and plane", () => {
+  const paper = {
+    position: worldPoint(240, 80, -370),
+    orientation: orientation(8, -17, 3),
   };
-  const screen = screenPoint(814, 386);
-  const world = screenToWorld(screen, pose, viewport);
-  const zoomed = poseForScreenAnchor(
-    world,
-    screen,
-    { ...pose, zoom: 1.55 },
+  const camera = orbitCamera(CAMERA_HOME, 85, -20);
+  const world = paperToWorld(paperPoint(150, 260), paper, 600, 700);
+  const screen = worldToScreen(world, camera, viewport);
+  const hit = screenToPlane(screen, camera, viewport, world)!;
+  close(hit.x, world.x);
+  close(hit.y, world.y);
+  close(hit.z, world.z);
+});
+test("CSS and range geometry use identical model and view projection", () => {
+  const paper = {
+    position: worldPoint(-160, 40, -250),
+    orientation: orientation(-3, 15, 2),
+  };
+  const camera = orbitCamera(CAMERA_HOME, 35, 10);
+  const parse = (s: string) =>
+    s.slice(9, -1).split(",").map(Number) as unknown as mat4;
+  const css = mat4.multiply(
+    mat4.create(),
+    parse(cameraTransform(camera)),
+    parse(paperTransform(paper, 600, 700)),
+  );
+  const p = vec4.transformMat4(vec4.create(), [170, 230, 0, 1], css);
+  const factor = camera.perspective / (camera.perspective - p[2]);
+  const screen = worldToScreen(
+    paperToWorld(paperPoint(170, 230), paper, 600, 700),
+    camera,
     viewport,
   );
-  const projected = worldToScreen(world, zoomed, viewport);
-  assertClose(projected.x, screen.x, "anchored screen x");
-  assertClose(projected.y, screen.y, "anchored screen y");
+  close(screen.x, viewport.width / 2 + p[0] * factor);
+  close(screen.y, viewport.height / 2 + p[1] * factor);
 });
-
-test("the common projection round-trips at the complete zoom range", () => {
-  const points = [worldPoint(-280, -180), worldPoint(140, 240)];
-  for (const zoom of [CAMERA_LIMITS.zoomMin, 1, CAMERA_LIMITS.zoomMax]) {
-    for (const yaw of [-22, 0, 22]) {
-      for (const pitch of [-10, 0, 10]) {
-        const pose: CameraPose = {
-          x: 120,
-          y: -80,
-          yaw,
-          pitch,
-          zoom,
-        };
-        for (const point of points) {
-          const screen = worldToScreen(point, pose, viewport);
-          const roundTrip = screenToWorld(screen, pose, viewport);
-          assertClose(roundTrip.x, point.x, "range round-trip x");
-          assertClose(roundTrip.y, point.y, "range round-trip y");
-        }
-      }
-    }
-  }
-});
-
-test("paper corners are a shared projection domain and bad angles converge", () => {
-  const remoteCorners = [
-    worldPoint(10_640, 410),
-    worldPoint(10_640, 810),
-    worldPoint(10_000, 410),
-    worldPoint(10_000, 810),
-  ];
-  const unsafe: CameraPose = {
-    x: 0,
-    y: 0,
-    yaw: 22,
-    pitch: 10,
-    zoom: 1.8,
+test("depth changes parallax and focus approaches the existing independent pose", () => {
+  const camera = orbitCamera(CAMERA_HOME, 70, 0);
+  const near = worldToScreen(worldPoint(0, 0, 200), camera, viewport),
+    far = worldToScreen(worldPoint(0, 0, -400), camera, viewport);
+  assert.ok(Math.abs(near.x - far.x) > 100);
+  const paper = {
+    position: worldPoint(500, -80, -350),
+    orientation: orientation(3, 12),
   };
-  assert.equal(projectionSafety(remoteCorners, unsafe).valid, false);
-  const safe = constrainCameraPose(unsafe, unsafe, {
-    safetyCorners: remoteCorners,
-  });
-  assert.equal(projectionSafety(remoteCorners, safe).valid, true);
-  assert.ok(Math.abs(safe.yaw) < Math.abs(unsafe.yaw));
-  assert.ok(Math.abs(safe.pitch) < Math.abs(unsafe.pitch));
-});
-
-test("an invalid candidate retains its previous finite translation", () => {
-  const previous: CameraPose = {
-    x: 12_000,
-    y: -9_000,
-    yaw: 4,
-    pitch: -3,
-    zoom: 1.2,
-  };
-  const repaired = constrainCameraPose(
-    { ...previous, x: Number.NaN, zoom: Number.POSITIVE_INFINITY },
-    previous,
+  const focused = focusCamera(camera, paper);
+  const center = worldToScreen(paper.position, focused, viewport);
+  close(center.x, 720);
+  close(center.y, 450);
+  const pose = vec4.transformMat4(
+    vec4.create(),
+    [paper.position.x, paper.position.y, paper.position.z, 1],
+    viewMatrix(focused),
   );
-  assert.equal(repaired.x, previous.x);
-  assert.equal(repaired.y, previous.y);
-  assert.equal(repaired.zoom, previous.zoom);
+  close(pose[2], -focused.perspective);
 });

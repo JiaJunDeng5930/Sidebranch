@@ -199,8 +199,7 @@ function SpaceDesignHarness() {
         action.type !== "view"
       )
         controllerRef.current?.cancelInput();
-      if (action.type === "return-to-reading") requestPresentation("layout");
-      else if (action.type === "history") {
+      if (action.type === "history") {
         requestPresentation("restore");
       } else if (
         action.type === "navigate" ||
@@ -339,14 +338,6 @@ function SpaceDesignHarness() {
     () => controllerRef.current?.measure(),
     [],
   );
-  const onPromote = useCallback(
-    () => dispatchAttention({ type: "promote" }),
-    [dispatchAttention],
-  );
-  const onReturnToCurrent = useCallback(
-    () => dispatchAttention({ type: "return-to-current" }),
-    [dispatchAttention],
-  );
   const onHistory = useCallback(
     (index: number) => dispatchAttention({ type: "history", index }),
     [dispatchAttention],
@@ -372,10 +363,7 @@ function SpaceDesignHarness() {
     },
     [dispatchAttention],
   );
-  const onReturnToReading = useCallback(
-    () => dispatchAttention({ type: "return-to-reading" }),
-    [dispatchAttention],
-  );
+
   const onStepConnection = useCallback(
     (direction: -1 | 1) => {
       const attention = stateRef.current.attention;
@@ -573,8 +561,6 @@ function SpaceDesignHarness() {
             }
             pending={null}
             onReadBeside={onReadBeside}
-            onPromote={onPromote}
-            onReturnToCurrent={onReturnToCurrent}
             onFollow={onFollow}
             onStepConnection={onStepConnection}
             relationNavigation={relationNavigation}
@@ -582,7 +568,6 @@ function SpaceDesignHarness() {
             onHistory={onHistory}
             onScroll={onScroll}
             onViewCheckpoint={onViewCheckpoint}
-            onReturnToReading={onReturnToReading}
             renderDocument={renderDocument}
             loadPreview={loadPreview}
           />

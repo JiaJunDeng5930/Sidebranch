@@ -230,8 +230,7 @@ export function Reader({
 
   const dispatchAttention = useCallback(
     (action: AttentionAction) => {
-      if (changesReadingContext(action) || action.type === "return-to-reading")
-        controllerRef.current?.cancelInput();
+      if (changesReadingContext(action)) controllerRef.current?.cancelInput();
       if (changesReadingContext(action)) {
         attentionEpochRef.current = nextRequest(attentionEpochRef.current);
         pendingConnectionRef.current = null;
@@ -240,8 +239,6 @@ export function Reader({
       }
       const current = sessionRef.current.attention.attention;
       if (action.type === "history") requestPresentation("restore");
-      else if (action.type === "return-to-reading")
-        requestPresentation("layout");
       else if (
         action.type === "navigate" ||
         action.type === "compare" ||
@@ -1340,18 +1337,6 @@ export function Reader({
     [dispatch, dispatchAttention, hasInteractionProtection, readOpenResult],
   );
 
-  const onPromote = useCallback(() => {
-    if (sessionRef.current.attention.attention.kind !== "reading") return;
-    if (!sessionRef.current.attention.attention.companion) return;
-    dispatchAttention({ type: "promote" });
-    dispatch({ type: "status", message: null });
-  }, [dispatch, dispatchAttention]);
-
-  const onReturnToCurrent = useCallback(() => {
-    dispatchAttention({ type: "return-to-current" });
-    setPendingSurface(null);
-  }, [dispatchAttention]);
-
   const onHistory = useCallback(
     (index: number) => {
       dispatchAttention({ type: "history", index });
@@ -1380,27 +1365,8 @@ export function Reader({
       if (generation !== presentationRef.current.id) return;
       const attention = sessionRef.current.attention.attention;
       if (attention.kind !== "reading") return;
-      const ids = new Set([
-        attention.current.surfaceId,
-        attention.companion?.position.surfaceId,
-      ]);
-      if (
-        view.kind === "free" &&
-        [...view.placements.keys()].some((id) => !ids.has(id))
-      )
-        return;
-      if (
-        view.kind === "reading" &&
-        view.exposedSurfaceId !== null &&
-        !ids.has(view.exposedSurfaceId)
-      )
-        return;
       dispatchAttention({ type: "view", view });
     },
-    [dispatchAttention],
-  );
-  const onReturnToReading = useCallback(
-    () => dispatchAttention({ type: "return-to-reading" }),
     [dispatchAttention],
   );
 
@@ -1792,7 +1758,7 @@ export function Reader({
         type: "status",
         message:
           draft.kind === "create"
-            ? "文档已创建；可从空间边缘旁读它。"
+            ? "文档已创建；可点击空间中的折页打开。"
             : draft.kind === "rename"
               ? "文档已移动。"
               : "已保存新版本。",
@@ -2368,13 +2334,9 @@ export function Reader({
     <main className="reader-shell reader-palette" style={readerPaletteStyle}>
       <header className="reader-topbar">
         <div className="brand-lockup">
-          <button
-            type="button"
-            className="brand-button"
-            onClick={() => controllerRef.current?.resetCamera()}
-          >
+          <div className="brand-button">
             Xanadu<span>Sidebranch</span>
-          </button>
+          </div>
           <span className="space-state">
             {session.catalogue.activeComplete ? "阅读空间" : "正在载入空间"}
           </span>
@@ -2572,8 +2534,6 @@ export function Reader({
               selectedConnectionId={selectedConnectionId}
               pending={pendingSurface}
               onReadBeside={(target: DocumentTarget) => void readBeside(target)}
-              onPromote={onPromote}
-              onReturnToCurrent={onReturnToCurrent}
               onFollow={onFollow}
               onStepConnection={onStepConnection}
               relationNavigation={relationNavigation}
@@ -2581,7 +2541,6 @@ export function Reader({
               onHistory={onHistory}
               onScroll={onScroll}
               onViewCheckpoint={onViewCheckpoint}
-              onReturnToReading={onReturnToReading}
               renderDocument={renderDocument}
               renderDocumentMenu={renderDocumentMenu}
               loadPreview={loadPreview}

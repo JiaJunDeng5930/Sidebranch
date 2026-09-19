@@ -30,12 +30,8 @@ import {
   resolveEdgeActivation,
   type NeighborhoodKnowledge,
 } from "../lib/reader/space-index";
-import {
-  freeView,
-  manualPlacement,
-  readingView,
-} from "../lib/reader/space-view";
-import { worldPoint } from "../lib/reader/camera";
+import { createSpaceView, manualPlacement } from "../lib/reader/space-view";
+import { CAMERA_HOME, worldPoint, orientation } from "../lib/reader/camera";
 
 function id(prefix: string, value: number): string {
   return `${prefix}-0000-4000-8000-${value.toString(16).padStart(12, "0")}`;
@@ -226,10 +222,7 @@ test("relation navigation keeps both endpoints and stable same-range order", () 
     from: { ...secondBase.from, start: 0, end: 2 },
     to: { ...secondBase.to, start: 0, end: 2 },
   };
-  const items = relationNavigationItems(
-    [second, first],
-    document.revisionId,
-  );
+  const items = relationNavigationItems([second, first], document.revisionId);
   assert.equal(items.length, 4);
   assert.deepEqual(
     items.map((item) => [item.connectionId, item.endpoint]),
@@ -244,7 +237,10 @@ test("relation navigation keeps both endpoints and stable same-range order", () 
     items.filter((item) => item.connectionId === first.id).length,
     2,
   );
-  assert.equal(items[0]?.label, formatConnectionLabel(first, items[0]!.endpoint));
+  assert.equal(
+    items[0]?.label,
+    formatConnectionLabel(first, items[0]!.endpoint),
+  );
 });
 
 test("scroll, focus, and camera replace the current history snapshot", () => {
@@ -281,50 +277,68 @@ test("scroll, focus, and camera replace the current history snapshot", () => {
   });
   state = attentionReducer(state, {
     type: "view",
-    view: freeView({ x: 3, y: -2, yaw: 12, pitch: -4, zoom: 0.8 }),
+    view: createSpaceView({
+      ...CAMERA_HOME,
+      position: worldPoint(3, -2, 1480 / 0.8),
+      orientation: orientation(-4, 12),
+    }),
   });
   assert.equal(state.history.length, historyLength);
   const currentEntry = state.history[state.historyIndex];
-  assert.equal(
-    currentEntry?.view.kind === "free" ? currentEntry.view.camera.zoom : null,
-    0.8,
-  );
+  assert.equal(currentEntry?.view.camera.position.z, 1850);
   assert.equal(currentEntry?.attention.kind, "reading");
   if (!currentEntry || currentEntry.attention.kind !== "reading") return;
   assert.equal(currentEntry.attention.companion?.position.scrollTop, 120);
   assert.equal(currentEntry.attention.current.focus?.start, 2);
 });
 
-test("intentional destinations use readable home framing and preserve the old pose", () => {
+test("loading destinations preserve camera checkpoints", () => {
   const a = summary(30, "Alpha"),
     b = summary(31, "Beta");
   let state = attentionReducer(emptyAttention(), {
     type: "navigate",
     position: position(a),
   });
-  const firstPose = { x: 240, y: -90, yaw: 12, pitch: -4, zoom: 0.8 };
-  state = attentionReducer(state, { type: "view", view: freeView(firstPose) });
+  const firstPose = {
+    ...CAMERA_HOME,
+    position: worldPoint(240, -90, 1480 / 0.8),
+    orientation: orientation(-4, 12),
+  };
+  state = attentionReducer(state, {
+    type: "view",
+    view: createSpaceView(firstPose),
+  });
   state = attentionReducer(state, {
     type: "compare",
     position: position(b),
     reason: { kind: "document" },
   });
-  assert.deepEqual(state.view, { kind: "reading", exposedSurfaceId: null });
+  assert.deepEqual(
+    state.view.camera,
+    state.history[state.historyIndex - 1]?.view.camera,
+  );
   assert.deepEqual(state.history[0]?.view, {
-    kind: "free",
+    focus: null,
     camera: firstPose,
     placements: new Map(),
   });
 
-  const comparePose = { x: -180, y: 64, yaw: -8, pitch: 3, zoom: 1.2 };
+  const comparePose = {
+    ...CAMERA_HOME,
+    position: worldPoint(-180, 64, 1480 / 1.2),
+    orientation: orientation(3, -8),
+  };
   state = attentionReducer(state, {
     type: "view",
-    view: freeView(comparePose),
+    view: createSpaceView(comparePose),
   });
   state = attentionReducer(state, { type: "promote" });
-  assert.deepEqual(state.view, { kind: "reading", exposedSurfaceId: null });
+  assert.deepEqual(
+    state.view.camera,
+    state.history[state.historyIndex - 1]?.view.camera,
+  );
   assert.deepEqual(state.history[1]?.view, {
-    kind: "free",
+    focus: null,
     camera: comparePose,
     placements: new Map(),
   });
@@ -344,20 +358,32 @@ test("edge activation follows only an exact loaded current-to-target connection"
 
   assert.deepEqual(
     resolveEdgeActivation(
-      { connectionId: direct.id, target: { ...target, documentId: b.id, revisionId: b.revisionId } },
+      {
+        connectionId: direct.id,
+        target: { ...target, documentId: b.id, revisionId: b.revisionId },
+      },
       a.revisionId,
       [direct],
     ),
     { kind: "follow", connectionId: direct.id },
   );
   assert.deepEqual(
-    resolveEdgeActivation({ connectionId: secondHop.id, target }, a.revisionId, [
-      secondHop,
-    ]),
+    resolveEdgeActivation(
+      { connectionId: secondHop.id, target },
+      a.revisionId,
+      [secondHop],
+    ),
     { kind: "compare", target },
   );
   assert.deepEqual(
-    resolveEdgeActivation({ connectionId: direct.id, target: { ...target, documentId: b.id, revisionId: b.revisionId } }, a.revisionId, []),
+    resolveEdgeActivation(
+      {
+        connectionId: direct.id,
+        target: { ...target, documentId: b.id, revisionId: b.revisionId },
+      },
+      a.revisionId,
+      [],
+    ),
     {
       kind: "compare",
       target: { documentId: b.id, revisionId: b.revisionId, focus: null },
@@ -394,7 +420,7 @@ test("return-to-current is reversible and branch navigation drops forward histor
   assert.equal(state.attention.current.documentId, c.id);
 });
 
-test("free view history carries occurrence placements without losing scroll", () => {
+test("space history carries occurrence placements without losing scroll", () => {
   const a = summary(70, "Alpha"),
     b = summary(71, "Beta");
   let state = attentionReducer(emptyAttention(), {
@@ -412,11 +438,18 @@ test("free view history carries occurrence placements without losing scroll", ()
   const companionId = state.attention.companion!.position.surfaceId;
   state = attentionReducer(state, {
     type: "view",
-    view: freeView(
-      { x: 1_200, y: -900, yaw: 8, pitch: -4, zoom: 1.4 },
+    view: createSpaceView(
+      {
+        ...CAMERA_HOME,
+        position: worldPoint(1_200, -900, 1480 / 1.4),
+        orientation: orientation(-4, 8),
+      },
       new Map([
         [currentId, manualPlacement(worldPoint(320, -140))],
-        [surfaceInstanceId("stale-occurrence"), manualPlacement(worldPoint(9, 9))],
+        [
+          surfaceInstanceId("stale-occurrence"),
+          manualPlacement(worldPoint(9, 9)),
+        ],
       ]),
     ),
   });
@@ -427,13 +460,14 @@ test("free view history carries occurrence placements without losing scroll", ()
   });
   const freeIndex = state.historyIndex;
   assert.equal(state.history.length, 2);
-  assert.equal(state.view.kind, "free");
-  if (state.view.kind !== "free") return;
   assert.deepEqual(state.view.placements.get(currentId), {
-    kind: "manual",
-    center: worldPoint(320, -140),
+    position: worldPoint(320, -140),
+    orientation: [0, 0, 0, 1],
   });
-  assert.equal(state.view.placements.has(surfaceInstanceId("stale-occurrence")), false);
+  assert.equal(
+    state.view.placements.has(surfaceInstanceId("stale-occurrence")),
+    true,
+  );
   assert.equal(
     state.attention.kind === "reading"
       ? state.attention.companion?.position.scrollTop
@@ -441,19 +475,18 @@ test("free view history carries occurrence placements without losing scroll", ()
     640,
   );
 
-  state = attentionReducer(state, { type: "return-to-reading" });
+  const checkpoint = state.view;
+  state = attentionReducer(state, { type: "promote" });
   assert.equal(state.history.length, 3);
-  assert.deepEqual(state.view, readingView(null));
+  assert.deepEqual(state.view, checkpoint);
   assert.equal(
     state.attention.kind === "reading"
-      ? state.attention.companion?.position.scrollTop
+      ? state.attention.current.scrollTop
       : null,
     640,
   );
   state = attentionReducer(state, { type: "history", index: freeIndex });
-  assert.equal(state.view.kind, "free");
-  if (state.view.kind !== "free") return;
-  assert.equal(state.view.camera.zoom, 1.4);
+  assert.equal(state.view.camera.position.z, 1480 / 1.4);
   assert.equal(
     state.attention.kind === "reading"
       ? state.attention.companion?.position.scrollTop

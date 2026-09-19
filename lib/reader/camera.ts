@@ -1,439 +1,302 @@
-import type { CameraPose } from "./attention";
+import { mat4, quat, vec3, vec4 } from "gl-matrix";
 
-declare const worldPointBrand: unique symbol;
-declare const screenPointBrand: unique symbol;
-
-/** A coordinate on the shared z=0 world plane. */
-export type WorldPoint = {
-  readonly x: number;
-  readonly y: number;
-  readonly [worldPointBrand]: "WorldPoint";
-};
-
-/** A coordinate relative to the measured scene viewport. */
-export type ScreenPoint = {
-  readonly x: number;
-  readonly y: number;
-  readonly [screenPointBrand]: "ScreenPoint";
-};
-
-/** Construct a checked world coordinate at a module boundary. */
-export function worldPoint(x: number, y: number): WorldPoint {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new RangeError("world point coordinates must be finite");
-  }
-  return { x, y } as WorldPoint;
-}
-
-/** Construct a checked viewport coordinate at a module boundary. */
-export function screenPoint(x: number, y: number): ScreenPoint {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new RangeError("screen point coordinates must be finite");
-  }
-  return { x, y } as ScreenPoint;
-}
-
-/**
- * The zoom and angle domain shared by camera gestures and presentation
- * animation. Camera translation has no arbitrary coordinate clamp: its usable
- * domain is determined together with the active paper projection.
- */
-export const CAMERA_LIMITS = {
-  zoomMin: 0.2,
-  zoomMax: 3,
-  yaw: 22,
-  pitch: 10,
-} as const;
-
-/** Home camera derived by every reading view. */
-export const CAMERA_HOME: CameraPose = {
-  x: 0,
-  y: 0,
-  yaw: 0,
-  pitch: 0,
-  zoom: 1,
-};
-
-/**
- * The viewport uses `perspective: 1480px` and a 50% / 47% perspective
- * origin. Keep these values next to the projection rather than letting the
- * beam code grow a second, approximate camera model.
- */
-export const CSS_PERSPECTIVE_DISTANCE = 1480;
-export const CSS_PERSPECTIVE_ORIGIN = { x: 0.5, y: 0.47 } as const;
-
-export type CameraViewport = Readonly<{
-  width: number;
-  height: number;
+declare const worldBrand: unique symbol;
+declare const paperBrand: unique symbol;
+declare const screenBrand: unique symbol;
+export type WorldPoint3 = Readonly<{
+  x: number;
+  y: number;
+  z: number;
+  [worldBrand]: true;
 }>;
-
-function finite(value: number): boolean {
-  return Number.isFinite(value);
+export type WorldPoint = WorldPoint3;
+export type PaperPoint = Readonly<{ x: number; y: number; [paperBrand]: true }>;
+export type ScreenPoint = Readonly<{
+  x: number;
+  y: number;
+  [screenBrand]: true;
+}>;
+export type Quaternion = readonly [number, number, number, number];
+export type PaperPose = Readonly<{
+  position: WorldPoint3;
+  orientation: Quaternion;
+}>;
+export type CameraPose = Readonly<{
+  position: WorldPoint3;
+  orientation: Quaternion;
+  target: WorldPoint3;
+  perspective: number;
+  near: number;
+}>;
+export type CameraViewport = Readonly<{ width: number; height: number }>;
+export const worldPoint = (x: number, y: number, z = 0): WorldPoint3 => {
+  if (![x, y, z].every(Number.isFinite))
+    throw new RangeError("World coordinates must be finite");
+  return { x, y, z } as WorldPoint3;
+};
+export const paperPoint = (x: number, y: number): PaperPoint =>
+  ({ x, y }) as PaperPoint;
+export const screenPoint = (x: number, y: number): ScreenPoint =>
+  ({ x, y }) as ScreenPoint;
+const tuple = (v: quat): Quaternion => [v[0], v[1], v[2], v[3]];
+const vector = (p: WorldPoint3): vec3 => vec3.fromValues(p.x, p.y, p.z);
+const point = (v: vec3): WorldPoint3 => worldPoint(v[0], v[1], v[2]);
+export const CAMERA_HOME: CameraPose = {
+  position: worldPoint(0, 0, 1480),
+  orientation: [0, 0, 0, 1],
+  target: worldPoint(0, 0, 0),
+  perspective: 1480,
+  near: 24,
+};
+export function orientation(x: number, y: number, z = 0): Quaternion {
+  return tuple(quat.fromEuler(quat.create(), x, y, z));
 }
-
-function finitePose(pose: CameraPose): boolean {
-  return (
-    finite(pose.x) &&
-    finite(pose.y) &&
-    finite(pose.yaw) &&
-    finite(pose.pitch) &&
-    finite(pose.zoom)
-  );
-}
-
-function checkedViewport(viewport: CameraViewport): CameraViewport {
-  if (
-    !finite(viewport.width) ||
-    !finite(viewport.height) ||
-    viewport.width <= 0 ||
-    viewport.height <= 0
-  ) {
-    throw new RangeError("camera viewport must have positive finite dimensions");
-  }
-  return viewport;
-}
-
-function checkedWorldPoint(point: WorldPoint): void {
-  if (!finite(point.x) || !finite(point.y)) {
-    throw new RangeError("world point coordinates must be finite");
-  }
-}
-
-function checkedScreenPoint(point: ScreenPoint): void {
-  if (!finite(point.x) || !finite(point.y)) {
-    throw new RangeError("screen point coordinates must be finite");
-  }
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.max(minimum, Math.min(maximum, value));
-}
-
-/**
- * Normalize an untrusted pose using the last legal pose as the field-level
- * fallback. Translation remains unbounded; only finite values are required.
- */
 export function normalizeCameraPose(
   pose: CameraPose,
-  fallback: CameraPose = CAMERA_HOME,
+  fallback = CAMERA_HOME,
 ): CameraPose {
-  const fallbackX = finite(fallback.x) ? fallback.x : CAMERA_HOME.x;
-  const fallbackY = finite(fallback.y) ? fallback.y : CAMERA_HOME.y;
-  const fallbackYaw = finite(fallback.yaw) ? fallback.yaw : CAMERA_HOME.yaw;
-  const fallbackPitch = finite(fallback.pitch)
-    ? fallback.pitch
-    : CAMERA_HOME.pitch;
-  const fallbackZoom = finite(fallback.zoom) ? fallback.zoom : CAMERA_HOME.zoom;
-  const x = finite(pose.x) ? pose.x : fallbackX;
-  const y = finite(pose.y) ? pose.y : fallbackY;
-  const yaw = clamp(
-    finite(pose.yaw) ? pose.yaw : fallbackYaw,
-    -CAMERA_LIMITS.yaw,
-    CAMERA_LIMITS.yaw,
-  );
-  const pitch = clamp(
-    finite(pose.pitch) ? pose.pitch : fallbackPitch,
-    -CAMERA_LIMITS.pitch,
-    CAMERA_LIMITS.pitch,
-  );
-  const zoom = clamp(
-    finite(pose.zoom) ? pose.zoom : fallbackZoom,
-    CAMERA_LIMITS.zoomMin,
-    CAMERA_LIMITS.zoomMax,
-  );
-  return { x, y, yaw, pitch, zoom };
-}
-
-export function isCameraPoseLegal(pose: CameraPose): boolean {
-  return (
-    finitePose(pose) &&
-    pose.zoom >= CAMERA_LIMITS.zoomMin &&
-    pose.zoom <= CAMERA_LIMITS.zoomMax &&
-    Math.abs(pose.yaw) <= CAMERA_LIMITS.yaw &&
-    Math.abs(pose.pitch) <= CAMERA_LIMITS.pitch
-  );
-}
-
-function rotationCoefficients(pose: CameraPose) {
-  const yaw = (pose.yaw * Math.PI) / 180;
-  const pitch = (pose.pitch * Math.PI) / 180;
-  const cosYaw = Math.cos(yaw);
-  const sinYaw = Math.sin(yaw);
-  const cosPitch = Math.cos(pitch);
-  const sinPitch = Math.sin(pitch);
-  const zoom = pose.zoom;
-
-  // CSS applies `rotateX(-pitch) rotateY(-yaw) scale(zoom)` to the translated
-  // point. These are the coefficients for the z=0 world plane after that
-  // transform. Keeping them explicit also makes the inverse homography
-  // independent of DOM reads during camera-only motion.
+  const finite = (p: WorldPoint3) =>
+    p && [p.x, p.y, p.z].every(Number.isFinite);
+  const rotation =
+    pose.orientation?.every(Number.isFinite) &&
+    Math.hypot(...pose.orientation) > 0
+      ? tuple(quat.normalize(quat.create(), pose.orientation))
+      : fallback.orientation;
   return {
-    x: { u: cosYaw * zoom, v: 0 },
-    y: { u: sinPitch * sinYaw * zoom, v: cosPitch * zoom },
-    z: { u: cosPitch * sinYaw * zoom, v: -sinPitch * zoom },
+    position: finite(pose.position) ? pose.position : fallback.position,
+    target: finite(pose.target) ? pose.target : fallback.target,
+    orientation: rotation,
+    perspective:
+      Number.isFinite(pose.perspective) && pose.perspective > 0
+        ? pose.perspective
+        : fallback.perspective,
+    near:
+      Number.isFinite(pose.near) && pose.near > 0 ? pose.near : fallback.near,
   };
 }
-
-/** The CSS perspective denominator for a world point at a given pose. */
-export function projectionWeight(world: WorldPoint, pose: CameraPose): number {
-  if (!finitePose(pose) || !finite(world.x) || !finite(world.y)) return NaN;
-  const normalizedPose = normalizeCameraPose(pose, pose);
-  const coefficients = rotationCoefficients(normalizedPose);
-  const u = world.x - normalizedPose.x;
-  const v = world.y - normalizedPose.y;
-  const transformedZ = coefficients.z.u * u + coefficients.z.v * v;
-  return 1 - transformedZ / CSS_PERSPECTIVE_DISTANCE;
+export function modelMatrix(pose: PaperPose): mat4 {
+  return mat4.fromRotationTranslation(
+    mat4.create(),
+    pose.orientation,
+    vector(pose.position),
+  );
 }
-
-export interface ProjectionSafety {
-  readonly valid: boolean;
-  readonly minimumWeight: number;
+export function viewMatrix(camera: CameraPose): mat4 {
+  return mat4.invert(
+    mat4.create(),
+    mat4.fromRotationTranslation(
+      mat4.create(),
+      camera.orientation,
+      vector(camera.position),
+    ),
+  )!;
 }
-
-/** Check the four corners (or any supplied world samples) as one domain. */
-export function projectionSafety(
-  corners: readonly WorldPoint[],
-  pose: CameraPose,
-): ProjectionSafety {
-  if (!isCameraPoseLegal(pose) || corners.length === 0) {
-    return { valid: false, minimumWeight: Number.NaN };
-  }
-  let minimumWeight = Number.POSITIVE_INFINITY;
-  for (const corner of corners) {
-    checkedWorldPoint(corner);
-    const weight = projectionWeight(corner, pose);
-    if (!finite(weight)) return { valid: false, minimumWeight: weight };
-    minimumWeight = Math.min(minimumWeight, weight);
-  }
-  return {
-    valid: minimumWeight >= 0.25,
-    minimumWeight,
-  };
+// CSS uses x right, y down, z toward the observer. A +perspective translation
+// puts the pinhole at CSS's perspective origin; M and V otherwise stay literal.
+export function cameraTransform(camera: CameraPose): string {
+  const matrix = mat4.multiply(
+    mat4.create(),
+    mat4.fromTranslation(mat4.create(), [0, 0, camera.perspective]),
+    viewMatrix(camera),
+  );
+  return matrixCss(matrix);
 }
-
-export function isProjectionSafe(
-  corners: readonly WorldPoint[],
-  pose: CameraPose,
-): boolean {
-  return projectionSafety(corners, pose).valid;
+export function matrixCss(matrix: mat4): string {
+  return `matrix3d(${Array.from(matrix).join(",")})`;
 }
-
-/**
- * Project a scene point using the same transform order as
- * `.spatial-scene-world`. Coordinates are local to the viewport: (0, 0) is
- * its top-left and the world origin is its center.
- */
+export function paperTransform(
+  pose: PaperPose,
+  width: number,
+  height: number,
+): string {
+  return matrixCss(
+    mat4.translate(modelMatrix(pose), modelMatrix(pose), [
+      -width / 2,
+      -height / 2,
+      0,
+    ]),
+  );
+}
+export function paperToWorld(
+  local: PaperPoint,
+  pose: PaperPose,
+  width: number,
+  height: number,
+): WorldPoint3 {
+  return point(
+    vec3.transformMat4(
+      vec3.create(),
+      [local.x - width / 2, local.y - height / 2, 0],
+      modelMatrix(pose),
+    ),
+  );
+}
+export function projectionMatrix(
+  camera: CameraPose,
+  viewport: CameraViewport,
+): mat4 {
+  const p = mat4.create();
+  for (let i = 0; i < 16; i++) p[i] = 0;
+  p[0] = (2 * camera.perspective) / viewport.width;
+  p[5] = (-2 * camera.perspective) / viewport.height;
+  p[10] = -1;
+  p[11] = -1;
+  p[14] = -2 * camera.near;
+  return p;
+}
 export function worldToScreen(
-  world: WorldPoint,
-  pose: CameraPose,
+  world: WorldPoint3,
+  camera: CameraPose,
   viewport: CameraViewport,
 ): ScreenPoint {
-  checkedWorldPoint(world);
-  const measuredViewport = checkedViewport(viewport);
-  const normalizedPose = normalizeCameraPose(pose, pose);
-  const originX = measuredViewport.width / 2;
-  const originY = measuredViewport.height / 2;
-  const perspectiveX = measuredViewport.width * CSS_PERSPECTIVE_ORIGIN.x;
-  const perspectiveY = measuredViewport.height * CSS_PERSPECTIVE_ORIGIN.y;
-  const coefficients = rotationCoefficients(normalizedPose);
-  const u = world.x - normalizedPose.x;
-  const v = world.y - normalizedPose.y;
-  const transformed = {
-    x: originX + coefficients.x.u * u + coefficients.x.v * v,
-    y: originY + coefficients.y.u * u + coefficients.y.v * v,
-    z: coefficients.z.u * u + coefficients.z.v * v,
-  };
-  const perspectiveScale = 1 - transformed.z / CSS_PERSPECTIVE_DISTANCE;
-  if (!finite(perspectiveScale) || perspectiveScale <= 0) {
-    throw new RangeError("world point lies beyond the camera perspective plane");
-  }
-
+  const value = vec4.transformMat4(
+    vec4.create(),
+    [world.x, world.y, world.z, 1],
+    mat4.multiply(
+      mat4.create(),
+      projectionMatrix(camera, viewport),
+      viewMatrix(camera),
+    ),
+  );
+  if (value[3] < camera.near) return screenPoint(NaN, NaN);
   return screenPoint(
-    perspectiveX + (transformed.x - perspectiveX) / perspectiveScale,
-    perspectiveY + (transformed.y - perspectiveY) / perspectiveScale,
+    ((value[0] / value[3] + 1) * viewport.width) / 2,
+    ((1 - value[1] / value[3]) * viewport.height) / 2,
   );
 }
-
-/**
- * Invert `worldToScreen` on the scene's z=0 plane. This is an inverse
- * projective transform, rather than a 2-D rotation approximation, so a
- * pointer anchor remains stable while yaw, pitch or zoom is changing.
- */
-export function screenToWorld(
-  screen: ScreenPoint,
-  pose: CameraPose,
-  viewport: CameraViewport,
-): WorldPoint {
-  checkedScreenPoint(screen);
-  const measuredViewport = checkedViewport(viewport);
-  const normalizedPose = normalizeCameraPose(pose, pose);
-  const originX = measuredViewport.width / 2;
-  const originY = measuredViewport.height / 2;
-  const perspectiveX = measuredViewport.width * CSS_PERSPECTIVE_ORIGIN.x;
-  const perspectiveY = measuredViewport.height * CSS_PERSPECTIVE_ORIGIN.y;
-  const coefficients = rotationCoefficients(normalizedPose);
-  const distance = CSS_PERSPECTIVE_DISTANCE;
-
-  // Homogeneous screen coefficients for
-  //   screen = perspectiveOrigin + (transformed - perspectiveOrigin) / w
-  // where w = 1 - transformed.z / distance.
-  const denominator = {
-    u: -coefficients.z.u / distance,
-    v: -coefficients.z.v / distance,
-  };
-  const numeratorX = {
-    u: coefficients.x.u - (perspectiveX * coefficients.z.u) / distance,
-    v: coefficients.x.v - (perspectiveX * coefficients.z.v) / distance,
-    constant: originX,
-  };
-  const numeratorY = {
-    u: coefficients.y.u - (perspectiveY * coefficients.z.u) / distance,
-    v: coefficients.y.v - (perspectiveY * coefficients.z.v) / distance,
-    constant: originY,
-  };
-
-  const a = numeratorX.u - screen.x * denominator.u;
-  const b = numeratorX.v - screen.x * denominator.v;
-  const c = numeratorX.constant - screen.x;
-  const d = numeratorY.u - screen.y * denominator.u;
-  const e = numeratorY.v - screen.y * denominator.v;
-  const f = numeratorY.constant - screen.y;
-  const determinant = a * e - b * d;
-
-  // The legal camera domain keeps the inverse well-conditioned. If an
-  // external caller still supplies a singular input, retain the normalized
-  // camera center rather than inventing a zero coordinate.
-  if (!finite(determinant) || Math.abs(determinant) < 1e-8) {
-    return worldPoint(normalizedPose.x, normalizedPose.y);
-  }
-
-  const u = (b * f - c * e) / determinant;
-  const v = (c * d - a * f) / determinant;
-  if (!finite(u) || !finite(v)) {
-    return worldPoint(normalizedPose.x, normalizedPose.y);
-  }
-  return worldPoint(u + normalizedPose.x, v + normalizedPose.y);
-}
-
-export interface ScreenAnchorConstraint {
-  readonly world: WorldPoint;
-  readonly screen: ScreenPoint;
-  readonly viewport: CameraViewport;
-}
-
-export interface PoseForScreenAnchorOptions {
-  /** Active paper corners used as the shared projection domain. */
-  readonly safetyCorners?: readonly WorldPoint[];
-}
-
-function anchoredPose(
-  world: WorldPoint,
-  screen: ScreenPoint,
-  pose: CameraPose,
-  viewport: CameraViewport,
-): CameraPose {
-  const normalizedPose = normalizeCameraPose(pose, pose);
-  const relative = screenToWorld(
-    screen,
-    { ...normalizedPose, x: 0, y: 0 },
-    viewport,
+export function isProjectionSafe(
+  points: readonly WorldPoint3[],
+  camera: CameraPose,
+): boolean {
+  const view = viewMatrix(camera);
+  return points.every(
+    (p) =>
+      vec3.transformMat4(vec3.create(), vector(p), view)[2] <= -camera.near,
   );
-  const x = world.x - relative.x;
-  const y = world.y - relative.y;
+}
+export function cameraAxis(
+  camera: CameraPose,
+  axis: readonly [number, number, number],
+): WorldPoint3 {
+  return point(vec3.transformQuat(vec3.create(), axis, camera.orientation));
+}
+export function screenRay(
+  screen: ScreenPoint,
+  camera: CameraPose,
+  viewport: CameraViewport,
+): { origin: WorldPoint3; direction: WorldPoint3 } {
+  // This is inverse P followed by inverse V, in CSS's down-positive axes.
+  const direction = vec3.normalize(vec3.create(), [
+    (screen.x - viewport.width / 2) / camera.perspective,
+    (screen.y - viewport.height / 2) / camera.perspective,
+    -1,
+  ]);
   return {
-    ...normalizedPose,
-    x: finite(x) ? x : normalizedPose.x,
-    y: finite(y) ? y : normalizedPose.y,
+    origin: camera.position,
+    direction: point(
+      vec3.transformQuat(direction, direction, camera.orientation),
+    ),
   };
 }
-
-function convergeAnglesToSafety(
-  pose: CameraPose,
-  safetyCorners: readonly WorldPoint[],
-  anchor: ScreenAnchorConstraint | null,
-): CameraPose {
-  if (isProjectionSafe(safetyCorners, pose)) return pose;
-  const makeCandidate = (factor: number): CameraPose => {
-    const requested = {
-      ...pose,
-      yaw: pose.yaw * factor,
-      pitch: pose.pitch * factor,
-    };
-    return anchor
-      ? anchoredPose(anchor.world, anchor.screen, requested, anchor.viewport)
-      : requested;
-  };
-
-  // At zero yaw/pitch every z=0 point has w=1. Find the largest safe point on
-  // the straight angle path so a distant paper cannot cross the perspective
-  // plane while the pointer anchor remains fixed.
-  let low = 0;
-  let high = 1;
-  for (let iteration = 0; iteration < 28; iteration += 1) {
-    const middle = (low + high) / 2;
-    if (isProjectionSafe(safetyCorners, makeCandidate(middle))) low = middle;
-    else high = middle;
-  }
-  return makeCandidate(low);
-}
-
-/**
- * Return a pose whose supplied world point remains under `screen`. If paper
- * corners are supplied, yaw and pitch converge together toward zero until the
- * anchored candidate is inside the shared w>=0.25 domain.
- */
-export function poseForScreenAnchor(
-  world: WorldPoint,
+export function screenToPlane(
   screen: ScreenPoint,
-  pose: CameraPose,
+  camera: CameraPose,
   viewport: CameraViewport,
-  options: PoseForScreenAnchorOptions = {},
-): CameraPose {
-  checkedWorldPoint(world);
-  checkedScreenPoint(screen);
-  const candidate = anchoredPose(world, screen, pose, viewport);
-  const corners = options.safetyCorners;
-  return corners?.length
-    ? convergeAnglesToSafety(candidate, corners, {
-        world,
-        screen,
-        viewport,
-      })
-    : candidate;
-}
-
-export interface CameraConstraintOptions {
-  readonly safetyCorners?: readonly WorldPoint[];
-  readonly anchor?: ScreenAnchorConstraint;
-}
-
-/** Constrain a candidate without ever clamping translation to a magic range. */
-export function constrainCameraPose(
-  candidate: CameraPose,
-  fallback: CameraPose = CAMERA_HOME,
-  options: CameraConstraintOptions = {},
-): CameraPose {
-  const normalized = normalizeCameraPose(candidate, fallback);
-  const anchor = options.anchor;
-  const anchored = anchor
-    ? poseForScreenAnchor(
-        anchor.world,
-        anchor.screen,
-        normalized,
-        anchor.viewport,
-        { safetyCorners: options.safetyCorners },
+  origin: WorldPoint3,
+  normal = cameraAxis(camera, [0, 0, 1]),
+): WorldPoint3 | null {
+  const ray = screenRay(screen, camera, viewport);
+  const denominator = vec3.dot(vector(ray.direction), vector(normal));
+  if (Math.abs(denominator) < 1e-6) return null;
+  const t =
+    vec3.dot(
+      vec3.sub(vec3.create(), vector(origin), vector(ray.origin)),
+      vector(normal),
+    ) / denominator;
+  return t > 0
+    ? point(
+        vec3.scaleAndAdd(
+          vec3.create(),
+          vector(ray.origin),
+          vector(ray.direction),
+          t,
+        ),
       )
-    : normalized;
-  return options.safetyCorners?.length
-    ? convergeAnglesToSafety(anchored, options.safetyCorners, anchor ?? null)
-    : anchored;
+    : null;
 }
-
-/**
- * Match the transform list on `.spatial-scene-world`. The perspective lives
- * on the parent viewport, so it is intentionally not included here.
- */
-export function cameraTransform(pose: CameraPose): string {
-  const normalized = normalizeCameraPose(pose, pose);
-  return `rotateX(${-normalized.pitch}deg) rotateY(${-normalized.yaw}deg) scale(${normalized.zoom}) translate3d(${-normalized.x}px, ${-normalized.y}px, 0)`;
+export function orbitCamera(
+  camera: CameraPose,
+  dx: number,
+  dy: number,
+): CameraPose {
+  const rotation = quat.multiply(
+    quat.create(),
+    orientation(-dy * 0.23, dx * 0.23),
+    camera.orientation,
+  );
+  const distance = vec3.distance(
+    vector(camera.position),
+    vector(camera.target),
+  );
+  const offset = vec3.transformQuat(vec3.create(), [0, 0, distance], rotation);
+  return {
+    ...camera,
+    orientation: tuple(rotation),
+    position: point(vec3.add(offset, vector(camera.target), offset)),
+  };
+}
+export function panCamera(
+  camera: CameraPose,
+  dx: number,
+  dy: number,
+): CameraPose {
+  const distance = vec3.distance(
+    vector(camera.position),
+    vector(camera.target),
+  );
+  const move = vec3.transformQuat(
+    vec3.create(),
+    [
+      (-dx * distance) / camera.perspective,
+      (-dy * distance) / camera.perspective,
+      0,
+    ],
+    camera.orientation,
+  );
+  return {
+    ...camera,
+    position: point(vec3.add(vec3.create(), vector(camera.position), move)),
+    target: point(vec3.add(vec3.create(), vector(camera.target), move)),
+  };
+}
+export function dollyCamera(camera: CameraPose, amount: number): CameraPose {
+  const distance = vec3.distance(
+    vector(camera.position),
+    vector(camera.target),
+  );
+  const next = Math.max(160, Math.min(20000, distance * Math.exp(amount)));
+  return {
+    ...camera,
+    position: point(
+      vec3.scaleAndAdd(
+        vec3.create(),
+        vector(camera.target),
+        vector(cameraAxis(camera, [0, 0, 1])),
+        next,
+      ),
+    ),
+  };
+}
+export function focusCamera(camera: CameraPose, pose: PaperPose): CameraPose {
+  const offset = vec3.transformQuat(
+    vec3.create(),
+    [0, 0, camera.perspective],
+    pose.orientation,
+  );
+  return {
+    ...camera,
+    target: pose.position,
+    orientation: pose.orientation,
+    position: point(vec3.add(offset, vector(pose.position), offset)),
+  };
 }
