@@ -552,6 +552,17 @@ test("deferred navigation has retryable attempts and identity-scoped cleanup", (
     attemptId: firstAttempt,
   });
   state = readerSessionReducer(state, {
+    type: "navigation/cancel",
+    intentId,
+    attemptId: firstAttempt,
+  });
+  assert.equal(state.pendingNavigation?.lifecycle, "blocked");
+  state = readerSessionReducer(state, {
+    type: "navigation/start",
+    intentId,
+    attemptId: firstAttempt,
+  });
+  state = readerSessionReducer(state, {
     type: "navigation/failure",
     intentId,
     attemptId: firstAttempt,
@@ -564,6 +575,11 @@ test("deferred navigation has retryable attempts and identity-scoped cleanup", (
     type: "navigation/start",
     intentId,
     attemptId: secondAttempt,
+  });
+  state = readerSessionReducer(state, {
+    type: "navigation/cancel",
+    intentId,
+    attemptId: firstAttempt,
   });
   state = readerSessionReducer(state, {
     type: "navigation/failure",

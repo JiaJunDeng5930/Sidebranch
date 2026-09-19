@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   FilePlus2,
@@ -19,15 +20,92 @@ import {
   ReaderMenuSeparator,
 } from "./workspace-controls";
 import type {
+  AnswerNotification,
   ConnectionDraft,
   ReaderSession,
   ReaderSessionAction,
 } from "../../lib/reader/session";
-import { canSendQuestion, isQuestionDirty } from "../../lib/reader/session";
+import {
+  answerNotificationKey,
+  canSendQuestion,
+  isQuestionDirty,
+} from "../../lib/reader/session";
 import { relationNames } from "../../lib/reader/relations";
 import type { Connection, DocumentRevision } from "../../lib/domain/model";
 
 type Relation = Connection["relation"];
+
+/**
+ * A quiet topbar entry for answer arrivals.  The live status is deliberately
+ * separate from the button so an arrival never creates an interactive layer
+ * over the document or moves focus away from the current selection.
+ */
+export function AnswerArrivalEntry({
+  answers,
+  onOpen,
+}: {
+  answers: readonly AnswerNotification[];
+  onOpen: () => void;
+}) {
+  const announcedKeys = useRef(new Set<string>());
+  const [announcement, setAnnouncement] = useState("");
+  const unseenCount = answers.reduce(
+    (count, answer) => count + (answer.status === "unseen" ? 1 : 0),
+    0,
+  );
+
+  useEffect(() => {
+    const newUnseen = answers.filter(
+      (answer) =>
+        answer.status === "unseen" &&
+        !announcedKeys.current.has(answerNotificationKey(answer)),
+    );
+    if (!newUnseen.length) return;
+    newUnseen.forEach((answer) =>
+      announcedKeys.current.add(answerNotificationKey(answer)),
+    );
+    setAnnouncement(
+      `收到 ${newUnseen.length} 份新回答，可从顶部“回答”查看。`,
+    );
+  }, [answers]);
+
+  return (
+    <>
+      {answers.length > 0 && (
+        <button
+          type="button"
+          className="topbar-button answer-arrival-entry"
+          aria-label={
+            unseenCount > 0
+              ? `查看回答，${unseenCount} 个待阅读`
+              : "查看回答"
+          }
+          onClick={onOpen}
+        >
+          <span className="answer-arrival-label">回答</span>
+          {unseenCount > 0 && (
+            <>
+              <span className="answer-arrival-dot" aria-hidden="true" />
+              <span className="answer-arrival-separator" aria-hidden="true">
+                ·
+              </span>
+              <span className="answer-arrival-count" aria-hidden="true">
+                {unseenCount > 99 ? "99+" : unseenCount}
+              </span>
+            </>
+          )}
+        </button>
+      )}
+      <span
+        className="reader-sr-only"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {announcement}
+      </span>
+    </>
+  );
+}
 
 export function PlaneMenu({
   document,

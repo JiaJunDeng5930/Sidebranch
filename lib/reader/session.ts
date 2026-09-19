@@ -594,6 +594,11 @@ export type ReaderSessionAction =
       readonly attemptId: NavigationAttemptId;
     }
   | {
+      readonly type: "navigation/cancel";
+      readonly intentId: NavigationIntentId;
+      readonly attemptId: NavigationAttemptId;
+    }
+  | {
       readonly type: "navigation/failure";
       readonly intentId: NavigationIntentId;
       readonly attemptId: NavigationAttemptId;
@@ -1428,6 +1433,24 @@ export function readerSessionReducer(
           lifecycle: "opening",
           intentId: pending.intentId,
           attemptId: action.attemptId,
+          target: pending.target,
+        },
+      };
+    }
+    case "navigation/cancel": {
+      const pending = state.pendingNavigation;
+      if (
+        !pending ||
+        pending.lifecycle !== "opening" ||
+        pending.intentId !== action.intentId ||
+        pending.attemptId !== action.attemptId
+      )
+        return state;
+      return {
+        ...state,
+        pendingNavigation: {
+          lifecycle: "blocked",
+          intentId: pending.intentId,
           target: pending.target,
         },
       };

@@ -26,7 +26,6 @@ import {
   ReaderMenuSeparator,
 } from "./workspace-controls";
 import {
-  answerNotificationKey,
   canSendQuestion,
   emptySession,
   hasProtectedDraft,
@@ -93,6 +92,7 @@ import {
   summaryFor,
 } from "./reader-model";
 import {
+  AnswerArrivalEntry,
   EmptyWorkspace,
   PlaneMenu,
   SelectionComposer,
@@ -101,6 +101,7 @@ import { ReaderDialogs } from "./reader-dialogs";
 import "./reader.css";
 
 const NO_CONNECTIONS: readonly Connection[] = [];
+const WAITING_FOR_ANSWER_STATUS = "问题已发送，等待回答。";
 
 type OwnedPendingSurface = PendingSurface & {
   /** The compare request that owns this loading/error presentation. */
@@ -133,6 +134,9 @@ export function Reader({
 
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const composingRef = useRef(false);
+  const pointerSelectingRef = useRef(false);
+  const interactionState = composing || pointerSelecting;
   const controllerRef = useRef<SpatialSceneController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const initialResultRef = useRef<OpenDocumentResult | null>(null);
@@ -153,6 +157,7 @@ export function Reader({
   const historyRequestRef = useRef(0);
   const questionPersistenceAttemptRef = useRef(0);
   const questionDeliveryAttemptRef = useRef(0);
+  const waitingQuestionIdRef = useRef<Question["id"] | null>(null);
   const questionSubmissionRef = useRef<Promise<void> | null>(null);
   const revisionPromisesRef = useRef(
     new Map<string, Promise<DocumentRevision>>(),
@@ -163,20 +168,40 @@ export function Reader({
     dispatchSession(action);
   }, []);
 
+  const retireCancelledNavigation = useCallback(() => {
+    const pending = sessionRef.current.pendingNavigation;
+    if (pending?.lifecycle !== "opening") return;
+    dispatchSession({
+      type: "navigation/cancel",
+      intentId: pending.intentId,
+      attemptId: pending.attemptId,
+    });
+  }, []);
+
+  const hasInteractionProtection = useCallback(
+    (): boolean =>
+      hasProtectedDraft(sessionRef.current) ||
+      composingRef.current ||
+      pointerSelectingRef.current,
+    [],
+  );
+
   const dispatchAttention = useCallback((action: AttentionAction) => {
     if (changesReadingContext(action)) {
       attentionEpochRef.current = nextRequest(attentionEpochRef.current);
       setPendingSurface(null);
+      retireCancelledNavigation();
     }
     dispatchSession({ type: "attention", action });
-  }, []);
+  }, [retireCancelledNavigation]);
 
   const cancelLocalNavigation = useCallback(() => {
     openRequestRef.current = nextRequest(openRequestRef.current);
     compareRequestRef.current = nextRequest(compareRequestRef.current);
     attentionEpochRef.current = nextRequest(attentionEpochRef.current);
     setPendingSurface(null);
-  }, []);
+    retireCancelledNavigation();
+  }, [retireCancelledNavigation]);
 
   const loadCatalogue = useCallback(
     async (scope: "active" | "archived", force = false): Promise<void> => {
@@ -488,7 +513,7 @@ export function Reader({
         };
       } = {},
     ): Promise<boolean> => {
-      if (!options.force && hasProtectedDraft(sessionRef.current)) {
+      if (!options.force && hasInteractionProtection()) {
         const cachedRevision = target.revisionId
           ? sessionRef.current.revisionCache.get(target.revisionId)?.document
           : undefined;
@@ -564,11 +589,7 @@ export function Reader({
           if (!options.pending) dispatch({ type: "error", message });
           return false;
         }
-        if (
-          hasProtectedDraft(sessionRef.current) ||
-          composing ||
-          pointerSelecting
-        ) {
+        if (hasInteractionProtection()) {
           deferNavigation(
             view,
             "当前有未完成的阅读操作。",
@@ -621,10 +642,9 @@ export function Reader({
     [
       client,
       commitView,
-      composing,
       deferNavigation,
       dispatch,
-      pointerSelecting,
+      hasInteractionProtection,
       readOpenResult,
     ],
   );
@@ -642,6 +662,13 @@ export function Reader({
       }
       const answer = answerArrival(result);
       if (answer) {
+        const waitingForThisAnswer =
+          sessionRef.current.status === WAITING_FOR_ANSWER_STATUS &&
+          waitingQuestionIdRef.current === answer.id &&
+          sessionRef.current.questionTasks.some(
+            (task) =>
+              task.question.id === answer.id && task.status === "awaiting",
+          );
         const notification: AnswerNotification = {
           questionId: answer.id,
           answerDocumentId: result.view.document.id,
@@ -651,10 +678,10 @@ export function Reader({
         };
         dispatch({ type: "question/answered", question: answer });
         dispatch({ type: "answer/arrived", notification });
-        dispatch({
-          type: "status",
-          message: `问题“${answer.body.slice(0, 40)}”已有回答。`,
-        });
+        if (waitingForThisAnswer) {
+          waitingQuestionIdRef.current = null;
+          dispatch({ type: "status", message: null });
+        }
         dispatch({ type: "cache/revision", revision: result.view.document });
         dispatch({
           type: "data/merge",
@@ -664,11 +691,7 @@ export function Reader({
         return;
       }
       cancelLocalNavigation();
-      if (
-        hasProtectedDraft(sessionRef.current) ||
-        composing ||
-        pointerSelecting
-      ) {
+      if (hasInteractionProtection()) {
         deferNavigation(result.view, "当前有未完成的阅读操作。");
         return;
       }
@@ -680,10 +703,9 @@ export function Reader({
     [
       cancelLocalNavigation,
       commitView,
-      composing,
       deferNavigation,
       dispatch,
-      pointerSelecting,
+      hasInteractionProtection,
     ],
   );
 
@@ -710,11 +732,7 @@ export function Reader({
         });
         return;
       }
-      if (
-        hasProtectedDraft(sessionRef.current) ||
-        composing ||
-        pointerSelecting
-      ) {
+      if (hasInteractionProtection()) {
         deferNavigation(view, "当前有未完成的阅读操作。");
         dispatch({ type: "loading", loading: false });
         return;
@@ -734,7 +752,7 @@ export function Reader({
       dispatch({ type: "loading", loading: false });
       dispatch({ type: "error", message: errorMessage(error) });
     }
-  }, [commitView, composing, deferNavigation, dispatch, pointerSelecting, readOpenResult]);
+  }, [commitView, deferNavigation, dispatch, hasInteractionProtection, readOpenResult]);
 
   useEffect(() => {
     void loadCatalogue("active");
@@ -1031,6 +1049,7 @@ export function Reader({
       // A fresh text selection is an explicit user reading context.  A late
       // local open must not replace the surface underneath it.
       cancelLocalNavigation();
+      pointerSelectingRef.current = false;
       setPointerSelecting(false);
       const connection = sessionRef.current.connection;
       dispatch({
@@ -1165,7 +1184,8 @@ export function Reader({
             attemptId: deliveryAttemptId,
             body,
           });
-          dispatch({ type: "status", message: "问题已发送，等待回答。" });
+          waitingQuestionIdRef.current = question.id;
+          dispatch({ type: "status", message: WAITING_FOR_ANSWER_STATUS });
         } else {
           await navigator.clipboard.writeText(questionPrompt(question));
           dispatch({
@@ -1175,6 +1195,7 @@ export function Reader({
             attemptId: deliveryAttemptId,
             body,
           });
+          waitingQuestionIdRef.current = null;
           dispatch({ type: "status", message: "问题已保存，提问内容已复制。" });
         }
       } catch (error) {
@@ -1297,9 +1318,7 @@ export function Reader({
         !pending ||
         (pending.lifecycle !== "blocked" &&
           !(allowRetry && pending.lifecycle === "failed")) ||
-        hasProtectedDraft(sessionRef.current) ||
-        composing ||
-        pointerSelecting
+        hasInteractionProtection()
       )
         return;
       const target = pending.target;
@@ -1328,7 +1347,7 @@ export function Reader({
         pending: { intentId: pending.intentId, attemptId },
       });
     },
-    [composing, dispatch, openDocument, pointerSelecting],
+    [dispatch, hasInteractionProtection, openDocument],
   );
 
   const flushPendingNavigation = useCallback(() => {
@@ -1341,18 +1360,13 @@ export function Reader({
 
   useEffect(() => {
     const currentSession = sessionRef.current;
-    if (
-      !currentSession.pendingNavigation ||
-      hasProtectedDraft(currentSession) ||
-      composing ||
-      pointerSelecting
-    )
+    if (!currentSession.pendingNavigation || hasInteractionProtection())
       return;
     flushPendingNavigation();
   }, [
-    composing,
     flushPendingNavigation,
-    pointerSelecting,
+    hasInteractionProtection,
+    interactionState,
     session.selection,
     session.editor,
     session.pendingNavigation,
@@ -1649,7 +1663,27 @@ export function Reader({
           focus: null,
         },
         { kind: "answer", questionId: answer.questionId },
-      );
+      ).then((opened) => {
+        if (!opened || typeof window === "undefined") return;
+        window.requestAnimationFrame(() => {
+          const documentId = String(answer.answerDocumentId);
+          const revisionId = String(answer.answerRevisionId);
+          const readingSurface = Array.from(
+            window.document.querySelectorAll<HTMLElement>(
+              ".spatial-paper-companion [data-document-scroll]",
+            ),
+          ).find((node) => {
+            const surface = node.closest<HTMLElement>(
+              "[data-document-id][data-revision-id]",
+            );
+            return (
+              surface?.dataset.documentId === documentId &&
+              surface.dataset.revisionId === revisionId
+            );
+          });
+          readingSurface?.focus({ preventScroll: true });
+        });
+      });
     },
     [readBeside],
   );
@@ -1865,6 +1899,10 @@ export function Reader({
           >
             <Search size={16} /> <span>搜索</span> <kbd>⌘ K</kbd>
           </button>
+          <AnswerArrivalEntry
+            answers={session.answers}
+            onOpen={() => dispatch({ type: "dialog/open-activities" })}
+          />
           <ReaderMenu
             trigger={(toggle, open) => (
               <button
@@ -1930,12 +1968,20 @@ export function Reader({
           className="workspace-stage"
           onPointerDown={(event) => {
             if ((event.target as HTMLElement).closest("[data-document-text]")) {
+              pointerSelectingRef.current = true;
               setPointerSelecting(true);
             }
           }}
-          onPointerUp={() => setPointerSelecting(false)}
-          onCompositionStart={() => setComposing(true)}
+          onPointerUp={() => {
+            pointerSelectingRef.current = false;
+            setPointerSelecting(false);
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+            setComposing(true);
+          }}
           onCompositionEnd={() => {
+            composingRef.current = false;
             setComposing(false);
             flushPendingNavigation();
           }}
@@ -1985,38 +2031,6 @@ export function Reader({
               >
                 <X size={15} />
               </button>
-            </div>
-          )}
-          {session.answers.some((answer) => answer.status === "unseen") && (
-            <div className="answer-notice" aria-live="polite">
-              {session.answers
-                .filter((answer) => answer.status === "unseen")
-                .map((answer) => (
-                  <div
-                    className="answer-notice-item"
-                    key={answerNotificationKey(answer)}
-                  >
-                    <span>已有回答：{answer.title}</span>
-                    <button type="button" onClick={() => openAnswer(answer)}>
-                      旁读答案
-                    </button>
-                    <button
-                      type="button"
-                      className="quiet-button"
-                      onClick={() =>
-                        dispatch({
-                          type: "answer/status",
-                          questionId: answer.questionId,
-                          answerDocumentId: answer.answerDocumentId,
-                          answerRevisionId: answer.answerRevisionId,
-                          status: "seen",
-                        })
-                      }
-                    >
-                      稍后阅读
-                    </button>
-                  </div>
-                ))}
             </div>
           )}
           {session.imports.length > 0 && (

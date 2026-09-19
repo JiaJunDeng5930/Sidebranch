@@ -13,7 +13,7 @@ import React, {
 import { X } from "lucide-react";
 
 type DialogContextValue = {
-  close: () => void;
+  close: (options?: { restoreFocus?: boolean }) => void;
   titleId: string;
   descriptionId: string;
 };
@@ -29,23 +29,44 @@ export function ReaderDialog({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const invokingElementRef = useRef<HTMLElement | null>(null);
+  const restoreFocusRef = useRef(true);
   const titleId = useId();
   const descriptionId = useId();
 
-  const close = useCallback(() => {
+  const close = useCallback((options?: { restoreFocus?: boolean }) => {
     const dialog = ref.current;
+    restoreFocusRef.current = options?.restoreFocus ?? true;
     if (dialog?.open) dialog.close();
     else onOpenChange(false);
+  }, [onOpenChange]);
+
+  const handleClose = useCallback(() => {
+    const invokingElement = invokingElementRef.current;
+    const shouldRestoreFocus = restoreFocusRef.current;
+    invokingElementRef.current = null;
+    restoreFocusRef.current = true;
+    onOpenChange(false);
+    if (!shouldRestoreFocus || !invokingElement?.isConnected) return;
+    queueMicrotask(() => {
+      if (invokingElement.isConnected) invokingElement.focus();
+    });
   }, [onOpenChange]);
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
     if (open && !dialog.open) {
+      const activeElement = document.activeElement;
+      invokingElementRef.current =
+        activeElement instanceof HTMLElement ? activeElement : null;
+      restoreFocusRef.current = true;
       dialog.showModal();
       return;
     }
-    if (!open && dialog.open) dialog.close();
+    if (!open && dialog.open) {
+      dialog.close();
+    }
   }, [open]);
 
   return (
@@ -54,7 +75,7 @@ export function ReaderDialog({
       className="reader-native-dialog"
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
-      onClose={() => onOpenChange(false)}
+      onClose={handleClose}
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -81,7 +102,7 @@ export function ReaderDialogContent({
         type="button"
         className="reader-dialog-close"
         aria-label="关闭"
-        onClick={close}
+        onClick={() => close()}
       >
         <X size={16} aria-hidden="true" />
       </button>
@@ -113,6 +134,10 @@ function useDialog(): DialogContextValue {
   if (!context)
     throw new Error("Reader dialog content must be inside ReaderDialog.");
   return context;
+}
+
+export function useReaderDialog(): DialogContextValue {
+  return useDialog();
 }
 
 type MenuContextValue = { close: () => void };
