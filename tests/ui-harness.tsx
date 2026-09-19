@@ -19,6 +19,7 @@ import { createHostAnswer } from "./ui-host-answer";
 import "../app/globals.css";
 import appHtml from "../.app-build/reader.html?raw";
 import { observeReaderPerformance } from "./ui-performance";
+import { QaPerformancePanel } from "./qa-performance-panel";
 observeReaderPerformance();
 
 function isCommandName(name: string): name is CommandName {
@@ -42,6 +43,15 @@ const client: ReaderClient = {
   },
 };
 
+function ReaderQaSurface({ surface }: { surface: string }) {
+  return (
+    <>
+      <QaPerformancePanel surface={surface} />
+      <Reader client={client} />
+    </>
+  );
+}
+
 function Harness() {
   const [mode, setMode] = useState<"website" | "app">("website");
   const [mobile, setMobile] = useState(false);
@@ -54,6 +64,15 @@ function Harness() {
   const [busy, setBusy] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const bridgeRef = useRef<AppBridge | null>(null);
+
+  const switchMode = (nextMode: "website" | "app") => {
+    if (nextMode === mode) return;
+    setMode(nextMode);
+    setMessage("");
+    setQuestion(null);
+    setAnswerDocumentId(null);
+    setHostStatus("");
+  };
 
   useEffect(() => {
     if (mode !== "app" || !iframeRef.current) return;
@@ -166,6 +185,9 @@ function Harness() {
 
   return (
     <>
+      {mode === "app" && (
+        <QaPerformancePanel surface="QA host shell (MCP app iframe not instrumented)" />
+      )}
       <style>{".qa-reader-container > .reader-shell { height: 100%; }"}</style>
       <div
         style={{
@@ -181,8 +203,8 @@ function Harness() {
         }}
       >
         <strong>LOCAL QA</strong>
-        <button onClick={() => setMode("website")}>Website</button>
-        <button onClick={() => setMode("app")}>MCP App bridge</button>
+        <button onClick={() => switchMode("website")}>Website</button>
+        <button onClick={() => switchMode("app")}>MCP App bridge</button>
         <button onClick={() => setMobile(!mobile)}>
           {mobile ? "Desktop" : "Mobile width"}
         </button>
@@ -237,15 +259,17 @@ function Harness() {
         {mode === "website" ? (
           mobile ? (
             <iframe
+              key="website-mobile"
               title="Mobile website test"
               src="/__qa?frame=1"
               style={{ width: "100%", height: "100%", border: 0 }}
             />
           ) : (
-            <Reader client={client} />
+            <ReaderQaSurface surface="reader document" />
           )
         ) : (
           <iframe
+            key="mcp-app"
             title="MCP App test"
             ref={iframeRef}
             style={{ width: "100%", height: "100%", border: 0 }}
@@ -275,7 +299,7 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Missing QA root");
 createRoot(root).render(
   new URLSearchParams(location.search).has("frame") ? (
-    <Reader client={client} />
+    <ReaderQaSurface surface="reader document (iframe)" />
   ) : (
     <Harness />
   ),

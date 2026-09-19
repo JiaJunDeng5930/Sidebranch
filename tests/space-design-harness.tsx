@@ -34,6 +34,7 @@ import {
 import type { NeighborhoodNode } from "../lib/domain/space";
 import type { DocumentTarget } from "../lib/reader/space-index";
 import { observeReaderPerformance } from "./ui-performance";
+import { QaPerformancePanel } from "./qa-performance-panel";
 import "../app/globals.css";
 import "../components/reader/reader.css";
 
@@ -231,6 +232,9 @@ function SpaceDesignHarness() {
   );
   return (
     <main className="space-fixture">
+      <QaPerformancePanel
+        surface={framed ? "space document (iframe)" : "space harness"}
+      />
       <style>{`.space-fixture{height:100dvh;background:var(--space-stage);color:var(--space-paper);display:flex;flex-direction:column}.space-fixture-tools{display:flex;gap:20px;align-items:center;padding:10px 18px;font:13px var(--reading-sans)}.space-fixture-tools button{color:inherit;background:transparent;border:1px solid #59616c;padding:5px 10px}.space-fixture-stage{display:flex;flex:1;min-height:0}.space-fixture-article{padding:30px 36px;font:17px/1.78 var(--reading-serif)}.space-fixture-article h1{font:500 27px/1.4 var(--reading-serif)}.space-fixture-article header p{font:12px var(--reading-sans);color:var(--space-muted)}.space-fixture-selection{position:fixed;bottom:8px;left:8px;z-index:200;max-width:440px;background:#1b222b;color:#fff;padding:8px;font-size:12px}`}</style>
       {!framed && (
         <div className="space-fixture-tools">

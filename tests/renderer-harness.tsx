@@ -10,6 +10,7 @@ import {
 } from "../lib/domain/model";
 import { longMarkdown } from "./benchmark-fixture";
 import { observeReaderPerformance } from "./ui-performance";
+import { QaPerformancePanel } from "./qa-performance-panel";
 import "../app/globals.css";
 import "../components/reader/reader.css";
 observeReaderPerformance();
@@ -61,6 +62,7 @@ function RendererHarness() {
         padding: 20,
       }}
     >
+      <QaPerformancePanel surface="renderer document" />
       <div style={{ display: "flex", gap: 20, marginBottom: 15 }}>
         <strong>Renderer QA</strong>
         <button onClick={() => setFocus(anchorAt(1))}>Focus first</button>
