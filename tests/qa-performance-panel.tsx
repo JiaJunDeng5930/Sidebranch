@@ -347,7 +347,13 @@ function SampleMetrics({ sample }: { sample: PerformanceSample }) {
   );
 }
 
-export function QaPerformancePanel({ surface }: { surface: string }) {
+export function QaPerformancePanel({
+  surface,
+  placement = "floating",
+}: {
+  surface: string;
+  placement?: "floating" | "toolbar";
+}) {
   const [state, setState] = useState<PanelState>(initialState);
   const [expanded, setExpanded] = useState(false);
   const samplerRef = useRef<PerformanceSampleSampler | null>(null);
@@ -384,7 +390,11 @@ export function QaPerformancePanel({ surface }: { surface: string }) {
       data-qa-performance-panel
       role="region"
       aria-label={`QA performance sample for ${surface}`}
-      style={{ ...styles.panel, maxHeight: expanded ? styles.panelExpandedMaxHeight : "none" }}
+      style={{
+        ...styles.panel,
+        ...(placement === "toolbar" ? styles.toolbarPanel : {}),
+        maxHeight: expanded ? styles.panelExpandedMaxHeight : "none",
+      }}
     >
       <div style={styles.header}>
         <strong>QA performance</strong>
@@ -464,6 +474,16 @@ const styles = {
     boxShadow: "0 8px 28px rgba(0,0,0,.36)",
     pointerEvents: "auto" as const,
     touchAction: "manipulation" as const,
+  },
+  toolbarPanel: {
+    position: "static" as const,
+    right: "auto",
+    bottom: "auto",
+    zIndex: "auto",
+    width: "min(360px, 100%)",
+    maxWidth: "100%",
+    margin: 0,
+    boxShadow: "none",
   },
   panelExpandedMaxHeight: "min(62vh, 440px)",
   header: {

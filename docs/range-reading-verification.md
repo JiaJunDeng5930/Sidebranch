@@ -5,6 +5,11 @@ Date: 2026-09-19
 Status: local verification complete. Results below belong to this change;
 the earlier 62-test and performance baseline does not validate it.
 
+The user subsequently rejected this interface as unusable. These results only
+establish the specific behaviors and measurements recorded below; they are not
+a usability acceptance. The resulting presentation decisions are recorded in
+[ADR 0003](adr/0003-reading-usability-before-spatial-detail.md).
+
 The reference evidence is in [Xanadu research](research/xanadu/README.md). This
 record concerns the local implementation, not deployment or production accounts.
 

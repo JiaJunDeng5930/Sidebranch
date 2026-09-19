@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { Check, ChevronRight } from "lucide-react";
 import type {
   AnchorInput,
@@ -22,6 +23,7 @@ import {
   ReaderDialogTitle,
   useReaderDialog,
 } from "./workspace-controls";
+import "./reader-dialogs.css";
 
 export interface ReaderDialogsProps {
   session: ReaderSession;
@@ -74,6 +76,10 @@ function answerRevisionLabel(
     title: String(answer.answerRevisionId),
   };
 }
+
+const subscribeToDocumentLocation = () => () => {};
+const getClientDocumentOrigin = () => window.location.origin;
+const getServerDocumentOrigin = () => "";
 
 function AnswerActivityRow({
   answer,
@@ -129,6 +135,33 @@ export function ReaderDialogs({
   onFollow,
   onOpenDocument,
 }: ReaderDialogsProps) {
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const editorTitleRef = useRef<HTMLInputElement>(null);
+  const editorBodyRef = useRef<HTMLTextAreaElement>(null);
+  const editorWasOpenRef = useRef(false);
+  const editorTitle =
+    session.editor.kind === "create" ? session.editor.title : null;
+  const mcpOrigin = useSyncExternalStore(
+    subscribeToDocumentLocation,
+    getClientDocumentOrigin,
+    getServerDocumentOrigin,
+  );
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    queueMicrotask(() => searchInputRef.current?.focus());
+  }, [searchOpen]);
+
+  useEffect(() => {
+    const wasOpen = editorWasOpenRef.current;
+    editorWasOpenRef.current = editorOpen;
+    if (!editorOpen || wasOpen || editorTitle === null) return;
+    const target = editorTitle.trim()
+      ? editorBodyRef.current
+      : editorTitleRef.current;
+    queueMicrotask(() => target?.focus());
+  }, [editorOpen, editorTitle]);
+
   return (
     <>
       <ReaderDialog
@@ -138,15 +171,17 @@ export function ReaderDialogs({
         <ReaderDialogContent className="reader-dialog search-dialog">
           <ReaderDialogTitle>搜索文档</ReaderDialogTitle>
           <ReaderDialogDescription>
-            按路径、标题和全文进行区分大小写的字面搜索；打开结果会定位到返回的版本。
+            按标题、路径或正文查找。
           </ReaderDialogDescription>
           <input
+            ref={searchInputRef}
             className="workspace-input search-field"
             autoFocus
             value={session.search.query}
             placeholder="搜索文字…"
             onChange={(event) => onSearch(event.target.value)}
           />
+          <p className="search-hint search-rule">字面匹配，区分大小写。</p>
           {session.search.kind === "querying" && (
             <p className="search-hint">正在搜索…</p>
           )}
@@ -210,7 +245,11 @@ export function ReaderDialogs({
       </ReaderDialog>
 
       <ReaderDialog open={editorOpen} onOpenChange={onCloseEditor}>
-        <ReaderDialogContent className="reader-dialog editor-dialog">
+        <ReaderDialogContent
+          className={`reader-dialog editor-dialog${
+            session.editor.kind === "create" ? " editor-create-dialog" : ""
+          }`}
+        >
           <ReaderDialogTitle>
             {session.editor.kind === "create"
               ? "新建文档"
@@ -223,50 +262,109 @@ export function ReaderDialogs({
               ? `正在编辑 v${session.editor.document.sequence}；保存会创建新版本。`
               : session.editor.kind === "rename"
                 ? "此处只改变文档路径；正文和版本保持不变。"
-                : "保存后文档仍属于空间，是否旁读由你决定。"}
+                : "写下想法，或粘贴一段文字。"}
           </ReaderDialogDescription>
-          <label className="workspace-label">
-            路径
-            <input
-              className="workspace-input"
-              readOnly={session.editor.kind === "edit"}
-              value={
-                session.editor.kind === "closed" ? "" : session.editor.path
-              }
-              onChange={(event) =>
-                dispatch({ type: "editor/path", path: event.target.value })
-              }
-            />
-          </label>
-          {session.editor.kind !== "rename" && (
-            <label className="workspace-label">
-              标题
-              <input
-                className="workspace-input"
-                readOnly={session.editor.kind === "edit"}
-                value={
-                  session.editor.kind === "closed" ? "" : session.editor.title
-                }
+          {session.editor.kind === "create" ? (
+            <>
+              <label className="workspace-label">
+                标题
+                <input
+                  ref={editorTitleRef}
+                  className="workspace-input"
+                  autoFocus={!session.editor.title.trim()}
+                  value={session.editor.title}
+                  onChange={(event) =>
+                    dispatch({
+                      type: "editor/title",
+                      title: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <textarea
+                ref={editorBodyRef}
+                className="workspace-editor editor-body-input"
+                autoFocus={Boolean(session.editor.title.trim())}
+                aria-label="文档正文"
+                placeholder="在这里写下正文…"
+                value={session.editor.content}
                 onChange={(event) =>
-                  dispatch({ type: "editor/title", title: event.target.value })
+                  dispatch({
+                    type: "editor/content",
+                    content: event.target.value,
+                  })
                 }
               />
-            </label>
-          )}
-          {session.editor.kind !== "rename" && (
-            <textarea
-              className="workspace-editor"
-              aria-label="文档正文"
-              value={
-                session.editor.kind === "closed" ? "" : session.editor.content
-              }
-              onChange={(event) =>
-                dispatch({
-                  type: "editor/content",
-                  content: event.target.value,
-                })
-              }
-            />
+              <details className="editor-location-details">
+                <summary>保存位置</summary>
+                <label className="workspace-label">
+                  路径
+                  <input
+                    className="workspace-input"
+                    value={session.editor.path}
+                    onChange={(event) =>
+                      dispatch({
+                        type: "editor/path",
+                        path: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+              </details>
+            </>
+          ) : (
+            <>
+              <label className="workspace-label">
+                路径
+                <input
+                  className="workspace-input"
+                  readOnly={session.editor.kind === "edit"}
+                  value={
+                    session.editor.kind === "closed" ? "" : session.editor.path
+                  }
+                  onChange={(event) =>
+                    dispatch({ type: "editor/path", path: event.target.value })
+                  }
+                />
+              </label>
+              {session.editor.kind !== "rename" && (
+                <label className="workspace-label">
+                  标题
+                  <input
+                    className="workspace-input"
+                    readOnly={session.editor.kind === "edit"}
+                    value={
+                      session.editor.kind === "closed"
+                        ? ""
+                        : session.editor.title
+                    }
+                    onChange={(event) =>
+                      dispatch({
+                        type: "editor/title",
+                        title: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+              )}
+              {session.editor.kind !== "rename" && (
+                <textarea
+                  className="workspace-editor"
+                  aria-label="文档正文"
+                  value={
+                    session.editor.kind === "closed"
+                      ? ""
+                      : session.editor.content
+                  }
+                  onChange={(event) =>
+                    dispatch({
+                      type: "editor/content",
+                      content: event.target.value,
+                    })
+                  }
+                />
+              )}
+            </>
           )}
           {session.editor.kind !== "closed" && session.editor.error && (
             <p className="dialog-error" role="alert">
@@ -432,7 +530,7 @@ export function ReaderDialogs({
           <div className="settings-copy">
             <p>在 ChatGPT 设置中添加自定义 MCP：</p>
             <code>
-              {typeof window !== "undefined" ? window.location.origin : ""}
+              {mcpOrigin}
               /api/mcp
             </code>
             <p>回答文档会独立保存；只有真实建立的文字连接才会显示关系线。</p>

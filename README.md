@@ -49,6 +49,8 @@ pnpm build
 
 The Worker uses `DB` (D1) and `BUCKET` (R2), declared in `.openai/hosting.json`. Generated SQL lives in `drizzle/`; Sites applies it on deployment. The standalone App HTML is built into `.app-build/reader.html` and embedded in its MCP resource. It contains no document data or credentials. Deploy the Worker and static output through Sites.
 
+Use `/space` for the normal local reading experience. First initialize the local database using the ordered migrations in [local setup](docs/local-handoff.md), then run `pnpm dev`. Local Vite serve uses the Sites development identity `seedy@sites.test` with a development-only owner bootstrap and localhost origin. Production builds do not include these development values. The normal reader's local database persists in `.wrangler/state`; the QA database is separate and ephemeral.
+
 Runtime configuration:
 
 - `SITE_ORIGIN`: exact HTTPS Site origin, used for OAuth resource binding and browser Origin checks.
@@ -57,7 +59,7 @@ Runtime configuration:
 
 Sites dispatch supplies verified user headers. A standalone deployment must provide an equivalent trusted identity boundary and strip client-supplied identity headers. Browser cookies are not accepted as MCP bearer tokens. All document commands, downloads and authorization consent check the owner server-side. OAuth uses DCR, authorization code + PKCE S256, one-hour opaque access tokens and rotating refresh tokens. Read/write scopes are persisted and enforced. Only official ChatGPT callbacks are accepted. `MCP_FILE_DOWNLOAD_ORIGINS` optionally supplies comma-separated exact HTTPS origins for host attachment downloads; redirects and private network addresses remain restricted. Actual ChatGPT attachment URL compatibility must be checked with the host.
 
-`pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness can switch to a 390-pixel frame and an official `AppBridge` host, and can seed an isolated stress fixture of 260 documents, three 1,000-section documents, 80 passage connections and 100 additional distinct neighboring documents. This validates the bridge contract, not installation in the actual ChatGPT account. `node --import tsx scripts/build-qa.mjs space` builds `/__space`, a standalone 120-document interaction specimen; the `renderer` argument builds `/__renderer` for long-text selection and scrolling measurements.
+`pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness offers Auto, 390, 768, 1024 and 1440-pixel viewports and an official `AppBridge` host, and can seed an isolated stress fixture of 260 documents, three 1,000-section documents, 80 passage connections and 100 additional distinct neighboring documents. This validates the bridge contract, not installation in the actual ChatGPT account. Keep this debug interface separate from the normal product preview. `node --import tsx scripts/build-qa.mjs space` builds `/__space`, a standalone 120-document interaction specimen; the `renderer` argument builds `/__renderer` for long-text selection and scrolling measurements.
 
 ## Bounds
 

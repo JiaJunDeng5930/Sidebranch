@@ -1,0 +1,31 @@
+.editor-create-dialog .editor-body-input {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.editor-location-details {
+  margin: -2px 0 15px;
+  border-top: 1px solid var(--reader-line);
+  padding-top: 10px;
+}
+
+.editor-location-details summary {
+  width: fit-content;
+  color: var(--reader-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.editor-location-details summary:hover,
+.editor-location-details summary:focus-visible {
+  color: var(--reader-ink);
+}
+
+.editor-location-details .workspace-label {
+  margin-top: 10px;
+}
+
+.search-rule {
+  margin: -3px 0 10px;
+}

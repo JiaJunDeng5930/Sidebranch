@@ -2004,59 +2004,6 @@ export function Reader({
         <article
           className={`document-plane-body ${role === "current" ? "detailed" : "detailed companion-body"}`}
         >
-          <header className="plane-heading" data-view-handle>
-            <div className="plane-identity">
-              <h1>{document.title}</h1>
-              <p>
-                {document.path} · v{document.sequence}
-                {!document.isCurrent ? " · 历史版本" : ""}
-                {document.archived ? " · 已归档" : ""}
-              </p>
-            </div>
-            <PlaneMenu
-              document={document}
-              onEdit={() =>
-                dispatch({
-                  type: "editor/open-edit",
-                  document,
-                  owner:
-                    sessionRef.current.attention.attention.kind === "reading"
-                      ? role === "current"
-                        ? sessionRef.current.attention.attention.current
-                        : (sessionRef.current.attention.attention.companion
-                            ?.position ?? null)
-                      : null,
-                })
-              }
-              onHistory={() =>
-                void openHistory(
-                  document,
-                  sessionRef.current.attention.attention.kind === "reading"
-                    ? role === "current"
-                      ? sessionRef.current.attention.attention.current
-                      : (sessionRef.current.attention.attention.companion
-                          ?.position ?? null)
-                    : null,
-                )
-              }
-              onRename={() =>
-                dispatch({
-                  type: "editor/open-rename",
-                  document,
-                  owner:
-                    sessionRef.current.attention.attention.kind === "reading"
-                      ? role === "current"
-                        ? sessionRef.current.attention.attention.current
-                        : (sessionRef.current.attention.attention.companion
-                            ?.position ?? null)
-                      : null,
-                })
-              }
-              onArchive={() => void archiveDocument(document)}
-              onDownload={() => downloadDocument(document)}
-              website={client.mode === "website"}
-            />
-          </header>
           <DocumentPassage
             document={document}
             surfaceId={surface.surfaceId}
@@ -2072,15 +2019,39 @@ export function Reader({
       );
     },
     [
-      archiveDocument,
-      client.mode,
-      dispatch,
       onFollow,
-      openHistory,
       selectText,
       session.connections,
     ],
   );
+
+  const renderDocumentMenu = (
+    surface: ReadingSurface,
+    role: SurfaceRole,
+  ): React.ReactNode => {
+      const document = surface.document;
+      const owner =
+        sessionRef.current.attention.attention.kind === "reading"
+          ? role === "current"
+            ? sessionRef.current.attention.attention.current
+            : (sessionRef.current.attention.attention.companion?.position ?? null)
+          : null;
+      return (
+        <PlaneMenu
+          document={document}
+          onEdit={() =>
+            dispatch({ type: "editor/open-edit", document, owner })
+          }
+          onHistory={() => void openHistory(document, owner)}
+          onRename={() =>
+            dispatch({ type: "editor/open-rename", document, owner })
+          }
+          onArchive={() => void archiveDocument(document)}
+          onDownload={() => downloadDocument(document)}
+          website={client.mode === "website"}
+        />
+      );
+  };
 
   const loadPreview = useCallback(
     async (target: DocumentTarget): Promise<DocumentRevision | null> => {
@@ -2558,6 +2529,7 @@ export function Reader({
               onScroll={onScroll}
               onCameraCheckpoint={onCameraCheckpoint}
               renderDocument={renderDocument}
+              renderDocumentMenu={renderDocumentMenu}
               loadPreview={loadPreview}
               controllerRef={controllerRef}
             />

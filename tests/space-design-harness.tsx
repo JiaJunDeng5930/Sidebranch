@@ -447,12 +447,6 @@ function SpaceDesignHarness() {
       context: DocumentRenderContext,
     ) => (
       <article className="space-fixture-article">
-        <header>
-          <h1>{surface.document.title}</h1>
-          <p>
-            {surface.document.path} · v{surface.document.sequence}
-          </p>
-        </header>
         <DocumentPassage
           document={surface.document}
           surfaceId={surface.surfaceId}

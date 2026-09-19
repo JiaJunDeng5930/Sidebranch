@@ -62,7 +62,6 @@
 .composer-heading,
 .composer-actions,
 .dialog-actions,
-.plane-heading,
 .empty-actions {
   display: flex;
   align-items: center;
@@ -288,21 +287,6 @@
   background: var(--reader-paper);
 }
 
-.plane-heading {
-  min-height: 62px;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 18px;
-  border-bottom: 1px solid #30353b28;
-  background: var(--reader-paper);
-  user-select: none;
-}
-
-.plane-identity {
-  min-width: 0;
-}
-
-.plane-kicker,
 .composer-heading > div > span,
 .empty-kicker {
   color: #85898e;
@@ -312,47 +296,12 @@
   text-transform: uppercase;
 }
 
-.plane-heading h1 {
-  max-width: 52ch;
-  margin: 4px 0 2px;
-  overflow-wrap: anywhere;
-  color: var(--reader-paper-ink);
-  font:
-    22px Georgia,
-    "Times New Roman",
-    serif;
-  line-height: 1.14;
-}
-
-.plane-heading p {
-  margin: 0;
-  color: #85898e;
-  font-size: 11px;
-}
-
 .plane-menu {
   flex: none;
   width: 30px;
   height: 30px;
   border-radius: 50%;
   color: #6a7076;
-}
-
-.promote-button {
-  flex: none;
-  border: 1px solid #8b6d51;
-  border-radius: 2px;
-  padding: 6px 9px;
-  background: transparent;
-  color: #654c38;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.promote-button:hover,
-.promote-button:focus-visible {
-  background: #d39e6d22;
-  outline: none;
 }
 
 .document-content {
@@ -1064,22 +1013,8 @@
 
   .document-content {
     max-width: none;
-    padding: 24px 20px 45px;
-    font-size: 16px;
-  }
-
-  .plane-heading {
-    min-height: 70px;
-    padding: 10px 12px;
-  }
-
-  .plane-heading h1 {
-    font-size: 19px;
-  }
-
-  .promote-button {
-    padding: 6px 7px;
-    font-size: 10px;
+    padding: 20px 20px 48px;
+    font-size: 18px;
   }
 
   .reader-alert {
@@ -1105,5 +1040,37 @@
 @media (prefers-reduced-motion: reduce) {
   .spin {
     animation: none;
+  }
+}
+
+/* The paper owns identity chrome; this body owns source content only. */
+.document-plane-body {
+  overflow: visible;
+  background: transparent;
+}
+
+.document-content {
+  max-width: 60ch;
+  margin: 0 auto;
+  padding: 32px 36px 64px;
+  font-size: 18px;
+  line-height: 1.7;
+}
+
+.document-content p {
+  margin-bottom: 0.85em;
+}
+
+.document-content h1 {
+  margin-top: 1.05em;
+  font-size: 28px;
+  line-height: 1.25;
+}
+
+@media (max-width: 559px) {
+  .document-content {
+    max-width: none;
+    padding: 20px 20px 48px;
+    font-size: 18px;
   }
 }

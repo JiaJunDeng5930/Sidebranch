@@ -210,6 +210,11 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
     role: SurfaceRole,
     context: DocumentRenderContext,
   ) => RenderedDocument;
+  /** Presentation-owned slot for the document's existing action menu. */
+  readonly renderDocumentMenu?: (
+    surface: ReadingSurface,
+    role: SurfaceRole,
+  ) => RenderedDocument;
   readonly loadPreview: (
     target: DocumentTarget,
   ) => Promise<DocumentRevision | null>;

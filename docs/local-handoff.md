@@ -2,11 +2,28 @@
 
 本文记录范围色带修正前的本地基线。后续工作见[范围阅读验证记录](range-reading-verification.md)，以下测试和性能结果不自动适用于修改后的 Reader。
 
+用户拒绝上一版界面后的修正与最新实测见[阅读体验修正验证](reading-usability-verification.md)。当前产品预览使用正常 `/space` 入口。
+
 云端交接后的本地接续已完成本轮交互修正和验收，没有部署。云端历史测量与本地新测量分别保留，不把不同运行环境当作性能前后对照。
 
 ## 本地启动
 
 需要 Node 22.13+ 和 package.json 指定的 pnpm 11.25.0。
+
+日常浏览和界面验收使用 `/space`。它使用 `.wrangler/state` 中持久化的本地 D1/R2；开发服务器采用 Sites 自带的本地模拟身份 `seedy@sites.test`。`vite serve` 为这个模拟身份设置本地 owner bootstrap 和 localhost origin，生产构建不包含这两个开发配置。
+
+全新本地数据库需要先构建并依次应用迁移；已经初始化的数据库不要重复执行这些 SQL 文件：
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_WRITE_LOGS=false pnpm exec wrangler d1 execute DB --local --persist-to .wrangler/state --file drizzle/0000_curvy_human_torch.sql --config dist/server/wrangler.json
+WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_WRITE_LOGS=false pnpm exec wrangler d1 execute DB --local --persist-to .wrangler/state --file drizzle/0001_service_query_indexes.sql --config dist/server/wrangler.json
+WRANGLER_LOG_PATH=.wrangler/logs WRANGLER_WRITE_LOGS=false pnpm exec wrangler d1 execute DB --local --persist-to .wrangler/state --file drizzle/0002_oauth_scopes.sql --config dist/server/wrangler.json
+pnpm dev
+```
+
+内部压力与宿主桥接检查另用 QA 入口：
 
 ```sh
 corepack enable
@@ -18,7 +35,7 @@ pnpm build:qa renderer
 pnpm dev
 ```
 
-普通本地环境默认端口 5173。打开 `/__qa` 使用真实 Reader、临时 D1/R2 和官方 AppBridge 测试宿主；`/__space` 是 120 文档/101 近邻的交互样机；`/__renderer` 用于长文滚动与精确选区。QA 数据是合成的，服务停止后不作为生产数据保留。真实 ChatGPT 登录、MCP OAuth 和生产数据不由这些样机模拟证明。
+普通本地环境默认端口 5173。打开 `/__qa` 使用真实 Reader、临时 D1/R2 和官方 AppBridge 测试宿主；Viewport 可选择 Auto、390、768、1024、1440，固定宽度通过独立 iframe 提供真实内部视口。`/__space` 是 120 文档/101 近邻的交互样机；`/__renderer` 用于长文滚动与精确选区。QA 数据是合成的，服务停止后不作为生产数据保留。真实 ChatGPT 登录、MCP OAuth 和生产数据不由这些样机模拟证明。不要把包含调试控制和压力数据的 QA 入口作为产品预览交付。
 
 改动 Reader 后先重建 `build:app`，再重建 `build:qa`，最后刷新浏览器。QA HTML 嵌入构建后的代码，单纯刷新不会包含尚未重新构建的改动。空间和正文样机分别重建其对应命令。
 

@@ -64,6 +64,7 @@ import {
 import {
   alignPaperReadingLines,
   interpolatePaperMotion,
+  planScenePresentation,
   paperRect,
   rangeScrollTarget,
   reconcileFocusScroll,
@@ -80,13 +81,17 @@ export interface SpatialSceneController {
 
 export type SpatialSceneProps = Omit<
   ContractSpatialSceneProps,
-  "renderDocument"
+  "renderDocument" | "renderDocumentMenu"
 > & {
   readonly controllerRef?: React.Ref<SpatialSceneController>;
   readonly renderDocument: (
     surface: ReadingSurface,
     role: SurfaceRole,
     context: DocumentRenderContext,
+  ) => React.ReactNode;
+  readonly renderDocumentMenu?: (
+    surface: ReadingSurface,
+    role: SurfaceRole,
   ) => React.ReactNode;
 };
 
@@ -119,6 +124,7 @@ type EdgeGroup = {
   band: EdgeBand;
   slot: EdgeSlot;
   leaves: readonly EdgeItem[];
+  index: number;
 };
 
 type Beam = {
@@ -131,7 +137,9 @@ type Beam = {
   worldRangeContours: readonly (readonly GeometryPoint[])[];
   selected: boolean;
   exact: boolean;
-  path: string;
+  path: string | null;
+  /** Available free-space span for an identity caption, when two papers bound it. */
+  labelGap: number | null;
   labelPoint: GeometryPoint;
   labelWorld: GeometryPoint;
   origin: ConnectionActivation["origin"];
@@ -190,8 +198,6 @@ type PointerPoint = { x: number; y: number; pointerType: string };
 
 const DESKTOP_FAN_LIMIT = 7;
 const NARROW_FAN_LIMIT = 3;
-const DESKTOP_EDGE_LIMIT = 40;
-const NARROW_EDGE_LIMIT = 16;
 const DESKTOP_BEAM_LIMIT = 48;
 const NARROW_BEAM_LIMIT = 16;
 const CAMERA_LIMITS = {
@@ -237,6 +243,16 @@ function samePose(a: Pose, b: Pose): boolean {
     a.yaw === b.yaw &&
     a.pitch === b.pitch &&
     a.zoom === b.zoom
+  );
+}
+
+function poseIsHome(pose: Pose): boolean {
+  return (
+    Math.abs(pose.x) < 0.5 &&
+    Math.abs(pose.y) < 0.5 &&
+    Math.abs(pose.yaw) < 0.5 &&
+    Math.abs(pose.pitch) < 0.5 &&
+    Math.abs(pose.zoom - 1) < 0.005
   );
 }
 
@@ -427,18 +443,23 @@ function projectEdges(
     list.push(item);
     byBand.set(item.band, list);
   }
-  return (["direct", "second", "other", "archive"] as const).flatMap((band) => {
-    const leaves = byBand.get(band);
-    if (!leaves?.length) return [];
-    return [
-      {
-        id: `stack-${band}`,
+  const groups: EdgeGroup[] = [];
+  const groupSize = 24;
+  for (const band of ["direct", "second", "other", "archive"] as const) {
+    const leaves = byBand.get(band) ?? [];
+    for (let start = 0; start < leaves.length; start += groupSize) {
+      const index = groups.length;
+      const slot = slotForBand(band);
+      groups.push({
+        id: `stack-${band}-${Math.floor(start / groupSize)}`,
         band,
-        slot: slotForBand(band),
-        leaves,
-      },
-    ];
-  });
+        slot,
+        leaves: leaves.slice(start, start + groupSize),
+        index,
+      });
+    }
+  }
+  return groups;
 }
 
 function endpointLabel(
@@ -517,6 +538,25 @@ function beamLabelPoint(
   return midpoint;
 }
 
+function beamLabelGap(
+  from: Point,
+  to: Point,
+  paperRects: readonly Rect[],
+): number | null {
+  const fromPaper = paperRects.find((rect) => pointInRect(from, rect));
+  const toPaper = paperRects.find((rect) => pointInRect(to, rect));
+  if (!fromPaper || !toPaper || fromPaper === toPaper) return null;
+  if (fromPaper.right <= toPaper.left)
+    return Math.max(0, toPaper.left - fromPaper.right);
+  if (toPaper.right <= fromPaper.left)
+    return Math.max(0, fromPaper.left - toPaper.right);
+  if (fromPaper.bottom <= toPaper.top)
+    return Math.max(0, toPaper.top - fromPaper.bottom);
+  if (toPaper.bottom <= fromPaper.top)
+    return Math.max(0, fromPaper.top - toPaper.bottom);
+  return 0;
+}
+
 function isControlTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   return Boolean(
@@ -558,16 +598,15 @@ interface SurfacePaperProps {
   onLayoutDirty: () => void;
   onUserScroll: (surfaceId: SurfaceInstanceId) => void;
   onPromote: () => void;
-  onReturnToCurrent: () => void;
   onFollow: (activation: ConnectionActivation) => void;
   onStepConnection: (direction: -1 | 1) => void;
   relationNavigation: RelationNavigationState;
-  onShowOtherSurface: (() => void) | null;
-  otherSurfaceTitle: string | null;
   mobileHidden: boolean;
   departing: boolean;
   presentation: PresentationRequest;
   renderDocument: SpatialSceneProps["renderDocument"];
+  renderDocumentMenu: SpatialSceneProps["renderDocumentMenu"];
+  showVersion: boolean;
 }
 
 const SurfacePaper = React.memo(function SurfacePaper({
@@ -583,16 +622,15 @@ const SurfacePaper = React.memo(function SurfacePaper({
   onLayoutDirty,
   onUserScroll,
   onPromote,
-  onReturnToCurrent,
   onFollow,
   onStepConnection,
   relationNavigation,
-  onShowOtherSurface,
-  otherSurfaceTitle,
   mobileHidden,
   departing,
   presentation,
   renderDocument,
+  renderDocumentMenu,
+  showVersion,
 }: SurfacePaperProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [relationOpen, setRelationOpen] = useState(false);
@@ -624,6 +662,10 @@ const SurfacePaper = React.memo(function SurfacePaper({
   const content = useMemo(
     () => renderDocument(surface, role, context),
     [context, renderDocument, role, surface],
+  );
+  const documentMenu = useMemo(
+    () => renderDocumentMenu?.(surface, role) ?? null,
+    [renderDocumentMenu, role, surface],
   );
 
   useEffect(() => {
@@ -695,36 +737,33 @@ const SurfacePaper = React.memo(function SurfacePaper({
         } as React.CSSProperties
       }
     >
-      {role === "current" && (
-        <header
-          className="spatial-paper-header spatial-paper-header-current"
-          data-hit-role="control"
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && relationOpen) {
-              event.preventDefault();
-              event.stopPropagation();
-              closeRelationMenu();
-            }
-          }}
-        >
-          <div className="spatial-paper-heading">
-            <span className="spatial-paper-role">当前阅读</span>
-            <strong>{surface.document.title}</strong>
+      <header
+        className={`spatial-paper-header spatial-paper-header-${role}`}
+        data-hit-role="control"
+        data-view-handle
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && relationOpen) {
+            event.preventDefault();
+            event.stopPropagation();
+            closeRelationMenu();
+          }
+        }}
+      >
+        <div className="spatial-paper-heading">
+          <span className="spatial-paper-attention" aria-hidden="true" />
+          <strong
+            title={`${surface.document.title} · ${surface.document.path} · v${surface.document.sequence}`}
+          >
+            {surface.document.title}
+          </strong>
+          {showVersion && (
             <span className="spatial-paper-revision">
               v{surface.document.sequence}
             </span>
-          </div>
-          <div className="spatial-paper-actions">
-            {onShowOtherSurface && otherSurfaceTitle && (
-              <button
-                type="button"
-                className="spatial-mobile-other"
-                data-hit-role="control"
-                onClick={onShowOtherSurface}
-              >
-                查看另一端 · {otherSurfaceTitle}
-              </button>
-            )}
+          )}
+        </div>
+        <div className="spatial-paper-actions">
+          {role === "current" && (
             <button
               type="button"
               className="spatial-relation-trigger"
@@ -732,167 +771,15 @@ const SurfacePaper = React.memo(function SurfacePaper({
               data-hit-role="control"
               aria-expanded={relationOpen}
               aria-haspopup="menu"
+              aria-label="关系导航"
               onClick={() => setRelationOpen((open) => !open)}
             >
               {relationNavigation.ordinal !== null
-                ? `关系 ${relationNavigation.ordinal} / ${relationNavigation.total}`
+                ? `${relationNavigation.ordinal}/${relationNavigation.total}`
                 : `关系 ${relationNavigation.total}`}
             </button>
-            {relationOpen && (
-              <div
-                className="spatial-paper-relation-menu"
-                ref={relationMenuRef}
-                role="menu"
-                onKeyDown={(event) => {
-                  if (
-                    !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
-                  )
-                    return;
-                  const items = Array.from(
-                    relationMenuRef.current?.querySelectorAll<HTMLButtonElement>(
-                      "button:not(:disabled)",
-                    ) ?? [],
-                  );
-                  if (!items.length) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  const index = items.indexOf(
-                    document.activeElement as HTMLButtonElement,
-                  );
-                  const next =
-                    event.key === "Home"
-                      ? 0
-                      : event.key === "End"
-                        ? items.length - 1
-                        : (index +
-                            (event.key === "ArrowDown" ? 1 : -1) +
-                            items.length) %
-                          items.length;
-                  items[next]?.focus();
-                }}
-                data-hit-role="control"
-              >
-                <div className="spatial-paper-relation-summary">
-                  {relationNavigation.current
-                    ? relationNavigation.current.label || "当前关系"
-                    : relationNavigation.total
-                      ? "选择一条关系"
-                      : "当前纸页没有关系"}
-                </div>
-                <div className="spatial-paper-relation-actions">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={
-                      !relationNavigation.canPrevious ||
-                      relationNavigation.loading
-                    }
-                    onClick={() => {
-                      closeRelationMenu();
-                      onStepConnection(-1);
-                    }}
-                  >
-                    上一条
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={
-                      !relationNavigation.canNext || relationNavigation.loading
-                    }
-                    onClick={() => {
-                      closeRelationMenu();
-                      onStepConnection(1);
-                    }}
-                  >
-                    下一条
-                  </button>
-                  {relationNavigation.current && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() =>
-                        followRelation({
-                          connectionId:
-                            relationNavigation.current!.connectionId,
-                          origin: {
-                            kind: "surface",
-                            surfaceId: surface.surfaceId,
-                            endpoint: relationNavigation.current!.endpoint,
-                          },
-                        })
-                      }
-                    >
-                      定位这条关系
-                    </button>
-                  )}
-                </div>
-                {relationNavigation.items.length > 0 && (
-                  <div
-                    className="spatial-paper-relation-list"
-                    role="listbox"
-                    aria-label="当前纸页的全部关系"
-                  >
-                    {relationNavigation.items.map((item, index) => (
-                      <button
-                        key={`${item.connectionId}:${item.endpoint}`}
-                        type="button"
-                        role="option"
-                        aria-selected={
-                          relationNavigation.current?.connectionId ===
-                            item.connectionId &&
-                          relationNavigation.current.endpoint === item.endpoint
-                        }
-                        onClick={() =>
-                          followRelation({
-                            connectionId: item.connectionId,
-                            origin: {
-                              kind: "surface",
-                              surfaceId: surface.surfaceId,
-                              endpoint: item.endpoint,
-                            },
-                          })
-                        }
-                      >
-                        <span>
-                          {index + 1}. {item.label}
-                        </span>
-                        <small>
-                          {item.endpoint === "from" ? "从此处出发" : "指向此处"}
-                        </small>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {relationNavigation.loading && <small>正在读取关系</small>}
-                {relationNavigation.error && (
-                  <small>{relationNavigation.error}</small>
-                )}
-              </div>
-            )}
-          </div>
-        </header>
-      )}
-      {role === "companion" && (
-        <header className="spatial-paper-header" data-hit-role="control">
-          <div className="spatial-paper-heading">
-            <span className="spatial-paper-role">旁读</span>
-            <strong>{surface.document.title}</strong>
-            <span className="spatial-paper-revision">
-              v{surface.document.sequence}
-            </span>
-          </div>
-          <div className="spatial-paper-actions">
-            {onShowOtherSurface && otherSurfaceTitle && (
-              <button
-                type="button"
-                className="spatial-mobile-other"
-                data-hit-role="control"
-                onClick={onShowOtherSurface}
-              >
-                查看当前端
-              </button>
-            )}
+          )}
+          {role === "companion" && (
             <button
               type="button"
               className="spatial-paper-promote"
@@ -901,17 +788,141 @@ const SurfacePaper = React.memo(function SurfacePaper({
             >
               继续读这篇
             </button>
-            <button
-              type="button"
-              className="spatial-paper-dismiss"
+          )}
+          {documentMenu}
+          {role === "current" && relationOpen && (
+            <div
+              className="spatial-paper-relation-menu"
+              ref={relationMenuRef}
+              role="menu"
+              onKeyDown={(event) => {
+                if (
+                  !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+                )
+                  return;
+                const items = Array.from(
+                  relationMenuRef.current?.querySelectorAll<HTMLButtonElement>(
+                    "button:not(:disabled)",
+                  ) ?? [],
+                );
+                if (!items.length) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const index = items.indexOf(
+                  document.activeElement as HTMLButtonElement,
+                );
+                const next =
+                  event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? items.length - 1
+                      : (index +
+                          (event.key === "ArrowDown" ? 1 : -1) +
+                          items.length) %
+                        items.length;
+                items[next]?.focus();
+              }}
               data-hit-role="control"
-              onClick={onReturnToCurrent}
             >
-              收起旁读
-            </button>
-          </div>
-        </header>
-      )}
+              <div className="spatial-paper-relation-summary">
+                {relationNavigation.current
+                  ? relationNavigation.current.label || "当前关系"
+                  : relationNavigation.total
+                    ? "选择一条关系"
+                    : "当前纸页没有关系"}
+              </div>
+              <div className="spatial-paper-relation-actions">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={
+                    !relationNavigation.canPrevious ||
+                    relationNavigation.loading
+                  }
+                  onClick={() => {
+                    closeRelationMenu();
+                    onStepConnection(-1);
+                  }}
+                >
+                  上一条
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={
+                    !relationNavigation.canNext || relationNavigation.loading
+                  }
+                  onClick={() => {
+                    closeRelationMenu();
+                    onStepConnection(1);
+                  }}
+                >
+                  下一条
+                </button>
+                {relationNavigation.current && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() =>
+                      followRelation({
+                        connectionId: relationNavigation.current!.connectionId,
+                        origin: {
+                          kind: "surface",
+                          surfaceId: surface.surfaceId,
+                          endpoint: relationNavigation.current!.endpoint,
+                        },
+                      })
+                    }
+                  >
+                    定位这条关系
+                  </button>
+                )}
+              </div>
+              {relationNavigation.items.length > 0 && (
+                <div
+                  className="spatial-paper-relation-list"
+                  role="listbox"
+                  aria-label="当前纸页的全部关系"
+                >
+                  {relationNavigation.items.map((item, index) => (
+                    <button
+                      key={`${item.connectionId}:${item.endpoint}`}
+                      type="button"
+                      role="option"
+                      aria-selected={
+                        relationNavigation.current?.connectionId ===
+                          item.connectionId &&
+                        relationNavigation.current.endpoint === item.endpoint
+                      }
+                      onClick={() =>
+                        followRelation({
+                          connectionId: item.connectionId,
+                          origin: {
+                            kind: "surface",
+                            surfaceId: surface.surfaceId,
+                            endpoint: item.endpoint,
+                          },
+                        })
+                      }
+                    >
+                      <span>
+                        {index + 1}. {item.label}
+                      </span>
+                      <small>
+                        {item.endpoint === "from" ? "从此处出发" : "指向此处"}
+                      </small>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {relationNavigation.loading && <small>正在读取关系</small>}
+              {relationNavigation.error && (
+                <small>{relationNavigation.error}</small>
+              )}
+            </div>
+          )}
+        </div>
+      </header>
       <div
         ref={scrollRef}
         className="spatial-paper-scroll"
@@ -1045,7 +1056,7 @@ function StackRoot({
   return (
     <button
       type="button"
-      className={`spatial-stack-root spatial-stack-root-${group.slot} ${open ? "is-open" : ""} ${hovered ? "is-hovered" : ""}`}
+      className={`spatial-stack-root ${open ? "is-open" : ""} ${hovered ? "is-hovered" : ""}`}
       data-hit-role="document-affordance"
       data-stack-id={group.id}
       onClick={onToggle}
@@ -1054,7 +1065,8 @@ function StackRoot({
       onFocus={() => onHover(group.id)}
       onBlur={() => onHover(null)}
       aria-expanded={open}
-      aria-label={`${bandLabel(group.band)}折页，已载入 ${group.leaves.length} 份${unknown ? "，还有未载入成员" : ""}`}
+      title={front.document.title}
+      aria-label={`${front.document.title}，${bandLabel(group.band)}折页，已载入 ${group.leaves.length} 份${unknown ? "，还有未载入成员" : ""}`}
     >
       <span className="spatial-stack-edges" aria-hidden="true">
         <i />
@@ -1064,12 +1076,8 @@ function StackRoot({
       <span className="spatial-stack-copy">
         <strong>{front.document.title}</strong>
         <small>
-          {group.leaves.length} 份 ·{" "}
-          {unknown ? "已载入，仍在载入" : "按 Enter 查看"}
+          {bandLabel(group.band)} · {group.leaves.length} 份
         </small>
-      </span>
-      <span className="spatial-stack-count" aria-hidden="true">
-        {group.leaves.length}
       </span>
     </button>
   );
@@ -1109,7 +1117,7 @@ function Fan({
   const hasNext = start + limit < items.length;
   return (
     <div
-      className={`spatial-fan spatial-fan-${group.slot}`}
+      className="spatial-fan"
       data-hit-role="document-affordance"
       aria-label="折页窗口"
     >
@@ -1236,7 +1244,6 @@ export function SpatialScene({
   pending,
   onReadBeside,
   onPromote,
-  onReturnToCurrent,
   onFollow,
   onStepConnection,
   relationNavigation,
@@ -1245,6 +1252,7 @@ export function SpatialScene({
   onScroll,
   onCameraCheckpoint,
   renderDocument,
+  renderDocumentMenu,
   loadPreview,
   controllerRef,
 }: SpatialSceneProps) {
@@ -1291,6 +1299,7 @@ export function SpatialScene({
     new Map<SurfaceInstanceId, { presentationId: number; target: number }>(),
   );
   const [fan, setFan] = useState<FanState | null>(null);
+  const [groupPage, setGroupPage] = useState(0);
   const [relationMenu, setRelationMenu] = useState<RelationMenuState | null>(
     null,
   );
@@ -1305,6 +1314,10 @@ export function SpatialScene({
   const previewCloseTimer = useRef<number | null>(null);
   const previewRequest = useRef(0);
   const [beams, setBeams] = useState<readonly Beam[]>([]);
+  const [hoveredBeamId, setHoveredBeamId] = useState<ConnectionId | null>(null);
+  const [beamLabelWidths, setBeamLabelWidths] = useState<
+    Readonly<Record<string, number>>
+  >({});
   const beamWorldCache = useRef<readonly Beam[]>([]);
   const beamDescriptors = useRef<readonly Beam[]>([]);
   const cameraMoving = useRef(false);
@@ -1339,9 +1352,40 @@ export function SpatialScene({
   const wheelCheckpoint = useRef<number | null>(null);
   const reducedMotion = useReducedMotion();
   const [narrow, setNarrow] = useState(false);
+  const [cameraDisplaced, setCameraDisplaced] = useState(false);
   const [mobileSurfaceId, setMobileSurfaceId] =
     useState<SurfaceInstanceId | null>(null);
   const [sceneSize, setSceneSize] = useState({ width: 0, height: 0 });
+  const hasCompanion = companion !== null;
+  const sceneLayout = useMemo(() => {
+    return planScenePresentation(
+      sceneSize.width,
+      sceneSize.height,
+      hasCompanion,
+    );
+  }, [hasCompanion, sceneSize.height, sceneSize.width]);
+
+  useLayoutEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const measured: Record<string, number> = {};
+      for (const beam of beams) {
+        const node = beamLabelNodes.current.get(beam.id);
+        const width = node?.getBoundingClientRect().width ?? 0;
+        if (width > 0) measured[beam.id] = Math.ceil(width);
+      }
+      setBeamLabelWidths((previous) => {
+        const previousKeys = Object.keys(previous);
+        const measuredKeys = Object.keys(measured);
+        if (
+          previousKeys.length === measuredKeys.length &&
+          measuredKeys.every((key) => previous[key] === measured[key])
+        )
+          return previous;
+        return measured;
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [beams, hoveredBeamId, sceneSize.height, sceneSize.width]);
   const retainedSurfaceMap = useRef(
     new Map<SurfaceInstanceId, RetainedSurface>(),
   );
@@ -1408,11 +1452,14 @@ export function SpatialScene({
     if (!viewport) return;
     rebuildBeamGeometry.current?.();
     for (const beam of beamWorldCache.current) {
-      const polygon = beam.worldPolygon.map((point) =>
-        worldToScreen(point, livePose.current, viewport),
-      );
-      const path = polygonToPath(polygon);
-      beamPathNodes.current.get(beam.id)?.setAttribute("d", path);
+      if (beam.worldPolygon.length) {
+        const polygon = beam.worldPolygon.map((point) =>
+          worldToScreen(point, livePose.current, viewport),
+        );
+        beamPathNodes.current
+          .get(beam.id)
+          ?.setAttribute("d", polygonToPath(polygon));
+      }
       beam.worldRangeContours.forEach((contour, index) => {
         const projected = contour.map((point) =>
           worldToScreen(point, livePose.current, viewport),
@@ -1473,6 +1520,10 @@ export function SpatialScene({
   const writePose = useCallback(
     (pose: Pose) => {
       livePose.current = clampPose(pose);
+      const displaced = !poseIsHome(livePose.current);
+      setCameraDisplaced((previous) =>
+        previous === displaced ? previous : displaced,
+      );
       if (worldRef.current)
         worldRef.current.style.transform = cameraTransform(livePose.current);
       renderCachedBeams();
@@ -1522,6 +1573,7 @@ export function SpatialScene({
           activePresentationScrollTargets.current,
         );
         if (!cameraGestureActive.current) livePose.current = pending.camera;
+        setCameraDisplaced(!poseIsHome(livePose.current));
         writePaperMotion(pending.paper);
         if (worldRef.current)
           worldRef.current.style.transform = cameraTransform(livePose.current);
@@ -1569,6 +1621,7 @@ export function SpatialScene({
           : interpolate(fromCamera, pending.camera, eased);
         const paper = interpolatePaperMotion(fromPaper, pending.paper, eased);
         livePose.current = camera;
+        setCameraDisplaced(!poseIsHome(camera));
         writePaperMotion(paper);
         if (worldRef.current)
           worldRef.current.style.transform = cameraTransform(camera);
@@ -1602,6 +1655,7 @@ export function SpatialScene({
       reducedMotion,
       renderCachedBeams,
       settleCameraMotion,
+      setCameraDisplaced,
       writePaperMotion,
     ],
   );
@@ -1800,11 +1854,12 @@ export function SpatialScene({
         };
         const alignmentTargets = new Map<SurfaceInstanceId, number>();
         let correctedPaperTargets: PaperMotion | undefined;
-        if (layoutPass) {
+        if (layoutPass && sceneLayout.framing.kind === "paired") {
           const aligned = alignPaperReadingLines(
             paperTargets.current,
             surfaceLayouts.current,
             inputRef.current.current?.surfaceId,
+            sceneLayout.paperMaxHeight,
           );
           if (aligned !== paperTargets.current) {
             paperTargets.current = aligned;
@@ -1879,7 +1934,7 @@ export function SpatialScene({
           const node = surface
             ? surfaceNodes.current.get(surface.surfaceId)
             : null;
-          const mobileHidden = narrow && node?.dataset.mobileHidden === "true";
+          const mobileHidden = node?.dataset.mobileHidden === "true";
           const scroll = node?.querySelector<HTMLElement>(
             "[data-document-scroll]",
           );
@@ -1939,7 +1994,7 @@ export function SpatialScene({
               ranges: [],
               clip,
               edge,
-              peripheral: narrow && mobileHidden,
+              peripheral: mobileHidden,
               proxy,
             });
           } else {
@@ -2032,6 +2087,9 @@ export function SpatialScene({
         );
         const measured: Beam[] = [];
         const selectedCount = Math.min(selected.length, limit);
+        // Inactive relationships retain their passage marks and handles.  A
+        // filled surface is reserved for the selected relationship so it
+        // cannot obscure unrelated prose or look like a complete proxy.
         const drawConnections = [
           ...unselected.slice(0, Math.max(0, limit - selectedCount)),
           ...selected.slice(0, selectedCount),
@@ -2069,11 +2127,25 @@ export function SpatialScene({
                 )?.surfaceId
               : undefined,
           );
-          const fromEndpoint = from.geometry.endpoint;
-          const toEndpoint = to.geometry.endpoint;
+          const fromEndpoint =
+            from.geometry.measuredEndpoint ?? from.geometry.endpoint;
+          const toEndpoint =
+            to.geometry.measuredEndpoint ?? to.geometry.endpoint;
           if (!fromEndpoint || !toEndpoint) continue;
-          const surface = ruledSurface(fromEndpoint, toEndpoint);
-          const worldPolygon = toWorldPolygon(surface.polygon, viewport);
+          const exact =
+            Boolean(from.geometry.measuredEndpoint) &&
+            Boolean(to.geometry.measuredEndpoint) &&
+            from.geometry.precise &&
+            to.geometry.precise;
+          const surface = exact
+            ? ruledSurface(
+                from.geometry.measuredEndpoint!,
+                to.geometry.measuredEndpoint!,
+              )
+            : null;
+          const worldPolygon = surface
+            ? toWorldPolygon(surface.polygon, viewport)
+            : [];
           const fromPoints = endpointPoints(fromEndpoint);
           const toPoints = endpointPoints(toEndpoint);
           const fromCenter = {
@@ -2085,6 +2157,7 @@ export function SpatialScene({
             y: (toPoints[0].y + toPoints[1].y) / 2,
           };
           const labelPoint = beamLabelPoint(fromCenter, toCenter, paperRects);
+          const labelGap = beamLabelGap(fromCenter, toCenter, paperRects);
           const labelWorld = worldPointForLocal(labelPoint, viewport);
           const fromDoc = labelFor(connection.from);
           const toDoc = labelFor(connection.to);
@@ -2097,8 +2170,9 @@ export function SpatialScene({
             worldPolygon,
             worldRangeContours: [...from.worldContours, ...to.worldContours],
             selected: connection.id === inputRef.current.selectedConnectionId,
-            exact: surface.precise,
-            path: polygonToPath(surface.polygon),
+            exact,
+            path: surface ? polygonToPath(surface.polygon) : null,
+            labelGap,
             labelPoint,
             labelWorld,
             origin: from.surfaceId
@@ -2122,6 +2196,7 @@ export function SpatialScene({
               old.visibility !== beam.visibility ||
               old.selected !== beam.selected ||
               old.exact !== beam.exact ||
+              old.labelGap !== beam.labelGap ||
               old.origin.kind !== beam.origin.kind ||
               (old.origin.kind === "surface" &&
                 beam.origin.kind === "surface" &&
@@ -2172,7 +2247,7 @@ export function SpatialScene({
           node.style.transform = transform;
       }
     },
-    [narrow, presentation, requestPresentation],
+    [narrow, presentation, requestPresentation, sceneLayout],
   );
 
   useLayoutEffect(() => {
@@ -2365,6 +2440,7 @@ export function SpatialScene({
 
   const resetCamera = useCallback(() => {
     const home = { x: 0, y: 0, yaw: 0, pitch: 0, zoom: 1 };
+    setCameraDisplaced(false);
     animateTo(home);
     onCameraCheckpoint(home);
   }, [animateTo, onCameraCheckpoint]);
@@ -2469,12 +2545,14 @@ export function SpatialScene({
         );
       const hits = polygonHits(
         point,
-        candidates.map((beam) => ({
-          id: beam.id,
-          polygon: beam.worldPolygon.map((worldPoint) =>
-            worldToScreen(worldPoint, livePose.current, view),
-          ),
-        })),
+        candidates
+          .map((beam) => ({
+            id: beam.id,
+            polygon: beam.worldPolygon.map((worldPoint) =>
+              worldToScreen(worldPoint, livePose.current, view),
+            ),
+          }))
+          .filter((candidate) => candidate.polygon.length > 2),
       );
       if (!hits.length) return;
       event.preventDefault();
@@ -2538,7 +2616,7 @@ export function SpatialScene({
       }));
     }
     setFan(null);
-  }, [activeFan]);
+  }, [activeFan, setFan, setFrontByGroup]);
 
   const activateEdge = useCallback(
     (item: EdgeItem) => {
@@ -2577,7 +2655,7 @@ export function SpatialScene({
         window: 0,
       });
     },
-    [closeFan, current?.position.revisionId, fanOpen],
+    [closeFan, current?.position.revisionId, fanOpen, setFan],
   );
 
   useLayoutEffect(() => {
@@ -3062,55 +3140,29 @@ export function SpatialScene({
     };
   }, [cancelPoseAnimation, checkpoint, flushGesture]);
 
-  const visibleGroups = edgeGroups.filter((group) => {
-    return group.leaves.length > 2;
-  });
-  const individualEdges = edgeGroups
-    .filter((group) => group.leaves.length <= 2)
-    .flatMap((group) => group.leaves)
-    .slice(0, narrow ? NARROW_EDGE_LIMIT : DESKTOP_EDGE_LIMIT);
-  const shellGroups = visibleGroups.slice(
-    0,
-    narrow
-      ? Math.ceil(NARROW_EDGE_LIMIT / 4)
-      : Math.ceil(DESKTOP_EDGE_LIMIT / 4),
+  const individualEdges: readonly EdgeItem[] = [];
+  const groupSlots = Math.max(
+    1,
+    Math.min(4, Math.floor((sceneSize.width - 104) / 180)),
   );
-  const hasCompanion = companion !== null;
-  const sceneLayout = useMemo(() => {
-    if (narrow || sceneSize.width <= 0)
-      return {
-        paperWidth: null as number | null,
-        paperMaxHeight:
-          sceneSize.height > 0 ? Math.max(180, sceneSize.height - 24) : null,
-        currentPosition: { x: 0, y: 0 },
-        companionPosition: { x: 0, y: 0 },
-      };
-
-    const width = sceneSize.width;
-    const splitWidth = Math.min(720, Math.max(260, (width - 100) / 2));
-    const gap = 28;
-    const paperWidth = hasCompanion
-      ? splitWidth
-      : Math.min(720, Math.max(260, width - 80));
-    const offset = splitWidth / 2 + gap / 2;
-    return {
-      paperWidth,
-      paperMaxHeight:
-        sceneSize.height > 0 ? Math.max(180, sceneSize.height - 28) : null,
-      currentPosition: { x: hasCompanion ? -offset : 0, y: 0 },
-      companionPosition: { x: offset, y: 12 },
-    };
-  }, [hasCompanion, narrow, sceneSize.height, sceneSize.width]);
+  const groupPages = Math.max(1, Math.ceil(edgeGroups.length / groupSlots));
+  const visibleGroupPage = Math.min(groupPage, groupPages - 1);
+  const shellGroups = edgeGroups.slice(
+    visibleGroupPage * groupSlots,
+    (visibleGroupPage + 1) * groupSlots,
+  );
 
   const visibleMobileSurfaceId =
     mobileSurfaceId === current?.surfaceId ||
     mobileSurfaceId === companion?.surfaceId
       ? mobileSurfaceId
       : (current?.surfaceId ?? companion?.surfaceId ?? null);
+  const recessed = sceneLayout.framing.kind === "recessed-companion";
   const showCurrentSurface =
-    !!current && (!narrow || visibleMobileSurfaceId === current.surfaceId);
+    !!current && (!recessed || visibleMobileSurfaceId === current.surfaceId);
   const showCompanionSurface =
-    !!companion && (!narrow || visibleMobileSurfaceId === companion.surfaceId);
+    !!companion &&
+    (!recessed || visibleMobileSurfaceId === companion.surfaceId);
 
   /*
    * This render-time registry is intentional: keeping the previous keyed
@@ -3203,19 +3255,19 @@ export function SpatialScene({
           : sceneLayout.companionPosition;
       targets.set(retained.surface.surfaceId, {
         ...position,
-        scale: retained.departing
-          ? 0.55
-          : retained.role === "companion" && !narrow
-            ? 0.88
-            : 1,
+        scale: retained.departing ? 0.55 : 1,
         opacity: retained.departing ? 0.16 : 1,
       });
     }
-    const aligned = alignPaperReadingLines(
-      targets,
-      surfaceLayouts.current,
-      current?.surfaceId,
-    );
+    const aligned =
+      sceneLayout.framing.kind === "paired"
+        ? alignPaperReadingLines(
+            targets,
+            surfaceLayouts.current,
+            current?.surfaceId,
+            sceneLayout.paperMaxHeight,
+          )
+        : targets;
     paperTargets.current = aligned;
     const initial = initialScrollTargets.current.size
       ? new Map(initialScrollTargets.current)
@@ -3226,7 +3278,6 @@ export function SpatialScene({
     current?.surfaceId,
     companion?.surfaceId,
     sceneLayout,
-    narrow,
     sceneSize.width,
     requestPresentation,
   ]);
@@ -3241,15 +3292,15 @@ export function SpatialScene({
         ? companion.surfaceId
         : current.surfaceId,
     );
-  }, [companion, current, visibleMobileSurfaceId]);
+  }, [companion, current, setMobileSurfaceId, visibleMobileSurfaceId]);
 
   useLayoutEffect(() => {
-    if (!narrow || !mobileSurfaceId) return;
+    if (!recessed || !mobileSurfaceId) return;
     const visible = surfaceNodes.current.get(mobileSurfaceId);
     visible
-      ?.querySelector<HTMLButtonElement>(".spatial-mobile-other")
+      ?.querySelector<HTMLElement>("[data-document-scroll]")
       ?.focus({ preventScroll: true });
-  }, [mobileSurfaceId, narrow]);
+  }, [mobileSurfaceId, recessed]);
 
   return (
     <section
@@ -3280,7 +3331,7 @@ export function SpatialScene({
           {retainedSurfaces.map((retained) => {
             const isCurrent = retained.role === "current";
             const hidden =
-              narrow &&
+              recessed &&
               (isCurrent ? !showCurrentSurface : !showCompanionSurface);
             return (
               <SurfacePaper
@@ -3289,7 +3340,13 @@ export function SpatialScene({
                 role={retained.role}
                 instanceKey={retained.surface.surfaceId}
                 position={retained.pose}
-                paperWidth={sceneLayout.paperWidth}
+                paperWidth={
+                  recessed
+                    ? sceneLayout.paperWidth
+                    : isCurrent
+                      ? sceneLayout.paperWidth
+                      : (sceneLayout.companionWidth ?? sceneLayout.paperWidth)
+                }
                 paperMaxHeight={sceneLayout.paperMaxHeight}
                 register={registerSurface}
                 registerPassage={registerPassage}
@@ -3297,26 +3354,22 @@ export function SpatialScene({
                 onLayoutDirty={invalidateGeometry}
                 onUserScroll={interruptSurfaceScroll}
                 onPromote={onPromote}
-                onReturnToCurrent={onReturnToCurrent}
                 onFollow={onFollow}
                 onStepConnection={onStepConnection}
                 relationNavigation={relationNavigation}
-                onShowOtherSurface={
-                  retained.departing
-                    ? null
-                    : companion && current
-                      ? showOtherSurface
-                      : null
-                }
-                otherSurfaceTitle={
-                  isCurrent
-                    ? (companion?.document.title ?? null)
-                    : (current?.document.title ?? null)
-                }
                 mobileHidden={hidden}
                 departing={retained.departing}
                 presentation={presentation}
                 renderDocument={renderDocument}
+                renderDocumentMenu={renderDocumentMenu}
+                showVersion={
+                  retained.surface.document.id ===
+                    (isCurrent
+                      ? companion?.document.id
+                      : current?.document.id) ||
+                  !retained.surface.document.isCurrent ||
+                  retained.surface.document.archived
+                }
               />
             );
           })}
@@ -3359,6 +3412,33 @@ export function SpatialScene({
           )}
         </div>
         <div className="spatial-scene-edge-layer" aria-label="空间边缘入口">
+          {recessed && current && companion && (
+            <button
+              type="button"
+              className="spatial-counterpart-lip"
+              data-hit-role="document-affordance"
+              data-document-id={
+                visibleMobileSurfaceId === current.surfaceId
+                  ? companion.position.documentId
+                  : current.position.documentId
+              }
+              data-revision-id={
+                visibleMobileSurfaceId === current.surfaceId
+                  ? companion.position.revisionId
+                  : current.position.revisionId
+              }
+              onClick={showOtherSurface}
+              aria-label={`阅读相关段落：${visibleMobileSurfaceId === current.surfaceId ? companion.document.title : current.document.title}`}
+            >
+              <span>相关文档</span>
+              <strong>
+                {visibleMobileSurfaceId === current.surfaceId
+                  ? companion.document.title
+                  : current.document.title}
+              </strong>
+              <small>阅读相关段落</small>
+            </button>
+          )}
           {previous && (
             <button
               type="button"
@@ -3393,69 +3473,110 @@ export function SpatialScene({
               hovered={renderedHovered === `edge:${item.key}`}
             />
           ))}
-          {shellGroups.map((group) => {
-            const frontKey = frontByGroup[group.id];
-            const front =
-              group.leaves.find((item) => item.key === frontKey) ??
-              group.leaves[0];
-            return (
-              <React.Fragment key={group.id}>
-                <StackRoot
-                  group={group}
-                  front={front}
-                  complete={completeCatalogue}
-                  open={fanOpen === group.id}
-                  onToggle={() => {
-                    toggleFan(group);
-                    scheduleMeasure();
-                  }}
-                  onHover={updateHover}
-                  hovered={renderedHovered === group.id}
-                />
-                {fanOpen === group.id && (
-                  <Fan
-                    items={fanSnapshot}
+          <div className="spatial-fold-slots" aria-label="空间折页">
+            {shellGroups.map((group) => {
+              const frontKey = frontByGroup[group.id];
+              const front =
+                group.leaves.find((item) => item.key === frontKey) ??
+                group.leaves[0];
+              return (
+                <React.Fragment key={group.id}>
+                  <StackRoot
                     group={group}
-                    start={fanWindow}
-                    limit={fanLimit}
-                    hovered={renderedHovered}
-                    onActivate={activateEdge}
-                    onReadBeside={(target) => {
-                      closeFan();
-                      onReadBeside(target);
+                    front={front}
+                    complete={completeCatalogue}
+                    open={fanOpen === group.id}
+                    onToggle={() => {
+                      toggleFan(group);
+                      scheduleMeasure();
                     }}
                     onHover={updateHover}
-                    onPreviewStart={requestPreview}
-                    onPreviewEnd={closePreview}
-                    onPrevious={() =>
-                      setFan((currentFan) =>
-                        currentFan
-                          ? {
-                              ...currentFan,
-                              window: Math.max(0, currentFan.window - fanLimit),
-                            }
-                          : currentFan,
-                      )
-                    }
-                    onNext={() =>
-                      setFan((currentFan) =>
-                        currentFan
-                          ? {
-                              ...currentFan,
-                              window: Math.min(
-                                Math.max(0, currentFan.items.length - fanLimit),
-                                currentFan.window + fanLimit,
-                              ),
-                            }
-                          : currentFan,
-                      )
-                    }
-                    onClose={closeFan}
+                    hovered={renderedHovered === group.id}
                   />
-                )}
-              </React.Fragment>
-            );
-          })}
+                  {fanOpen === group.id && (
+                    <Fan
+                      items={fanSnapshot}
+                      group={group}
+                      start={fanWindow}
+                      limit={fanLimit}
+                      hovered={renderedHovered}
+                      onActivate={activateEdge}
+                      onReadBeside={(target) => {
+                        closeFan();
+                        onReadBeside(target);
+                      }}
+                      onHover={updateHover}
+                      onPreviewStart={requestPreview}
+                      onPreviewEnd={closePreview}
+                      onPrevious={() =>
+                        setFan((currentFan) =>
+                          currentFan
+                            ? {
+                                ...currentFan,
+                                window: Math.max(
+                                  0,
+                                  currentFan.window - fanLimit,
+                                ),
+                              }
+                            : currentFan,
+                        )
+                      }
+                      onNext={() =>
+                        setFan((currentFan) =>
+                          currentFan
+                            ? {
+                                ...currentFan,
+                                window: Math.min(
+                                  Math.max(
+                                    0,
+                                    currentFan.items.length - fanLimit,
+                                  ),
+                                  currentFan.window + fanLimit,
+                                ),
+                              }
+                            : currentFan,
+                        )
+                      }
+                      onClose={closeFan}
+                    />
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </div>
+          {groupPages > 1 && (
+            <nav
+              className="spatial-fold-pages"
+              aria-label="折页组分页"
+              data-hit-role="control"
+            >
+              <button
+                type="button"
+                aria-label="上一页折页组"
+                disabled={visibleGroupPage === 0}
+                onClick={() => {
+                  closeFan();
+                  setGroupPage(visibleGroupPage - 1);
+                }}
+              >
+                ‹
+              </button>
+              <span>
+                {visibleGroupPage + 1}/{groupPages}
+              </span>
+              <button
+                type="button"
+                aria-label="下一页折页组"
+                disabled={visibleGroupPage + 1 >= groupPages}
+                onClick={() => {
+                  closeFan();
+                  setGroupPage(visibleGroupPage + 1);
+                }}
+              >
+                ›
+              </button>
+            </nav>
+          )}
           {preview && (
             <article
               className={`spatial-edge-preview spatial-edge-preview-${preview.item.slot}`}
@@ -3530,21 +3651,25 @@ export function SpatialScene({
               data-beam-connection-id={beam.id}
               data-range-visibility={beam.visibility}
             >
-              <path
-                ref={(node) => {
-                  if (node) beamPathNodes.current.set(beam.id, node);
-                  else beamPathNodes.current.delete(beam.id);
-                }}
-                d={beam.path}
-                className={`spatial-beam ${beam.selected ? "is-selected" : ""} ${beam.exact ? "is-exact" : "is-proxy"}`}
-                stroke={beam.color}
-                fill={beam.color}
-                pointerEvents="fill"
-                data-hit-role="relation"
-                aria-label={`激活${beam.label}连接；${beam.endpointLabel}${beam.exact ? "" : `；${rangeStatusLabel(beam.visibility)}`}`}
-              >
-                <title>{beam.endpointLabel}</title>
-              </path>
+              {beam.path && (beam.selected || hoveredBeamId === beam.id) && (
+                <path
+                  ref={(node) => {
+                    if (node) beamPathNodes.current.set(beam.id, node);
+                    else beamPathNodes.current.delete(beam.id);
+                  }}
+                  d={beam.path}
+                  className={`spatial-beam ${beam.selected ? "is-selected" : ""} ${beam.exact ? "is-exact" : "is-proxy"}`}
+                  stroke={beam.color}
+                  fill={beam.color}
+                  pointerEvents="fill"
+                  data-hit-role="relation"
+                  onMouseEnter={() => setHoveredBeamId(beam.id)}
+                  onMouseLeave={() => setHoveredBeamId(null)}
+                  aria-label={`激活${beam.label}连接；${beam.endpointLabel}${beam.exact ? "" : `；${rangeStatusLabel(beam.visibility)}`}`}
+                >
+                  <title>{beam.endpointLabel}</title>
+                </path>
+              )}
             </g>
           ))}
         </svg>
@@ -3555,23 +3680,25 @@ export function SpatialScene({
         >
           {beams.map((beam) => (
             <g key={beam.id} data-beam-connection-id={beam.id}>
-              {beam.worldRangeContours.map((_, index) => (
-                <path
-                  key={`${beam.id}:range:${index}`}
-                  ref={(node) => {
-                    const key = `${beam.id}:${index}`;
-                    if (node) beamRangeNodes.current.set(key, node);
-                    else beamRangeNodes.current.delete(key);
-                  }}
-                  d={beam.path}
-                  className={`spatial-range-contour ${beam.selected ? "is-selected" : ""}`}
-                  fill={beam.color}
-                  stroke={beam.color}
-                  data-hit-role="relation-geometry"
-                  pointerEvents="none"
-                />
-              ))}
-              {!beam.exact && (
+              {beam.exact &&
+                (beam.selected || hoveredBeamId === beam.id) &&
+                beam.worldRangeContours.map((_, index) => (
+                  <path
+                    key={`${beam.id}:range:${index}`}
+                    ref={(node) => {
+                      const key = `${beam.id}:${index}`;
+                      if (node) beamRangeNodes.current.set(key, node);
+                      else beamRangeNodes.current.delete(key);
+                    }}
+                    d={beam.path ?? ""}
+                    className={`spatial-range-contour ${beam.selected ? "is-selected" : ""}`}
+                    fill={beam.color}
+                    stroke={beam.color}
+                    data-hit-role="relation-geometry"
+                    pointerEvents="none"
+                  />
+                ))}
+              {beam.selected && !beam.exact && (
                 <text
                   ref={(node) => {
                     if (node)
@@ -3627,10 +3754,13 @@ export function SpatialScene({
           </div>
         )}
         <div className="spatial-beam-labels" aria-label="可见连接">
-          {beams
-            .filter((beam) => beam.selected)
-            .slice(0, 1)
-            .map((beam) => (
+          {beams.map((beam) => {
+            const measuredWidth = beamLabelWidths[beam.id];
+            const labelFits =
+              beam.labelGap === null ||
+              measuredWidth === undefined ||
+              measuredWidth + 12 <= beam.labelGap;
+            return (
               <button
                 type="button"
                 ref={(node) => {
@@ -3638,8 +3768,10 @@ export function SpatialScene({
                   else beamLabelNodes.current.delete(beam.id);
                 }}
                 key={beam.id}
-                className={`spatial-beam-label ${beam.selected ? "is-selected" : ""}`}
+                className={`spatial-beam-label ${beam.selected ? "is-selected" : "is-quiet"} ${hoveredBeamId === beam.id ? "is-hovered" : ""} ${labelFits ? "" : "is-omitted"}`}
                 data-hit-role="relation"
+                aria-hidden={!labelFits}
+                tabIndex={labelFits ? 0 : -1}
                 style={
                   {
                     left: 0,
@@ -3649,14 +3781,38 @@ export function SpatialScene({
                   } as React.CSSProperties
                 }
                 onClick={() => activateConnection(beam.id, beam.origin)}
+                onMouseEnter={() => setHoveredBeamId(beam.id)}
+                onMouseLeave={() => setHoveredBeamId(null)}
                 aria-label={`${beam.label}：${beam.endpointLabel}`}
                 title={`${beam.label}：${beam.endpointLabel}`}
               >
                 <span className="spatial-beam-label-short" aria-hidden="true">
-                  {beam.selected ? beam.label : "关系"}
+                  {beam.selected || hoveredBeamId === beam.id
+                    ? beam.exact
+                      ? beam.label
+                      : rangeStatusLabel(beam.visibility)
+                    : "关系"}
                 </span>
               </button>
-            ))}
+            );
+          })}
+        </div>
+        <div className="spatial-scene-actions" data-hit-role="control">
+          <span className="spatial-gesture-hint spatial-gesture-hint-desktop">
+            空白处拖动移动 · Shift+拖动旋转 · +/- 或 Ctrl/⌘+滚轮缩放
+          </span>
+          <span className="spatial-gesture-hint spatial-gesture-hint-mobile">
+            轻触折页浏览 · 相关文档可切换
+          </span>
+          {cameraDisplaced && (
+            <button
+              type="button"
+              className="spatial-restore-action"
+              onClick={resetCamera}
+            >
+              回到阅读
+            </button>
+          )}
         </div>
         <div className="spatial-scene-catalogue-status" aria-live="polite">
           {catalogue.loading

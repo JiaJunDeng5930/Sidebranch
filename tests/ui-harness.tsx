@@ -43,18 +43,50 @@ const client: ReaderClient = {
   },
 };
 
-function ReaderQaSurface({ surface }: { surface: string }) {
+function ReaderQaSurface({
+  surface,
+  showPerformancePanel = true,
+}: {
+  surface: string;
+  showPerformancePanel?: boolean;
+}) {
   return (
     <>
-      <QaPerformancePanel surface={surface} />
+      {showPerformancePanel && <QaPerformancePanel surface={surface} />}
       <Reader client={client} />
     </>
   );
 }
 
+const qaViewportOptions = [
+  { value: "auto", label: "Auto" },
+  { value: "390", label: "390" },
+  { value: "768", label: "768" },
+  { value: "1024", label: "1024" },
+  { value: "1440", label: "1440" },
+] as const;
+type QaViewport = (typeof qaViewportOptions)[number]["value"];
+
+const fixedQaFrameHeight = 800;
+
+function qaFrameStyle(viewport: QaViewport): React.CSSProperties {
+  if (viewport === "auto")
+    return { width: "100%", height: "100%", border: 0 };
+  const width = `${viewport}px`;
+  return {
+    width,
+    minWidth: width,
+    height: `${fixedQaFrameHeight}px`,
+    minHeight: `${fixedQaFrameHeight}px`,
+    border: 0,
+    display: "block",
+  };
+}
+
 function Harness() {
   const [mode, setMode] = useState<"website" | "app">("website");
-  const [mobile, setMobile] = useState(false);
+  const [viewport, setViewport] = useState<QaViewport>("auto");
+  const [showFramePerformance, setShowFramePerformance] = useState(false);
   const [message, setMessage] = useState("");
   const [question, setQuestion] = useState<Question | null>(null);
   const [answerDocumentId, setAnswerDocumentId] = useState<DocumentId | null>(
@@ -129,7 +161,7 @@ function Harness() {
       bridgeRef.current = null;
       void bridge.close();
     };
-  }, [mode]);
+  }, [mode, viewport]);
 
   async function respond() {
     if (!question || !bridgeRef.current) return;
@@ -185,9 +217,6 @@ function Harness() {
 
   return (
     <>
-      {mode === "app" && (
-        <QaPerformancePanel surface="QA host shell (MCP app iframe not instrumented)" />
-      )}
       <style>{".qa-reader-container > .reader-shell { height: 100%; }"}</style>
       <div
         style={{
@@ -205,9 +234,40 @@ function Harness() {
         <strong>LOCAL QA</strong>
         <button onClick={() => switchMode("website")}>Website</button>
         <button onClick={() => switchMode("app")}>MCP App bridge</button>
-        <button onClick={() => setMobile(!mobile)}>
-          {mobile ? "Desktop" : "Mobile width"}
-        </button>
+        <label>
+          Viewport{" "}
+          <select
+            aria-label="Viewport"
+            value={viewport}
+            onChange={(event) =>
+              setViewport(event.target.value as QaViewport)
+            }
+          >
+            {qaViewportOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {mode === "website" && viewport === "auto" && (
+          <QaPerformancePanel surface="reader document" placement="toolbar" />
+        )}
+        {mode === "app" && (
+          <QaPerformancePanel
+            surface="QA host shell (MCP app iframe not instrumented)"
+            placement="toolbar"
+          />
+        )}
+        {mode === "website" && viewport !== "auto" && (
+          <button
+            type="button"
+            aria-pressed={showFramePerformance}
+            onClick={() => setShowFramePerformance((shown) => !shown)}
+          >
+            {showFramePerformance ? "Hide frame performance" : "Show frame performance"}
+          </button>
+        )}
         <button
           disabled={busy}
           onClick={async () => {
@@ -271,28 +331,32 @@ function Harness() {
       <div
         className="qa-reader-container"
         style={{
-          width: mobile ? 390 : "100%",
+          width: "100%",
           margin: "0 auto",
           height: "calc(100vh - 40px)",
+          overflow: "auto",
         }}
       >
         {mode === "website" ? (
-          mobile ? (
-            <iframe
-              key="website-mobile"
-              title="Mobile website test"
-              src="/__qa?frame=1"
-              style={{ width: "100%", height: "100%", border: 0 }}
+          viewport === "auto" ? (
+            <ReaderQaSurface
+              surface="reader document"
+              showPerformancePanel={false}
             />
           ) : (
-            <ReaderQaSurface surface="reader document" />
+            <iframe
+              key={`website-${viewport}`}
+              title={`Website ${viewport}px test`}
+              src={`/__qa?frame=1&qa-performance=${showFramePerformance ? "on" : "off"}`}
+              style={qaFrameStyle(viewport)}
+            />
           )
         ) : (
           <iframe
-            key="mcp-app"
-            title="MCP App test"
+            key={`mcp-app-${viewport}`}
+            title={`MCP App ${viewport === "auto" ? "auto" : `${viewport}px`} test`}
             ref={iframeRef}
-            style={{ width: "100%", height: "100%", border: 0 }}
+            style={qaFrameStyle(viewport)}
           />
         )}
       </div>
@@ -319,7 +383,12 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Missing QA root");
 createRoot(root).render(
   new URLSearchParams(location.search).has("frame") ? (
-    <ReaderQaSurface surface="reader document (iframe)" />
+    <ReaderQaSurface
+      surface="reader document (iframe)"
+      showPerformancePanel={
+        new URLSearchParams(location.search).get("qa-performance") !== "off"
+      }
+    />
   ) : (
     <Harness />
   ),
