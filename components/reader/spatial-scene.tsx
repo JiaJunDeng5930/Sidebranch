@@ -249,6 +249,7 @@ export function SpatialScene(props: SpatialSceneProps) {
       settled: () => setMeasureEpoch((epoch) => epoch + 1),
       stopPresentation: () => {},
       stopCameraInput: () => scene.cancelCameraInput(),
+      cameraSnapshot: () => scene.cameraSnapshot(),
       setCameraEnabled: (enabled) => scene.setControlsEnabled(enabled),
       wheelCamera: (dx, dy, dolly, point) =>
         scene.wheelCamera(dx, dy, dolly, point),
@@ -257,7 +258,7 @@ export function SpatialScene(props: SpatialSceneProps) {
       if (event.ctrlKey || event.altKey || event.target === background)
         owner.wheel(event);
     };
-    const blur = () => owner.cancel();
+    const blur = () => owner.finish();
     node.addEventListener("wheel", wheel, { passive: false, capture: true });
     window.addEventListener("blur", blur);
     const resize = () => {
@@ -284,10 +285,7 @@ export function SpatialScene(props: SpatialSceneProps) {
     };
   }, [paint, poseFor, invalidate]);
   useLayoutEffect(() => {
-    interaction.current.synchronize();
-    if (interaction.current.active) interaction.current.cancel();
-    live.current = props.view;
-    runtime.current?.applyView(props.view, poseFor);
+    interaction.current.synchronize(props.view);
   }, [props.view, props.presentation.id, poseFor]);
   const fitted = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -549,7 +547,11 @@ export function SpatialScene(props: SpatialSceneProps) {
     },
     [setMeasureEpoch],
   );
-  const pointerStart = useRef<{ x: number; y: number } | null>(null);
+  const pointerStart = useRef<{
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
   return (
     <div
       ref={viewportRef}
@@ -557,21 +559,45 @@ export function SpatialScene(props: SpatialSceneProps) {
       data-hit-role="stage"
       aria-label="三维文档空间"
       onPointerDownCapture={(event) => {
-        pointerStart.current = { x: event.clientX, y: event.clientY };
+        interaction.current.beginPointer();
+        pointerStart.current = {
+          x: event.clientX,
+          y: event.clientY,
+          moved: false,
+        };
+      }}
+      onPointerMoveCapture={(event) => {
+        const start = pointerStart.current;
+        if (
+          start &&
+          Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 5
+        )
+          start.moved = true;
       }}
       onPointerDown={(event) => interaction.current.pointerDown(event)}
       onPointerMove={(event) => interaction.current.pointerMove(event)}
       onPointerUp={(event) => interaction.current.pointerUp(event)}
-      onPointerCancelCapture={() => interaction.current.cancel()}
+      onPointerCancelCapture={() => interaction.current.finish()}
       onLostPointerCapture={(event) =>
         interaction.current.lostPointerCapture(event)
       }
       onClickCapture={(event) => {
         const start = pointerStart.current;
         pointerStart.current = null;
+        const dragged = interaction.current.consumeClick();
+        if (event.detail === 0) return;
+        if (
+          dragged ||
+          start?.moved ||
+          (start &&
+            Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 5)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         if (
           !start ||
-          Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5 ||
           event.defaultPrevented ||
           window.getSelection()?.isCollapsed === false
         )
@@ -582,7 +608,6 @@ export function SpatialScene(props: SpatialSceneProps) {
           )
         )
           return;
-        if (interaction.current.consumeClick()) return;
         const rect = event.currentTarget.getBoundingClientRect();
         const hit = runtime.current?.pickBand(
           screenPoint(event.clientX - rect.left, event.clientY - rect.top),

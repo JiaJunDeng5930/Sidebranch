@@ -81,6 +81,7 @@ function setup() {
     },
     settled: () => {},
     stopPresentation: () => {},
+    cameraSnapshot: snapshot,
     wheelCamera: (dx, dy, dolly) => {
       if (dolly) controls.dollyOut(Math.exp(-dy * 0.003));
       else controls.pan(-dx, -dy);
@@ -164,9 +165,79 @@ test("a new generation cancels a live camera draft without checkpointing stale m
   h.owner.cameraChange(h.snapshot());
   assert.notDeepEqual(h.view.camera, before.camera);
   h.advance();
-  h.owner.synchronize();
+  h.owner.synchronize(before);
   assert.deepEqual(h.view, before);
   assert.equal(h.checkpoints, 0);
+});
+test("capture loss before OrbitControls end commits the final camera exactly once", () => {
+  const h = setup();
+  h.owner.cameraStart();
+  h.controls.pan(60, 40);
+  h.owner.cameraChange(h.snapshot());
+  // The runtime may have moved after the last delivered change notification.
+  h.controls.pan(20, 10);
+  const released = h.snapshot();
+  h.owner.lostPointerCapture({ pointerId: 1 });
+  h.owner.cameraEnd();
+  assert.deepEqual(h.view.camera, released);
+  assert.equal(h.checkpoints, 1);
+  assert.equal(h.owner.active, false);
+});
+test("same-presentation refreshes retain active and completed movement while admitting papers", () => {
+  const h = setup(),
+    before = h.view,
+    extra = surfaceInstanceId("new-paper"),
+    pose = { position: worldPoint(900, 0, 0), orientation: orientation(0, 0) };
+  h.owner.cameraStart();
+  h.controls.pan(60, 40);
+  h.owner.cameraChange(h.snapshot());
+  const moved = h.view.camera;
+  const refreshed = {
+    ...before,
+    placements: new Map([...before.placements, [extra, pose]]),
+  };
+  h.owner.synchronize(refreshed);
+  assert.equal(h.owner.active, true);
+  assert.deepEqual(h.view.camera, moved);
+  assert.equal(h.view.placements.get(extra), pose);
+  h.owner.cameraEnd();
+  h.owner.synchronize(refreshed);
+  assert.deepEqual(h.view.camera, moved);
+  assert.equal(h.checkpoints, 1);
+});
+test("involuntary paper capture loss and blur preserve the visible placement", () => {
+  const h = setup(),
+    before = h.view;
+  h.owner.pointerDown(h.event(h.edge, 500, 400));
+  h.owner.pointerMove(h.event(h.edge, 580, 400));
+  const moved = h.view;
+  h.owner.synchronize({ ...before, placements: new Map(before.placements) });
+  h.owner.lostPointerCapture({ pointerId: 1 });
+  h.owner.pointerUp({ pointerId: 1 });
+  h.owner.finish();
+  h.owner.synchronize(before);
+  assert.deepEqual(h.view, moved);
+  assert.equal(h.stage.captures.size, 0);
+  assert.equal(h.checkpoints, 1);
+});
+test("a drag's click is suppressed even after returning to its origin, but a fresh click is allowed", () => {
+  const h = setup();
+  h.owner.beginPointer();
+  h.owner.cameraStart();
+  h.controls.pan(60, 40);
+  h.owner.cameraChange(h.snapshot());
+  h.controls.pan(-60, -40);
+  h.owner.cameraChange(h.snapshot());
+  h.owner.cameraEnd();
+  assert.equal(h.owner.consumeClick(), true);
+  h.owner.beginPointer();
+  assert.equal(h.owner.consumeClick(), false);
+  h.owner.pointerDown(h.event(h.edge, 500, 400));
+  h.owner.pointerMove(h.event(h.edge, 580, 400));
+  h.owner.pointerUp({ pointerId: 1 });
+  // Browsers need not emit a click after every pointer sequence.
+  h.owner.beginPointer();
+  assert.equal(h.owner.consumeClick(), false);
 });
 test("wheel pan is a single checkpoint and modifier wheel over paper owns dolly", async () => {
   const h = setup();

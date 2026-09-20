@@ -199,6 +199,9 @@ export class ThreeSceneRuntime {
     this.controls.enabled = enabled;
   }
   cancelCameraInput(): void {
+    const pose = this.cameraSnapshot();
+    this.synchronizing = true;
+    this.controls.dispose();
     for (const id of this.captures) {
       try {
         if (this.background.hasPointerCapture(id))
@@ -206,9 +209,11 @@ export class ThreeSceneRuntime {
       } catch {}
     }
     this.captures.clear();
-    this.controls.disconnect();
-    this.controls.connect(this.background);
-    this.controls.enabled = this.controlsEnabled;
+    // disconnect/connect retains OrbitControls' active pointer and movement
+    // state. Recreate it so involuntary capture loss cannot continue a draft.
+    this.reference = pose;
+    this.controls = this.createControls();
+    this.synchronizing = false;
   }
   resize(viewport: CameraViewport): void {
     this.viewport = viewport;

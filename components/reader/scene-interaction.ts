@@ -41,6 +41,7 @@ export interface SceneInteractionAdapter {
   settled(): void;
   stopPresentation(): void;
   stopCameraInput?(): void;
+  cameraSnapshot?(): CameraPose;
   setCameraEnabled?(enabled: boolean): void;
   wheelCamera?(
     dx: number,
@@ -69,8 +70,10 @@ export class SceneInteraction {
   private wheelDraft: Draft | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private suppressed = false;
+  private generation = 0;
   configure(adapter: SceneInteractionAdapter) {
     this.adapter = adapter;
+    this.generation = adapter.context().generation;
   }
   get active() {
     return !!(this.gesture || this.cameraDraft || this.wheelDraft);
@@ -87,10 +90,33 @@ export class SceneInteraction {
     this.suppressed = false;
     return value;
   }
-  synchronize() {
-    const active = this.gesture ?? this.cameraDraft ?? this.wheelDraft;
-    if (active && active.generation !== this.adapter.context().generation)
+  beginPointer(): void {
+    this.suppressed = false;
+  }
+  synchronize(incoming: SpaceView): void {
+    const context = this.adapter.context();
+    if (this.generation !== context.generation) {
       this.cancel();
+      this.generation = context.generation;
+      this.adapter.paint(incoming);
+      return;
+    }
+    // A checkpoint echo or catalogue refresh is not a camera command. Only a
+    // new presentation may replace established poses; admit newly known papers.
+    const admit = (view: SpaceView): SpaceView => {
+      const additions = [...incoming.placements].filter(
+        ([id]) => !view.placements.has(id),
+      );
+      return additions.length
+        ? { ...view, placements: new Map([...view.placements, ...additions]) }
+        : view;
+    };
+    for (const draft of [this.gesture, this.cameraDraft, this.wheelDraft]) {
+      if (!draft) continue;
+      draft.before = admit(draft.before);
+      draft.draft = admit(draft.draft);
+    }
+    this.adapter.paint(admit(context.view));
   }
   private startDraft(): Draft {
     const { view, generation } = this.adapter.context();
@@ -99,25 +125,31 @@ export class SceneInteraction {
   cameraStart(): void {
     if (this.gesture) return;
     this.finishWheel();
-    this.suppressed = false;
+    if (this.cameraDraft) return;
     this.cameraDraft = this.startDraft();
     this.adapter.stopPresentation();
   }
   cameraChange(camera: CameraPose): void {
     if (!this.cameraDraft || this.gesture) return;
     this.cameraDraft.draft = { ...this.cameraDraft.draft, camera };
+    this.suppressed ||= !sameSpaceView(
+      this.cameraDraft.before,
+      this.cameraDraft.draft,
+    );
     this.adapter.paint(this.cameraDraft.draft);
   }
   cameraEnd(): void {
     const draft = this.cameraDraft;
     this.cameraDraft = null;
     if (!draft) return;
-    this.suppressed = !sameSpaceView(draft.before, draft.draft);
+    const camera = this.adapter.cameraSnapshot?.();
+    if (camera) draft.draft = { ...draft.draft, camera };
+    this.suppressed ||= !sameSpaceView(draft.before, draft.draft);
+    this.adapter.paint(draft.draft);
     this.commit(draft);
   }
   pointerDown(event: PointerInput): void {
     if (event.button !== 0 || !(event.target instanceof Element)) return;
-    if (!this.active) this.suppressed = false;
     const edge = event.target.closest<HTMLElement>("[data-paper-grip]");
     if (
       !edge ||
@@ -209,7 +241,16 @@ export class SceneInteraction {
     this.commit(gesture);
   }
   lostPointerCapture(event: Pick<PointerEvent, "pointerId">): void {
-    if (this.gesture?.id === event.pointerId || this.cameraDraft) this.cancel();
+    if (this.gesture?.id === event.pointerId) this.pointerUp(event);
+    // OrbitControls releases capture before its end event. Capture loss must
+    // finish the visible motion, never restore the gesture's starting view.
+    if (this.cameraDraft) this.finish();
+  }
+  finish(): void {
+    if (this.gesture) this.pointerUp({ pointerId: this.gesture.id });
+    this.cameraEnd();
+    this.finishWheel();
+    this.adapter.stopCameraInput?.();
   }
   private releasePaperCapture(id: number) {
     const node = this.adapter.context().element;
@@ -352,7 +393,7 @@ export class SceneInteraction {
     return true;
   }
   dispose(): void {
-    this.cancel();
+    this.finish();
     this.clearWheel();
   }
 }
