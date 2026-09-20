@@ -1,4 +1,15 @@
-import { mat4, quat, vec3, vec4 } from "gl-matrix";
+import {
+  Euler,
+  MathUtils,
+  Matrix4,
+  Object3D,
+  PerspectiveCamera,
+  Plane,
+  Quaternion as ThreeQuaternion,
+  Raycaster,
+  Vector2,
+  Vector3,
+} from "three";
 
 declare const worldBrand: unique symbol;
 declare const paperBrand: unique symbol;
@@ -38,9 +49,20 @@ export const paperPoint = (x: number, y: number): PaperPoint =>
   ({ x, y }) as PaperPoint;
 export const screenPoint = (x: number, y: number): ScreenPoint =>
   ({ x, y }) as ScreenPoint;
-const tuple = (v: quat): Quaternion => [v[0], v[1], v[2], v[3]];
-const vector = (p: WorldPoint3): vec3 => vec3.fromValues(p.x, p.y, p.z);
-const point = (v: vec3): WorldPoint3 => worldPoint(v[0], v[1], v[2]);
+
+// Domain snapshots use y down. Three owns all mutable geometry in y-up space.
+export const toThreeWorld = (p: WorldPoint3): Vector3 =>
+  new Vector3(p.x, -p.y, p.z);
+export const fromThreeWorld = (p: Vector3): WorldPoint3 =>
+  worldPoint(p.x, -p.y, p.z);
+export const toThreeQuaternion = (q: Quaternion): ThreeQuaternion =>
+  new ThreeQuaternion(-q[0], q[1], -q[2], q[3]);
+export const fromThreeQuaternion = (q: ThreeQuaternion): Quaternion => [
+  -q.x,
+  q.y,
+  -q.z,
+  q.w,
+];
 export const CAMERA_HOME: CameraPose = {
   position: worldPoint(0, 0, 1480),
   orientation: [0, 0, 0, 1],
@@ -48,8 +70,19 @@ export const CAMERA_HOME: CameraPose = {
   perspective: 1480,
   near: 24,
 };
+export const CAMERA_MIN_DISTANCE = 160;
+export const CAMERA_MAX_DISTANCE = 20000;
 export function orientation(x: number, y: number, z = 0): Quaternion {
-  return tuple(quat.fromEuler(quat.create(), x, y, z));
+  // Persisted orientation tuples use intrinsic ZYX Euler angles.
+  const q = new ThreeQuaternion().setFromEuler(
+    new Euler(
+      MathUtils.degToRad(x),
+      MathUtils.degToRad(y),
+      MathUtils.degToRad(z),
+      "ZYX",
+    ),
+  );
+  return [q.x, q.y, q.z, q.w];
 }
 export function normalizeCameraPose(
   pose: CameraPose,
@@ -57,15 +90,14 @@ export function normalizeCameraPose(
 ): CameraPose {
   const finite = (p: WorldPoint3) =>
     p && [p.x, p.y, p.z].every(Number.isFinite);
-  const rotation =
-    pose.orientation?.every(Number.isFinite) &&
-    Math.hypot(...pose.orientation) > 0
-      ? tuple(quat.normalize(quat.create(), pose.orientation))
-      : fallback.orientation;
   return {
     position: finite(pose.position) ? pose.position : fallback.position,
     target: finite(pose.target) ? pose.target : fallback.target,
-    orientation: rotation,
+    orientation:
+      pose.orientation?.every(Number.isFinite) &&
+      Math.hypot(...pose.orientation) > 0
+        ? fromThreeQuaternion(toThreeQuaternion(pose.orientation).normalize())
+        : fallback.orientation,
     perspective:
       Number.isFinite(pose.perspective) && pose.perspective > 0
         ? pose.perspective
@@ -74,48 +106,59 @@ export function normalizeCameraPose(
       Number.isFinite(pose.near) && pose.near > 0 ? pose.near : fallback.near,
   };
 }
-export function modelMatrix(pose: PaperPose): mat4 {
-  return mat4.fromRotationTranslation(
-    mat4.create(),
-    pose.orientation,
-    vector(pose.position),
-  );
-}
-export function viewMatrix(camera: CameraPose): mat4 {
-  return mat4.invert(
-    mat4.create(),
-    mat4.fromRotationTranslation(
-      mat4.create(),
-      camera.orientation,
-      vector(camera.position),
-    ),
-  )!;
-}
-// CSS uses x right, y down, z toward the observer. A +perspective translation
-// puts the pinhole at CSS's perspective origin; M and V otherwise stay literal.
-export function cameraTransform(camera: CameraPose): string {
-  const matrix = mat4.multiply(
-    mat4.create(),
-    mat4.fromTranslation(mat4.create(), [0, 0, camera.perspective]),
-    viewMatrix(camera),
-  );
-  return matrixCss(matrix);
-}
-export function matrixCss(matrix: mat4): string {
-  return `matrix3d(${Array.from(matrix).join(",")})`;
-}
-export function paperTransform(
+export function setPaperObjectTransform(
+  object: Object3D,
   pose: PaperPose,
-  width: number,
-  height: number,
-): string {
-  return matrixCss(
-    mat4.translate(modelMatrix(pose), modelMatrix(pose), [
-      -width / 2,
-      -height / 2,
-      0,
-    ]),
+): void {
+  object.position.copy(toThreeWorld(pose.position));
+  object.quaternion.copy(toThreeQuaternion(pose.orientation));
+  object.updateMatrixWorld(true);
+}
+export function synchronizePerspectiveCamera(
+  camera: PerspectiveCamera,
+  pose: CameraPose,
+  viewport: CameraViewport,
+): void {
+  camera.fov = MathUtils.radToDeg(
+    2 * Math.atan(Math.max(1, viewport.height) / (2 * pose.perspective)),
   );
+  camera.aspect = Math.max(1, viewport.width) / Math.max(1, viewport.height);
+  camera.near = pose.near;
+  camera.far = 100000;
+  camera.position.copy(toThreeWorld(pose.position));
+  camera.quaternion.copy(toThreeQuaternion(pose.orientation));
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
+}
+export function createPerspectiveCamera(
+  pose: CameraPose,
+  viewport: CameraViewport,
+): PerspectiveCamera {
+  const camera = new PerspectiveCamera();
+  synchronizePerspectiveCamera(camera, pose, viewport);
+  return camera;
+}
+export function snapshotCameraPose(
+  camera: PerspectiveCamera,
+  target: Vector3,
+  reference: CameraPose,
+): CameraPose {
+  return {
+    ...reference,
+    position: fromThreeWorld(camera.position),
+    orientation: fromThreeQuaternion(camera.quaternion),
+    target: fromThreeWorld(target),
+  };
+}
+export function modelMatrix(pose: PaperPose): Matrix4 {
+  return new Matrix4().compose(
+    toThreeWorld(pose.position),
+    toThreeQuaternion(pose.orientation),
+    new Vector3(1, 1, 1),
+  );
+}
+export function viewMatrix(camera: CameraPose): Matrix4 {
+  return modelMatrix(camera).invert();
 }
 export function paperToWorld(
   local: PaperPoint,
@@ -123,45 +166,25 @@ export function paperToWorld(
   width: number,
   height: number,
 ): WorldPoint3 {
-  return point(
-    vec3.transformMat4(
-      vec3.create(),
-      [local.x - width / 2, local.y - height / 2, 0],
+  return fromThreeWorld(
+    new Vector3(local.x - width / 2, height / 2 - local.y, 0).applyMatrix4(
       modelMatrix(pose),
     ),
   );
 }
-export function projectionMatrix(
-  camera: CameraPose,
-  viewport: CameraViewport,
-): mat4 {
-  const p = mat4.create();
-  for (let i = 0; i < 16; i++) p[i] = 0;
-  p[0] = (2 * camera.perspective) / viewport.width;
-  p[5] = (-2 * camera.perspective) / viewport.height;
-  p[10] = -1;
-  p[11] = -1;
-  p[14] = -2 * camera.near;
-  return p;
-}
 export function worldToScreen(
   world: WorldPoint3,
-  camera: CameraPose,
+  pose: CameraPose,
   viewport: CameraViewport,
 ): ScreenPoint {
-  const value = vec4.transformMat4(
-    vec4.create(),
-    [world.x, world.y, world.z, 1],
-    mat4.multiply(
-      mat4.create(),
-      projectionMatrix(camera, viewport),
-      viewMatrix(camera),
-    ),
-  );
-  if (value[3] < camera.near) return screenPoint(NaN, NaN);
+  const camera = createPerspectiveCamera(pose, viewport);
+  const p = toThreeWorld(world);
+  if (p.clone().applyMatrix4(camera.matrixWorldInverse).z > -camera.near)
+    return screenPoint(NaN, NaN);
+  p.project(camera);
   return screenPoint(
-    ((value[0] / value[3] + 1) * viewport.width) / 2,
-    ((1 - value[1] / value[3]) * viewport.height) / 2,
+    ((p.x + 1) * viewport.width) / 2,
+    ((1 - p.y) * viewport.height) / 2,
   );
 }
 export function isProjectionSafe(
@@ -170,133 +193,100 @@ export function isProjectionSafe(
 ): boolean {
   const view = viewMatrix(camera);
   return points.every(
-    (p) =>
-      vec3.transformMat4(vec3.create(), vector(p), view)[2] <= -camera.near,
+    (p) => toThreeWorld(p).applyMatrix4(view).z <= -camera.near,
   );
 }
 export function cameraAxis(
-  camera: CameraPose,
+  camera: Pick<CameraPose, "orientation">,
   axis: readonly [number, number, number],
 ): WorldPoint3 {
-  return point(vec3.transformQuat(vec3.create(), axis, camera.orientation));
+  return fromThreeWorld(
+    new Vector3(axis[0], -axis[1], axis[2]).applyQuaternion(
+      toThreeQuaternion(camera.orientation),
+    ),
+  );
+}
+export function screenRaycaster(
+  screen: ScreenPoint,
+  camera: PerspectiveCamera,
+  viewport: CameraViewport,
+): Raycaster {
+  camera.updateMatrixWorld(true);
+  const raycaster = new Raycaster();
+  raycaster.setFromCamera(
+    new Vector2(
+      (screen.x / viewport.width) * 2 - 1,
+      1 - (screen.y / viewport.height) * 2,
+    ),
+    camera,
+  );
+  raycaster.near = camera.near;
+  raycaster.far = camera.far;
+  return raycaster;
 }
 export function screenRay(
   screen: ScreenPoint,
-  camera: CameraPose,
+  pose: CameraPose,
   viewport: CameraViewport,
 ): { origin: WorldPoint3; direction: WorldPoint3 } {
-  // This is inverse P followed by inverse V, in CSS's down-positive axes.
-  const direction = vec3.normalize(vec3.create(), [
-    (screen.x - viewport.width / 2) / camera.perspective,
-    (screen.y - viewport.height / 2) / camera.perspective,
-    -1,
-  ]);
+  const ray = screenRaycaster(
+    screen,
+    createPerspectiveCamera(pose, viewport),
+    viewport,
+  ).ray;
   return {
-    origin: camera.position,
-    direction: point(
-      vec3.transformQuat(direction, direction, camera.orientation),
-    ),
+    origin: fromThreeWorld(ray.origin),
+    direction: fromThreeWorld(ray.direction),
   };
 }
 export function screenToPlane(
   screen: ScreenPoint,
-  camera: CameraPose,
+  pose: CameraPose,
   viewport: CameraViewport,
   origin: WorldPoint3,
-  normal = cameraAxis(camera, [0, 0, 1]),
+  normal = cameraAxis(pose, [0, 0, 1]),
 ): WorldPoint3 | null {
-  const ray = screenRay(screen, camera, viewport);
-  const denominator = vec3.dot(vector(ray.direction), vector(normal));
-  if (Math.abs(denominator) < 1e-6) return null;
-  const t =
-    vec3.dot(
-      vec3.sub(vec3.create(), vector(origin), vector(ray.origin)),
-      vector(normal),
-    ) / denominator;
-  return t > 0
-    ? point(
-        vec3.scaleAndAdd(
-          vec3.create(),
-          vector(ray.origin),
-          vector(ray.direction),
-          t,
-        ),
-      )
-    : null;
-}
-export function orbitCamera(
-  camera: CameraPose,
-  dx: number,
-  dy: number,
-): CameraPose {
-  const rotation = quat.multiply(
-    quat.create(),
-    orientation(-dy * 0.23, dx * 0.23),
-    camera.orientation,
+  const ray = screenRaycaster(
+    screen,
+    createPerspectiveCamera(pose, viewport),
+    viewport,
+  ).ray;
+  const plane = new Plane().setFromNormalAndCoplanarPoint(
+    toThreeWorld(normal).normalize(),
+    toThreeWorld(origin),
   );
-  const distance = vec3.distance(
-    vector(camera.position),
-    vector(camera.target),
-  );
-  const offset = vec3.transformQuat(vec3.create(), [0, 0, distance], rotation);
-  return {
-    ...camera,
-    orientation: tuple(rotation),
-    position: point(vec3.add(offset, vector(camera.target), offset)),
-  };
-}
-export function panCamera(
-  camera: CameraPose,
-  dx: number,
-  dy: number,
-): CameraPose {
-  const distance = vec3.distance(
-    vector(camera.position),
-    vector(camera.target),
-  );
-  const move = vec3.transformQuat(
-    vec3.create(),
-    [
-      (-dx * distance) / camera.perspective,
-      (-dy * distance) / camera.perspective,
-      0,
-    ],
-    camera.orientation,
-  );
-  return {
-    ...camera,
-    position: point(vec3.add(vec3.create(), vector(camera.position), move)),
-    target: point(vec3.add(vec3.create(), vector(camera.target), move)),
-  };
-}
-export function dollyCamera(camera: CameraPose, amount: number): CameraPose {
-  const distance = vec3.distance(
-    vector(camera.position),
-    vector(camera.target),
-  );
-  const next = Math.max(160, Math.min(20000, distance * Math.exp(amount)));
-  return {
-    ...camera,
-    position: point(
-      vec3.scaleAndAdd(
-        vec3.create(),
-        vector(camera.target),
-        vector(cameraAxis(camera, [0, 0, 1])),
-        next,
-      ),
-    ),
-  };
+  const hit = ray.intersectPlane(plane, new Vector3());
+  return hit ? fromThreeWorld(hit) : null;
 }
 export function focusCamera(camera: CameraPose, pose: PaperPose): CameraPose {
-  const offset = vec3.transformQuat(
-    vec3.create(),
-    [0, 0, camera.perspective],
-    pose.orientation,
-  );
+  const position = new Vector3(0, 0, camera.perspective)
+    .applyQuaternion(toThreeQuaternion(pose.orientation))
+    .add(toThreeWorld(pose.position));
   return {
     ...camera,
     target: pose.position,
     orientation: pose.orientation,
-    position: point(vec3.add(offset, vector(pose.position), offset)),
+    position: fromThreeWorld(position),
+  };
+}
+export function fitCameraToPaper(
+  camera: CameraPose,
+  width: number,
+  height: number,
+  viewport: CameraViewport,
+): CameraPose {
+  const distance =
+    camera.perspective *
+    Math.max(
+      width / Math.max(1, viewport.width - 80),
+      height / Math.max(1, viewport.height - 96),
+    );
+  return {
+    ...camera,
+    position: fromThreeWorld(
+      new Vector3(0, 0, Math.max(CAMERA_MIN_DISTANCE, distance))
+        .applyQuaternion(toThreeQuaternion(camera.orientation))
+        .add(toThreeWorld(camera.target)),
+    ),
   };
 }

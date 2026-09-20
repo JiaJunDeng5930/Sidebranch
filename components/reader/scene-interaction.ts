@@ -1,11 +1,9 @@
 import {
   cameraAxis,
-  dollyCamera,
-  orbitCamera,
-  panCamera,
   screenPoint,
   screenToPlane,
   worldPoint,
+  type CameraPose,
   type CameraViewport,
   type ScreenPoint,
   type WorldPoint3,
@@ -37,51 +35,52 @@ type Context = {
 export interface SceneInteractionAdapter {
   context(): Context;
   pose(view: SpaceView, id: SurfaceInstanceId): PaperPose;
+  grabPoint?(id: SurfaceInstanceId, point: ScreenPoint): WorldPoint3 | null;
   paint(view: SpaceView): void;
   checkpoint(checkpoint: ViewCheckpoint): void;
   settled(): void;
   stopPresentation(): void;
+  stopCameraInput?(): void;
+  setCameraEnabled?(enabled: boolean): void;
+  wheelCamera?(
+    dx: number,
+    dy: number,
+    dolly: boolean,
+    point: ScreenPoint,
+  ): CameraPose;
 }
-type Gesture = {
-  before: SpaceView;
-  draft: SpaceView;
-  generation: number;
+type Draft = { before: SpaceView; draft: SpaceView; generation: number };
+type PaperGesture = Draft & {
   origin: ScreenPoint;
-  last: ScreenPoint;
   id: number;
-  mode: "orbit" | "pan" | "paper" | "depth";
-  surfaceId: SurfaceInstanceId | null;
-  center: WorldPoint3 | null;
-  grab: WorldPoint3 | null;
+  mode: "paper" | "depth";
+  surfaceId: SurfaceInstanceId;
+  pose: PaperPose;
+  grab: WorldPoint3;
+  normal: WorldPoint3;
   started: boolean;
 };
+
+/** Coordinates immutable gesture drafts. OrbitControls alone owns camera pointer mechanics. */
 export class SceneInteraction {
   private adapter!: SceneInteractionAdapter;
-  private gesture: Gesture | null = null;
-  private pointers = new Map<number, ScreenPoint>();
+  private gesture: PaperGesture | null = null;
+  private cameraDraft: Draft | null = null;
+  private wheelDraft: Draft | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private wheelBefore: SpaceView | null = null;
-  private wheelGeneration: number | null = null;
-  private wheelDraft: SpaceView | null = null;
   private suppressed = false;
   configure(adapter: SceneInteractionAdapter) {
     this.adapter = adapter;
   }
   get active() {
-    return Boolean(this.gesture || this.wheelBefore);
+    return !!(this.gesture || this.cameraDraft || this.wheelDraft);
+  }
+  get activeSurfaceId() {
+    return this.gesture?.surfaceId ?? null;
   }
   private point(event: { clientX: number; clientY: number }) {
     const { offset } = this.adapter.context();
     return screenPoint(event.clientX - offset.left, event.clientY - offset.top);
-  }
-  private release() {
-    const node = this.adapter.context().element;
-    for (const id of this.pointers.keys()) {
-      try {
-        if (node?.hasPointerCapture(id)) node.releasePointerCapture(id);
-      } catch {}
-    }
-    this.pointers.clear();
   }
   consumeClick(): boolean {
     const value = this.suppressed;
@@ -89,221 +88,221 @@ export class SceneInteraction {
     return value;
   }
   synchronize() {
-    if (
-      this.gesture &&
-      this.gesture.generation !== this.adapter.context().generation
-    )
+    const active = this.gesture ?? this.cameraDraft ?? this.wheelDraft;
+    if (active && active.generation !== this.adapter.context().generation)
       this.cancel();
   }
-  pointerDown(event: PointerInput) {
+  private startDraft(): Draft {
+    const { view, generation } = this.adapter.context();
+    return { before: view, draft: view, generation };
+  }
+  cameraStart(): void {
+    if (this.gesture) return;
+    this.finishWheel();
+    this.suppressed = false;
+    this.cameraDraft = this.startDraft();
+    this.adapter.stopPresentation();
+  }
+  cameraChange(camera: CameraPose): void {
+    if (!this.cameraDraft || this.gesture) return;
+    this.cameraDraft.draft = { ...this.cameraDraft.draft, camera };
+    this.adapter.paint(this.cameraDraft.draft);
+  }
+  cameraEnd(): void {
+    const draft = this.cameraDraft;
+    this.cameraDraft = null;
+    if (!draft) return;
+    this.suppressed = !sameSpaceView(draft.before, draft.draft);
+    this.commit(draft);
+  }
+  pointerDown(event: PointerInput): void {
     if (event.button !== 0 || !(event.target instanceof Element)) return;
-    if (!this.gesture) this.suppressed = false;
+    if (!this.active) this.suppressed = false;
     const edge = event.target.closest<HTMLElement>("[data-paper-grip]");
     if (
-      !edge &&
-      event.target.closest(
-        "[data-paper],button,a,input,textarea,[role='button']",
-      )
+      !edge ||
+      event.target.closest("button,a,input,textarea") ||
+      this.gesture ||
+      this.cameraDraft
     )
       return;
-    const p = this.point(event);
-    this.suppressed = false;
-    if (this.gesture) {
-      if (event.pointerType !== "touch" || this.gesture.surfaceId) return;
-      this.pointers.set(event.pointerId, p);
-      this.gesture.started = true;
-      for (const id of this.pointers.keys())
-        try {
-          this.adapter.context().element?.setPointerCapture(id);
-        } catch {}
-      event.preventDefault();
-      return;
-    }
     this.finishWheel();
-    const { view, generation, viewport } = this.adapter.context();
-    const id = edge?.dataset.paperGrip as SurfaceInstanceId | undefined;
-    const center = id ? this.adapter.pose(view, id).position : null;
+    const { view, viewport } = this.adapter.context();
+    const id = edge.dataset.paperGrip as SurfaceInstanceId;
+    const pose = this.adapter.pose(view, id),
+      origin = this.point(event);
+    const grab =
+      this.adapter.grabPoint?.(id, origin) ??
+      screenToPlane(origin, view.camera, viewport, pose.position);
+    if (!grab) return;
     this.gesture = {
-      before: view,
-      draft: view,
-      generation,
-      origin: p,
-      last: p,
+      ...this.startDraft(),
+      origin,
       id: event.pointerId,
-      mode: id
-        ? event.shiftKey
-          ? "depth"
-          : "paper"
-        : event.shiftKey
-          ? "pan"
-          : "orbit",
-      surfaceId: id ?? null,
-      center,
-      grab: center ? screenToPlane(p, view.camera, viewport, center) : null,
+      mode: event.shiftKey ? "depth" : "paper",
+      surfaceId: id,
+      pose,
+      grab,
+      normal: cameraAxis(view.camera, [0, 0, 1]),
       started: false,
     };
-    this.pointers.set(event.pointerId, p);
+    this.adapter.setCameraEnabled?.(false);
   }
-  pointerMove(event: PointerInput) {
-    const g = this.gesture;
-    if (!g || !this.pointers.has(event.pointerId)) return;
+  pointerMove(event: PointerInput): void {
+    const gesture = this.gesture;
+    if (!gesture || gesture.id !== event.pointerId) return;
     const p = this.point(event);
-    const { viewport } = this.adapter.context();
-    if (!g.started && Math.hypot(p.x - g.origin.x, p.y - g.origin.y) < 5)
+    if (
+      !gesture.started &&
+      Math.hypot(p.x - gesture.origin.x, p.y - gesture.origin.y) < 5
+    )
       return;
-    if (!g.started) {
-      g.started = true;
+    if (!gesture.started) {
+      gesture.started = true;
       this.adapter.stopPresentation();
       try {
         this.adapter.context().element?.setPointerCapture(event.pointerId);
       } catch {}
     }
-    const old = [...this.pointers.values()];
-    this.pointers.set(event.pointerId, p);
-    let view = g.draft;
-    if (this.pointers.size === 2 && !g.surfaceId) {
-      const next = [...this.pointers.values()];
-      const midpoint = (a: ScreenPoint, b: ScreenPoint) =>
-        screenPoint((a.x + b.x) / 2, (a.y + b.y) / 2);
-      const a = midpoint(old[0], old[1]),
-        b = midpoint(next[0], next[1]);
-      const ratio =
-        Math.hypot(old[0].x - old[1].x, old[0].y - old[1].y) /
-        Math.max(1, Math.hypot(next[0].x - next[1].x, next[0].y - next[1].y));
-      view = {
-        ...view,
-        camera: dollyCamera(
-          panCamera(view.camera, b.x - a.x, b.y - a.y),
-          Math.log(ratio),
-        ),
-      };
-    } else if (g.surfaceId && g.center && g.grab) {
-      let center: WorldPoint3;
-      if (g.mode === "depth") {
-        const axis = cameraAxis(view.camera, [0, 0, 1]);
-        const delta = (g.origin.y - p.y) * 3;
-        center = worldPoint(
-          g.center.x + axis.x * delta,
-          g.center.y + axis.y * delta,
-          g.center.z + axis.z * delta,
-        );
-      } else {
-        const hit = screenToPlane(p, view.camera, viewport, g.center);
-        if (!hit) return;
-        center = worldPoint(
-          g.center.x + hit.x - g.grab.x,
-          g.center.y + hit.y - g.grab.y,
-          g.center.z + hit.z - g.grab.z,
-        );
-      }
-      view = {
-        ...view,
-        placements: new Map(view.placements).set(g.surfaceId, {
-          ...this.adapter.pose(view, g.surfaceId),
-          position: center,
-        }),
-      };
-    } else
-      view = {
-        ...view,
-        camera: (g.mode === "pan" ? panCamera : orbitCamera)(
-          view.camera,
-          p.x - g.last.x,
-          p.y - g.last.y,
-        ),
-      };
-    g.last = p;
-    g.draft = view;
-    this.adapter.paint(view);
+    let position: WorldPoint3;
+    if (gesture.mode === "depth") {
+      const delta = (gesture.origin.y - p.y) * 3;
+      position = worldPoint(
+        gesture.pose.position.x + gesture.normal.x * delta,
+        gesture.pose.position.y + gesture.normal.y * delta,
+        gesture.pose.position.z + gesture.normal.z * delta,
+      );
+    } else {
+      // Freeze the grabbed point, camera and plane at pointerdown; threshold crossing
+      // must not move the plane or produce a discontinuity on a tilted paper.
+      const hit = screenToPlane(
+        p,
+        gesture.before.camera,
+        this.adapter.context().viewport,
+        gesture.grab,
+        gesture.normal,
+      );
+      if (!hit) return;
+      position = worldPoint(
+        gesture.pose.position.x + hit.x - gesture.grab.x,
+        gesture.pose.position.y + hit.y - gesture.grab.y,
+        gesture.pose.position.z + hit.z - gesture.grab.z,
+      );
+    }
+    gesture.draft = {
+      ...gesture.draft,
+      placements: new Map(gesture.draft.placements).set(gesture.surfaceId, {
+        ...gesture.pose,
+        position,
+      }),
+    };
+    this.adapter.paint(gesture.draft);
     event.preventDefault();
   }
-  pointerUp(event: Pick<PointerEvent, "pointerId">) {
-    const g = this.gesture;
-    if (!g || !this.pointers.has(event.pointerId)) return;
-    if (this.pointers.size > 1) {
-      this.pointers.delete(event.pointerId);
-      const [id, p] = [...this.pointers][0];
-      g.id = id;
-      g.last = p;
-      return;
-    }
+  pointerUp(event: Pick<PointerEvent, "pointerId">): void {
+    const gesture = this.gesture;
+    if (!gesture || gesture.id !== event.pointerId) return;
     this.gesture = null;
-    this.suppressed = g.started;
-    this.release();
-    if (g.started && !sameSpaceView(g.before, g.draft))
-      this.adapter.checkpoint({ generation: g.generation, view: g.draft });
+    this.suppressed = gesture.started;
+    this.releasePaperCapture(gesture.id);
+    this.adapter.setCameraEnabled?.(true);
+    this.commit(gesture);
+  }
+  lostPointerCapture(event: Pick<PointerEvent, "pointerId">): void {
+    if (this.gesture?.id === event.pointerId || this.cameraDraft) this.cancel();
+  }
+  private releasePaperCapture(id: number) {
+    const node = this.adapter.context().element;
+    try {
+      if (node?.hasPointerCapture(id)) node.releasePointerCapture(id);
+    } catch {}
+  }
+  private commit(draft: Draft): void {
+    if (!sameSpaceView(draft.before, draft.draft))
+      this.adapter.checkpoint({
+        generation: draft.generation,
+        view: draft.draft,
+      });
     this.adapter.settled();
   }
-  lostPointerCapture(event: Pick<PointerEvent, "pointerId">) {
-    if (this.pointers.has(event.pointerId)) this.cancel();
-  }
   cancel(): boolean {
-    const g = this.gesture;
+    const draft = this.gesture ?? this.cameraDraft ?? this.wheelDraft;
+    if (!draft) return false;
+    const id = this.gesture?.id;
     this.gesture = null;
-    if (g) {
-      this.release();
-      this.adapter.paint(g.before);
-      this.adapter.settled();
-      return true;
-    }
-    if (this.wheelBefore) {
-      const view = this.wheelBefore;
-      this.clearWheel();
-      this.adapter.paint(view);
-      return true;
-    }
-    return false;
+    this.cameraDraft = null;
+    this.clearWheel();
+    if (id !== undefined) this.releasePaperCapture(id);
+    this.adapter.stopCameraInput?.();
+    this.adapter.setCameraEnabled?.(true);
+    this.adapter.paint(draft.before);
+    this.adapter.settled();
+    this.suppressed = true;
+    return true;
   }
-  private clearWheel() {
+  private clearWheel(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    this.wheelBefore = null;
     this.wheelDraft = null;
-    this.wheelGeneration = null;
   }
-  private finishWheel() {
-    if (this.wheelDraft) {
-      this.adapter.checkpoint({
-        generation: this.wheelGeneration ?? this.adapter.context().generation,
-        view: this.wheelDraft,
-      });
-      this.clearWheel();
-      this.adapter.settled();
-    }
+  private finishWheel(): void {
+    const draft = this.wheelDraft;
+    this.clearWheel();
+    if (draft) this.commit(draft);
   }
   wheel(
     event: Pick<
       WheelEvent,
-      "target" | "deltaY" | "deltaMode" | "ctrlKey" | "preventDefault"
+      | "target"
+      | "deltaX"
+      | "deltaY"
+      | "deltaMode"
+      | "ctrlKey"
+      | "altKey"
+      | "clientX"
+      | "clientY"
+      | "preventDefault"
+      | "stopImmediatePropagation"
     >,
-  ) {
+  ): void {
+    const dolly = event.ctrlKey || event.altKey;
     if (
       !(event.target instanceof Element) ||
-      event.target.closest("[data-paper],button,a,input") ||
-      this.gesture
+      (!dolly && event.target.closest("[data-paper],button,a,input,textarea"))
     )
       return;
+    if (this.gesture || this.cameraDraft) {
+      if (dolly) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+      return;
+    }
+    if (!this.adapter.wheelCamera) return;
     event.preventDefault();
-    const context = this.adapter.context();
-    this.wheelBefore ??= context.view;
-    this.wheelGeneration ??= context.generation;
-    const view = this.wheelDraft ?? context.view;
+    event.stopImmediatePropagation();
+    if (!this.wheelDraft) {
+      this.wheelDraft = this.startDraft();
+      this.adapter.stopPresentation();
+    }
     const scale =
       event.deltaMode === 1
         ? 16
         : event.deltaMode === 2
-          ? context.viewport.height
+          ? this.adapter.context().viewport.height
           : 1;
-    this.wheelDraft = {
-      ...view,
-      camera: dollyCamera(
-        view.camera,
-        event.deltaY * scale * (event.ctrlKey ? 0.006 : 0.0015),
+    this.wheelDraft.draft = {
+      ...this.wheelDraft.draft,
+      camera: this.adapter.wheelCamera(
+        event.deltaX * scale,
+        event.deltaY * scale,
+        event.ctrlKey || event.altKey,
+        this.point(event),
       ),
     };
-    this.adapter.paint(this.wheelDraft);
+    this.adapter.paint(this.wheelDraft.draft);
     if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.finishWheel(), 150);
+    this.timer = setTimeout(() => this.finishWheel(), 160);
   }
   keyDown(
     event: Pick<
@@ -348,10 +347,11 @@ export class SceneInteraction {
     };
     this.adapter.paint(view);
     this.adapter.checkpoint({ generation: context.generation, view });
+    this.adapter.settled();
     event.preventDefault();
     return true;
   }
-  dispose() {
+  dispose(): void {
     this.cancel();
     this.clearWheel();
   }

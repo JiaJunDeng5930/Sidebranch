@@ -4,41 +4,53 @@
   height: 100%;
   min-height: 480px;
   overflow: hidden;
-  perspective-origin: 50% 50%;
   background: radial-gradient(
     ellipse at 48% 43%,
     #ebe8df 0%,
     #d7d6ce 70%,
     #c7cbc5 100%
   );
+}
+.spatial-scene-background,
+.spatial-renderers,
+.spatial-css-renderer,
+.spatial-webgl-renderer {
+  position: absolute;
+  inset: 0;
+}
+.spatial-scene-background {
   touch-action: none;
 }
-.spatial-scene-world {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 0;
-  height: 0;
-  transform-style: preserve-3d;
+.spatial-renderers,
+.spatial-css-renderer {
+  pointer-events: none;
+}
+.spatial-webgl-renderer {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
 }
 .spatial-paper {
   position: absolute;
-  left: 0;
-  top: 0;
-  transform-origin: 0 0;
-  transform-style: preserve-3d;
+  box-sizing: border-box;
   background: #fffdf7;
   border: 1px solid #c4bca9;
-  border-radius: 3px;
-  box-shadow:
-    0 22px 55px #25352e33,
-    0 2px 7px #25352e20;
+  border-radius: 0;
   color: #302f29;
+  backface-visibility: hidden;
+  pointer-events: auto;
+}
+.spatial-paper-content {
+  position: relative;
   display: flex;
   flex-direction: column;
-  backface-visibility: hidden;
+  width: 100%;
+  height: 100%;
 }
 .spatial-paper-header {
+  box-sizing: border-box;
+  height: 98px;
   padding: 22px 30px 16px;
   flex: none;
   display: flex;
@@ -46,12 +58,17 @@
   justify-content: space-between;
   gap: 15px;
   border-bottom: 1px solid #dad4c4;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
 .spatial-paper-header h2 {
   font-size: 19px;
   line-height: 1.3;
   margin: 0 0 5px;
   font-weight: 600;
+  max-height: 2.6em;
+  overflow: hidden;
 }
 .spatial-paper-header span {
   font-size: 11px;
@@ -65,18 +82,26 @@
   overscroll-behavior: contain;
   touch-action: pan-y;
   cursor: text;
+  user-select: text;
+}
+.spatial-paper-placeholder {
+  padding-top: 24px;
+  color: #7e786a;
+  font-size: 14px;
 }
 .spatial-paper-edge {
   position: absolute;
   touch-action: none;
+  user-select: none;
   cursor: grab;
 }
-.spatial-paper-edge:active {
+.spatial-paper-edge:active,
+.spatial-paper-header:active {
   cursor: grabbing;
 }
 .spatial-paper-edge:focus-visible {
   outline: 2px solid #496d8e;
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 .spatial-paper-edge-top,
 .spatial-paper-edge-bottom {
@@ -102,57 +127,10 @@
 .spatial-paper-edge-right {
   right: 0;
 }
-.spatial-fold {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 205px;
-  height: 116px;
-  transform-origin: 0 0;
-  border: 1px solid #b4b2a3;
-  border-radius: 2px;
-  padding: 18px;
-  text-align: left;
-  background: linear-gradient(145deg, #e7e2d0, #fcfaed);
-  color: #474a3f;
-  box-shadow: 0 9px 18px #25352e23;
-  cursor: pointer;
-  backface-visibility: hidden;
-}
-.spatial-fold::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  top: 0;
-  border: 12px solid transparent;
-  border-top-color: #b6b3a1;
-  border-right-color: #b6b3a1;
-}
-.spatial-fold span {
-  display: block;
-  font-size: 15px;
-  max-height: 55px;
-  overflow: hidden;
-}
-.spatial-fold small {
-  display: block;
-  margin-top: 8px;
-  color: #7a7c6c;
-}
-.spatial-range-triangle {
-  position: absolute;
-  left: 0;
-  top: 0;
-  transform-origin: 0 0;
-  pointer-events: none;
-}
 .spatial-range-proxy {
   position: absolute;
-  left: 0;
-  top: 0;
   width: 110px;
   height: 18px;
-  transform-origin: 0 0;
   pointer-events: none;
   border-left: 5px solid;
   background: repeating-linear-gradient(135deg, #fffdf7 0 4px, #e7e2d8 4px 6px);
@@ -164,6 +142,7 @@
 }
 .spatial-gesture-hint {
   position: absolute;
+  z-index: 2;
   bottom: 12px;
   left: 0;
   width: 100%;
@@ -174,39 +153,18 @@
   letter-spacing: 0.04em;
   pointer-events: none;
 }
-.spatial-load-status {
-  position: absolute;
-  bottom: 42px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 10px 18px;
-  background: #fffdf7;
-  border: 1px solid #c4bca9;
-  font-size: 13px;
-}
 @media (max-width: 620px) {
-  .spatial-paper-header {
-    padding: 18px 23px 12px;
-  }
-  .spatial-paper-scroll {
-    padding: 20px 25px 35px;
-  }
   .spatial-gesture-hint {
     font-size: 9px;
     bottom: 8px;
   }
 }
-
-.spatial-paper-fold {
-  cursor: pointer;
+/* Papers fit the opening viewport through camera distance, so use a readable
+   intrinsic text size instead of shrinking the paper's geometry. */
+.spatial-paper .document-content {
+  font-size: 24px;
+  padding: 0;
 }
-.spatial-paper-fold .spatial-paper-header {
-  padding: 18px;
-  border-bottom: 0;
-  min-height: 0;
-}
-.spatial-paper-fold .spatial-paper-header h2 {
-  font-size: 15px;
-  overflow: hidden;
-  max-height: 3.9em;
+.spatial-paper-header h2 {
+  font-size: 24px;
 }

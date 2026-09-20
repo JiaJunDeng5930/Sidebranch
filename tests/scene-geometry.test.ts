@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   SceneGeometry,
   visibleAnchorFragments,
+  resolvePassageMouth,
 } from "../components/reader/scene-geometry";
 import type { AnchorInput, RevisionId } from "../lib/domain/model";
 import {
@@ -118,4 +119,98 @@ test("scroll clipping preserves separate fragments and both scroll axes", () => 
     { left: 90, right: 130, top: 60, bottom: 80 },
     { left: 40, right: 100, top: 140, bottom: 160 },
   ]);
+});
+
+const mouthLayout = {
+  width: 600,
+  height: 780,
+  maxScroll: 500,
+  scroll: { left: 20, top: 80, right: 580, bottom: 740 },
+};
+const mouthScroll = {
+  scrollLeft: 0,
+  scrollTop: 0,
+  clientWidth: 560,
+  clientHeight: 660,
+};
+const fullGeometry = {
+  coverage: "complete" as const,
+  missing: [],
+  fragments: [
+    { left: 0, top: 0, right: 100, bottom: 20 },
+    { left: 0, top: 30, right: 60, bottom: 50 },
+  ],
+};
+const mouthInput = {
+  surfaceId: first,
+  anchor,
+  edge: "right" as const,
+  layout: mouthLayout,
+  scroll: mouthScroll,
+  geometry: fullGeometry,
+};
+
+test("mouth precision tracks scroll clipping while source offsets and exact rectangles stay intact", () => {
+  const before = structuredClone(fullGeometry);
+  const exact = resolvePassageMouth(mouthInput);
+  assert.equal(exact.precision, "exact");
+  assert.equal(exact.start.y, 80);
+  assert.equal(exact.end.y, 130);
+  const partial = resolvePassageMouth({
+    ...mouthInput,
+    scroll: { ...mouthScroll, scrollTop: 10 },
+  });
+  assert.equal(partial.precision, "partial");
+  assert.equal(partial.reason, "offscreen");
+  assert.equal(partial.start.y, 80);
+  assert.equal(partial.end.y, 120);
+  assert.strictEqual(partial.anchor, anchor);
+  const offscreen = resolvePassageMouth({
+    ...mouthInput,
+    scroll: { ...mouthScroll, scrollTop: 100 },
+  });
+  assert.equal(offscreen.precision, "proxy");
+  assert.equal(offscreen.reason, "offscreen");
+  assert.deepEqual(fullGeometry, before);
+});
+
+test("partial source coverage is labeled and unavailable endpoints remain explicit proxies", () => {
+  const partial = resolvePassageMouth({
+    ...mouthInput,
+    geometry: {
+      ...fullGeometry,
+      coverage: "partial",
+      missing: [{ start: 15, end: 17 }],
+    },
+  });
+  assert.equal(partial.precision, "partial");
+  assert.equal(partial.reason, "unmapped");
+  for (const availability of [
+    "unloaded",
+    "unmounted",
+    "loading",
+    "error",
+  ] as const) {
+    const mouth = resolvePassageMouth({ ...mouthInput, availability });
+    assert.equal(mouth.precision, "proxy");
+    assert.equal(
+      mouth.reason,
+      availability === "unloaded" ? "unmounted" : availability,
+    );
+    assert.strictEqual(mouth.anchor, anchor);
+  }
+  const unmapped = resolvePassageMouth({
+    ...mouthInput,
+    geometry: {
+      coverage: "unmapped",
+      missing: [{ start: 10, end: 20 }],
+      fragments: [],
+    },
+  });
+  assert.equal(unmapped.precision, "proxy");
+  assert.equal(unmapped.reason, "unmapped");
+  assert.equal(
+    resolvePassageMouth({ surfaceId: first, anchor, edge: "left" }).precision,
+    "proxy",
+  );
 });

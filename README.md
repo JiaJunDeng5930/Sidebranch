@@ -7,9 +7,9 @@ A single-owner document space on ChatGPT Sites, with an authenticated MCP server
 - Passage connections are independent, bidirectional entities. Questions reference passages; answers reference independently created documents.
 - The website supports browsing, literal full-text search, editing, imports, version history, paths and archiving.
 - The ChatGPT App uses the same reader. Selecting text opens a question composer; submitting saves the question and sends a user message through the MCP Apps bridge.
-- Every document belongs to one three-dimensional paper space. Papers retain their own positions and reading progress while focus moves between them. Distant papers fold; nearby text loads according to visibility. Returning through reading history preserves the documents and their placements.
+- Every document belongs to one three-dimensional paper space. Papers retain their own positions and reading progress while focus moves between them. Every paper keeps the same size; nearby text loads according to visibility, while distant papers retain their title and outline. Returning through reading history preserves the documents and their placements.
 
-Drag empty space to orbit, Shift-drag to pan, and use the wheel or pinch to move closer or farther away. Drag a paper edge to move that paper; Shift-drag its edge to change depth. Click a paper or folded sheet to approach it. Text selection and scrolling inside a paper remain native. Keyboard users can focus a paper edge and use the arrow keys to move it, or Shift+Up/Down to change depth.
+Drag empty space to pan; Shift/Ctrl/Meta-drag or right-drag to orbit. Scroll over empty space to pan, and pinch or Alt-scroll anywhere in the scene to zoom around the pointer. On a touch screen, one finger on empty space orbits and two fingers pan and zoom. Drag a paper edge or title to move that paper; Shift-drag its edge to change depth. Click a paper to approach it. Text selection and ordinary scrolling inside a paper remain native. Keyboard users can focus a paper edge and use the arrow keys to move it, or Shift+Up/Down to change depth. Escape cancels an active gesture.
 
 ## Connect ChatGPT
 

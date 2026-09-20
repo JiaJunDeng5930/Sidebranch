@@ -1,5 +1,12 @@
 import type { AnchorInput } from "../../lib/domain/model";
-import type { RangeFragment } from "../../lib/reader/range-geometry";
+import { paperPoint } from "../../lib/reader/camera";
+import { PAPER_GEOMETRY } from "../../lib/reader/paper-geometry";
+import {
+  passageMouthInterval,
+  type PassageMouth,
+  type PassageMouthReason,
+} from "../../lib/reader/passage-mouth";
+import type { RangeEdge, RangeFragment } from "../../lib/reader/range-geometry";
 import type {
   AnchorCoverage,
   PassageHandle,
@@ -146,4 +153,108 @@ export function visibleAnchorFragments(
         ]
       : [];
   });
+}
+
+export type ResolvePassageMouthInput = Readonly<{
+  surfaceId: SurfaceInstanceId;
+  anchor: AnchorInput;
+  edge: RangeEdge;
+  layout?: SurfaceLayout;
+  geometry?: CachedAnchorGeometry;
+  scroll?: Pick<
+    HTMLElement,
+    "scrollLeft" | "scrollTop" | "clientWidth" | "clientHeight"
+  > | null;
+  availability?: "ready" | "unloaded" | "unmounted" | "loading" | "error";
+}>;
+
+/** Resolve presentation for one source anchor without changing native ranges. */
+export function resolvePassageMouth({
+  surfaceId,
+  anchor,
+  edge,
+  layout = {
+    ...PAPER_GEOMETRY,
+    maxScroll: 0,
+    scroll: {
+      left: 0,
+      top: 0,
+      right: PAPER_GEOMETRY.width,
+      bottom: PAPER_GEOMETRY.height,
+    },
+  },
+  geometry,
+  scroll,
+  availability = "ready",
+}: ResolvePassageMouthInput): PassageMouth {
+  const identity = { surfaceId, anchor };
+  const proxy = (reason: PassageMouthReason): PassageMouth => {
+    const horizontal = edge === "top" || edge === "bottom";
+    let x =
+      edge === "left"
+        ? 4
+        : edge === "right"
+          ? layout.width - 4
+          : layout.width / 2;
+    let y =
+      edge === "top"
+        ? 4
+        : edge === "bottom"
+          ? layout.height - 4
+          : layout.height / 2;
+    // A fully scrolled-away anchor still has a visible directional endpoint.
+    if (reason === "offscreen" && geometry?.fragments.length && scroll) {
+      const before = geometry.fragments.every(
+        (r) => r.bottom <= scroll.scrollTop,
+      );
+      const after = geometry.fragments.every(
+        (r) => r.top >= scroll.scrollTop + scroll.clientHeight,
+      );
+      if (!horizontal && (before || after))
+        y = before ? layout.scroll.top + 9 : layout.scroll.bottom - 9;
+      const left = geometry.fragments.every(
+        (r) => r.right <= scroll.scrollLeft,
+      );
+      const right = geometry.fragments.every(
+        (r) => r.left >= scroll.scrollLeft + scroll.clientWidth,
+      );
+      if (horizontal && (left || right))
+        x = left ? layout.scroll.left + 9 : layout.scroll.right - 9;
+    }
+    return {
+      ...identity,
+      start: horizontal ? paperPoint(x - 9, y) : paperPoint(x, y - 9),
+      end: horizontal ? paperPoint(x + 9, y) : paperPoint(x, y + 9),
+      precision: "proxy",
+      reason,
+    };
+  };
+  if (availability !== "ready")
+    return proxy(availability === "unloaded" ? "unmounted" : availability);
+  if (!geometry) return proxy("unmounted");
+  if (geometry.coverage === "unmounted" || geometry.coverage === "unmapped")
+    return proxy(geometry.coverage);
+  if (!scroll) return proxy("unmounted");
+  const interval = passageMouthInterval(
+    visibleAnchorFragments(geometry, layout, scroll),
+    edge,
+  );
+  if (!interval) return proxy("offscreen");
+  if (geometry.coverage === "partial")
+    return {
+      ...identity,
+      ...interval,
+      precision: "partial",
+      reason: "unmapped",
+    };
+  const clipped = geometry.fragments.some(
+    (r) =>
+      r.left < scroll.scrollLeft ||
+      r.right > scroll.scrollLeft + scroll.clientWidth ||
+      r.top < scroll.scrollTop ||
+      r.bottom > scroll.scrollTop + scroll.clientHeight,
+  );
+  return clipped
+    ? { ...identity, ...interval, precision: "partial", reason: "offscreen" }
+    : { ...identity, ...interval, precision: "exact" };
 }

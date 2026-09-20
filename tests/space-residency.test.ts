@@ -73,3 +73,42 @@ test("known payload sizes bound hydration without removing occurrences", () => {
   );
   assert.equal(candidates.length, 30);
 });
+
+test("payload admission has hysteresis while paper geometry and pinned selections stay stable", () => {
+  const surface = surfaces[0],
+    before = createSpaceView(
+      CAMERA_HOME,
+      new Map(placements).set(surface.surfaceId, {
+        position: worldPoint(0, 0, -4440),
+        orientation: orientation(0, 0),
+      }),
+    );
+  assert.deepEqual(desiredFullText([surface], before, viewport), []);
+  assert.deepEqual(
+    desiredFullText([surface], before, viewport, {
+      resident: new Set([surface.surfaceId]),
+    }),
+    [surface.surfaceId],
+  );
+  const farther = {
+    ...before,
+    placements: new Map(before.placements).set(surface.surfaceId, {
+      position: worldPoint(0, 0, -6500),
+      orientation: orientation(0, 0),
+    }),
+  };
+  assert.deepEqual(
+    desiredFullText([surface], farther, viewport, {
+      resident: new Set([surface.surfaceId]),
+    }),
+    [],
+  );
+  assert.deepEqual(
+    desiredFullText([surface], farther, viewport, {
+      pinned: new Set([surface.surfaceId]),
+    }),
+    [surface.surfaceId],
+  );
+  assert.equal(before.placements.get(surface.surfaceId)!.position.z, -4440);
+  assert.equal(surface.surfaceId, surfaces[0].surfaceId);
+});
