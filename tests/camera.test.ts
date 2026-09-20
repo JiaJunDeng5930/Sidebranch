@@ -26,35 +26,38 @@ const viewport = { width: 1440, height: 900 };
 const close = (a: number, b: number) =>
   assert.ok(Math.abs(a - b) < 0.002, `${a} != ${b}`);
 test("short viewport papers retain readable projected type and narrow screens retain portrait pages", () => {
-  const size = { width: 900, height: 302 };
-  const geometry = paperGeometryForViewport(size);
   const paper = {
     position: worldPoint(0, 0, 0),
     orientation: orientation(0, 0),
   };
-  const pose = fitCameraToPaper(
-    focusCamera(CAMERA_HOME, paper),
-    geometry.width,
-    geometry.height,
-    size,
-  );
-  const start = worldToScreen(
-    paperToWorld(paperPoint(0, 0), paper, geometry.width, geometry.height),
-    pose,
-    size,
-  );
-  const end = worldToScreen(
-    paperToWorld(
-      paperPoint(geometry.width, geometry.height),
-      paper,
+  // The embedded host's controls can leave substantially less than the browser height.
+  for (const height of [302, 166]) {
+    const size = { width: 900, height };
+    const geometry = paperGeometryForViewport(size);
+    const pose = fitCameraToPaper(
+      focusCamera(CAMERA_HOME, paper),
       geometry.width,
       geometry.height,
-    ),
-    pose,
-    size,
-  );
-  assert.ok((24 * (end.x - start.x)) / geometry.width >= 16);
-  assert.ok(start.y >= 0 && end.y <= size.height);
+      size,
+    );
+    const start = worldToScreen(
+      paperToWorld(paperPoint(0, 0), paper, geometry.width, geometry.height),
+      pose,
+      size,
+    );
+    const end = worldToScreen(
+      paperToWorld(
+        paperPoint(geometry.width, geometry.height),
+        paper,
+        geometry.width,
+        geometry.height,
+      ),
+      pose,
+      size,
+    );
+    assert.ok((24 * (end.x - start.x)) / geometry.width >= 16);
+    assert.ok(start.y >= 0 && end.y <= size.height);
+  }
   assert.deepEqual(
     paperGeometryForViewport({ width: 390, height: 786 }),
     PAPER_GEOMETRY,

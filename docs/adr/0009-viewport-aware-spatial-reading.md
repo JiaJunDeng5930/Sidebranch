@@ -3,7 +3,7 @@
 Date: 2026-09-20
 
 Status: accepted; supersedes ADR 0007's fixed paper height and background-only
-orbit input. Browser acceptance is incomplete as detailed below.
+orbit input.
 
 ## Context
 
@@ -21,6 +21,11 @@ scrolling absorbs the change in available reading height. DOM layout, depth
 masks, picking, and residency use the same dimensions so shortening a paper
 does not detach its interaction geometry.
 
+The minimum reading height must accommodate the space left by host controls.
+Keeping a larger minimum for an already short embedded viewport would force
+the camera to shrink the text again. Compact headers and scroll padding leave
+room for reading within the shorter paper.
+
 Use a shared visibility decision for native papers and their masks. Hide papers
 that cross the near plane because CSS3D cannot reproduce partial near-plane
 clipping. Exclude hidden papers from focus and picking. This trades an abrupt
@@ -31,24 +36,22 @@ input over document content while retaining ordinary selection and scrolling.
 Provide explicit camera recovery and collection framing because free spatial
 navigation can leave every document outside the viewport.
 
+Document focus outlives selection actions. Clearing it while dismissing those
+actions removes the origin needed for relation navigation. Escape therefore
+cancels an active scene gesture or reaches the reader's foreground dismissal
+handler while retaining the current document and camera.
+
 Fit requested comparison papers together without changing their saved poses,
 and retain both requested bodies during the comparison. De-emphasize unrelated
 bands to keep the selected relation distinguishable. Framing distant papers can
 reduce text size; it does not rearrange documents into a separate reading mode.
 
-## Verification and remaining work
+## Verification
 
-Type checking, lint, all 94 tests, the embedded reader build, and both complete
-and spatial QA builds passed. New projection tests cover multiple tilted papers,
-near-plane visibility, large collections, and short viewport text scale.
+The earlier pair-framing failure was measured while selection actions still
+protected navigation: the relation request had not executed. Dismissing the
+selection with Escape then exposed the separate focus-clearing defect.
 
-The local Chrome interaction run passed paper dragging and release stability,
-modifier-wheel zoom, preserving zoom when clicking current text, right-drag
-orbit over text, native scrolling, and native text selection.
-
-That run failed its assertion that both related papers remain entirely inside
-the viewport after relation navigation. It stopped before the mobile and short
-viewport browser checks. The failing end-to-end path still needs diagnosis;
-passing projection unit tests does not establish that navigation uses the
-intended camera throughout the complete flow. Production build and embedded
-App browser acceptance were not completed for this change.
+The [browser regression](../spatial-navigation-verification.md) verifies
+dismissal and completed relation navigation before measuring paper bounds. It
+covers the website and embedded App, including narrow and short viewports.

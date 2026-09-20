@@ -719,11 +719,6 @@ export function SpatialScene(props: SpatialSceneProps) {
           framePapers(false);
           return;
         }
-        if (event.key === "Escape" && live.current.focus) {
-          const view = { ...live.current, focus: null };
-          paint(view);
-          props.onViewCheckpoint({ generation: props.presentation.id, view });
-        }
       }}
     >
       <div

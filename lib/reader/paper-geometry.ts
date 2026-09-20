@@ -20,7 +20,8 @@ export function paperGeometryForViewport(
     height: Math.min(
       PAPER_GEOMETRY.height,
       Math.max(
-        220,
+        // Leave room for the compact header, scroll padding and a line of text.
+        160,
         ((viewport.height - 96) * PAPER_GEOMETRY.width) / readingWidth,
       ),
     ),
