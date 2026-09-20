@@ -2,7 +2,7 @@
   position: relative;
   width: 100%;
   height: 100%;
-  min-height: 480px;
+  min-height: 0;
   overflow: hidden;
   background: radial-gradient(
     ellipse at 48% 43%,
@@ -40,6 +40,11 @@
   color: #302f29;
   backface-visibility: hidden;
   pointer-events: auto;
+  box-shadow: 0 8px 24px #373b3120;
+}
+.spatial-paper[data-focused="true"] {
+  border-color: #897f67;
+  box-shadow: 0 12px 36px #373b312c;
 }
 .spatial-paper-content {
   position: relative;
@@ -140,24 +145,73 @@
   padding-left: 4px;
   white-space: nowrap;
 }
-.spatial-gesture-hint {
+.spatial-navigation,
+.spatial-help,
+.spatial-relations {
   position: absolute;
   z-index: 2;
-  bottom: 12px;
-  left: 0;
-  width: 100%;
-  margin: 0;
-  text-align: center;
-  color: #61665d;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  pointer-events: none;
+  color: #403e36;
+  background: #fffdf7f5;
+  border: 1px solid #c4bca9;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px #373b3110;
+  font:
+    12px/1.5 system-ui,
+    sans-serif;
 }
-@media (max-width: 620px) {
-  .spatial-gesture-hint {
-    font-size: 9px;
-    bottom: 8px;
-  }
+.spatial-navigation {
+  top: 12px;
+  left: 12px;
+  display: flex;
+}
+.spatial-navigation button,
+.spatial-relations button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 8px 12px;
+  min-width: 36px;
+  cursor: pointer;
+  font: inherit;
+}
+.spatial-navigation button + button {
+  border-left: 1px solid #dad4c4;
+}
+.spatial-navigation button:hover,
+.spatial-relations button:hover:not(:disabled),
+.spatial-help summary:hover {
+  background: #ebe8df;
+}
+.spatial-relations button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.spatial-help {
+  top: 12px;
+  right: 12px;
+  max-width: min(310px, calc(100% - 24px));
+}
+.spatial-help summary {
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.spatial-help p {
+  padding: 0 14px 14px;
+  margin: 0;
+  line-height: 1.8;
+}
+.spatial-relations {
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.spatial-scene:focus-visible {
+  outline: 2px solid #496d8e;
+  outline-offset: -2px;
 }
 /* Papers fit the opening viewport through camera distance, so use a readable
    intrinsic text size instead of shrinking the paper's geometry. */
@@ -167,4 +221,18 @@
 }
 .spatial-paper-header h2 {
   font-size: 24px;
+}
+@media (max-width: 620px) {
+  .spatial-paper .document-content {
+    font-size: 28px;
+  }
+}
+@media (max-height: 520px) {
+  .spatial-paper-header {
+    height: 64px;
+    padding: 12px 24px;
+  }
+  .spatial-paper-scroll {
+    padding: 12px 24px 20px;
+  }
 }

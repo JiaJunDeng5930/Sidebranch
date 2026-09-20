@@ -24,6 +24,7 @@ import {
   CAMERA_MAX_DISTANCE,
   CAMERA_MIN_DISTANCE,
   createPerspectiveCamera,
+  isPaperVisible,
   paperPoint,
   paperToWorld,
   screenRaycaster,
@@ -53,6 +54,7 @@ export type SceneBand = Readonly<{
   from: PassageMouth;
   to: PassageMouth;
   color: string;
+  opacity?: number;
 }>;
 type PaperRuntime = {
   instance: PaperInstance;
@@ -80,7 +82,7 @@ export function configureSceneControls(controls: OrbitControls): void {
     MIDDLE: MOUSE.DOLLY,
     RIGHT: MOUSE.ROTATE,
   };
-  controls.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
+  controls.touches = { ONE: TOUCH.PAN, TWO: TOUCH.DOLLY_PAN };
 }
 
 /** Owns mutable Three objects and renderer lifetime; domain views remain immutable snapshots. */
@@ -112,6 +114,7 @@ export class ThreeSceneRuntime {
   private synchronizing = false;
   private disposed = false;
   private controlsEnabled = true;
+  private orbitUp = new Vector3(0, 1, 0);
 
   constructor(
     private readonly host: HTMLElement,
@@ -143,11 +146,13 @@ export class ThreeSceneRuntime {
   };
   private createControls(): OrbitControls {
     const pose = this.reference;
-    this.camera.up
-      .set(0, 1, 0)
-      .applyQuaternion(toThreeQuaternion(pose.orientation));
+    this.camera.up.copy(this.orbitUp);
     const controls = new OrbitControls(this.camera, this.background);
     configureSceneControls(controls);
+    controls.maxDistance = Math.max(
+      CAMERA_MAX_DISTANCE,
+      toThreeWorld(pose.position).distanceTo(toThreeWorld(pose.target)),
+    );
     controls.enabled = this.controlsEnabled;
     controls.target.copy(toThreeWorld(pose.target));
     synchronizePerspectiveCamera(this.camera, pose, this.viewport);
@@ -189,6 +194,7 @@ export class ThreeSceneRuntime {
       // Recreate controls only for external camera restoration. Its orbit-up basis is
       // established at construction, so a restored rolled paper must set that basis too.
       this.controls.dispose();
+      this.orbitUp.set(0, 1, 0).applyQuaternion(rotation);
       this.controls = this.createControls();
     } else synchronizePerspectiveCamera(this.camera, pose, this.viewport);
     this.synchronizing = false;
@@ -197,6 +203,9 @@ export class ThreeSceneRuntime {
   setControlsEnabled(enabled: boolean): void {
     this.controlsEnabled = enabled;
     this.controls.enabled = enabled;
+  }
+  beginCameraPointer(event: PointerEvent): void {
+    this.background.dispatchEvent(new PointerEvent("pointerdown", event));
   }
   cancelCameraInput(): void {
     const pose = this.cameraSnapshot();
@@ -256,6 +265,13 @@ export class ThreeSceneRuntime {
         collectionChanged = true;
       }
       paper.instance = instance;
+      paper.object.element.style.width = `${instance.geometry.width}px`;
+      paper.object.element.style.height = `${instance.geometry.height}px`;
+      paper.mask.scale.set(
+        instance.geometry.width / PAPER_GEOMETRY.width,
+        instance.geometry.height / PAPER_GEOMETRY.height,
+        1,
+      );
       setPaperObjectTransform(paper.object, instance.pose);
       setPaperObjectTransform(paper.mask, instance.pose);
     }
@@ -270,6 +286,7 @@ export class ThreeSceneRuntime {
     this.synchronizeCamera(view.camera);
     let moved = false;
     for (const [id, paper] of this.papers) {
+      paper.object.element.dataset.focused = String(view.focus === id);
       const pose = poseFor(view, id);
       if (paper.instance.pose === pose) continue;
       paper.instance = { ...paper.instance, pose };
@@ -310,6 +327,7 @@ export class ThreeSceneRuntime {
       }
       entry.band = band;
       entry.mesh.material.color.set(band.color);
+      entry.mesh.material.opacity = band.opacity ?? 0.24;
     }
     this.refreshBandPositions();
     this.requestRender();
@@ -365,17 +383,23 @@ export class ThreeSceneRuntime {
   }
   hitPaper(id: SurfaceInstanceId, point: ScreenPoint): PaperPoint | null {
     const paper = this.papers.get(id);
-    if (!paper) return null;
+    if (!paper?.mask.visible) return null;
+    this.maskScene.updateMatrixWorld(true);
     const hit = screenRaycaster(
       point,
       this.camera,
       this.viewport,
-    ).intersectObject(paper.mask, false)[0];
-    if (!hit) return null;
-    const local = paper.mask.worldToLocal(hit.point.clone());
+    ).intersectObjects(
+      [...this.papers.values()]
+        .filter((entry) => entry.mask.visible)
+        .map((entry) => entry.mask),
+      false,
+    )[0];
+    if (!hit || hit.object !== paper.mask) return null;
+    if (!hit.uv) return null;
     return paperPoint(
-      local.x + paper.instance.geometry.width / 2,
-      paper.instance.geometry.height / 2 - local.y,
+      hit.uv.x * paper.instance.geometry.width,
+      (1 - hit.uv.y) * paper.instance.geometry.height,
     );
   }
   pickBand(
@@ -384,8 +408,8 @@ export class ThreeSceneRuntime {
     this.maskScene.updateMatrixWorld(true);
     this.bandScene.updateMatrixWorld(true);
     const objects = [...this.papers.values()]
-      .map((paper) => paper.mask)
-      .concat([]);
+      .filter((paper) => paper.mask.visible)
+      .map((paper) => paper.mask);
     const hits = screenRaycaster(
       point,
       this.camera,
@@ -451,6 +475,18 @@ export class ThreeSceneRuntime {
   }
   render(): void {
     if (this.disposed) return;
+    this.camera.updateMatrixWorld(true);
+    for (const { instance, object, mask } of this.papers.values()) {
+      const visible = isPaperVisible(
+        this.camera,
+        instance.pose,
+        instance.geometry.width,
+        instance.geometry.height,
+      );
+      object.visible = mask.visible = visible;
+      object.element.inert = !visible;
+      object.element.setAttribute("aria-hidden", String(!visible));
+    }
     this.cssRenderer.render(this.paperScene, this.camera);
     const renderer = this.webglRenderer;
     // The overlay exposes the DOM wherever color remains transparent. Paper depth

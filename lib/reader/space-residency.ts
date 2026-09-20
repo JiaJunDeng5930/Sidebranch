@@ -7,7 +7,7 @@ import {
   paperToWorld,
   type CameraViewport,
 } from "./camera";
-import { PAPER_GEOMETRY } from "./paper-geometry";
+import { paperGeometryForViewport } from "./paper-geometry";
 import {
   REVISION_CACHE_MAX_CHARS,
   REVISION_CACHE_MAX_ENTRIES,
@@ -23,7 +23,7 @@ export function desiredFullText(
     pinned?: ReadonlySet<SurfaceInstanceId>;
   }> = {},
 ): SurfaceInstanceId[] {
-  const { width, height } = PAPER_GEOMETRY;
+  const { width, height } = paperGeometryForViewport(viewport);
   const camera = createPerspectiveCamera(view.camera, viewport);
   const candidates = surfaces
     .flatMap((surface) => {

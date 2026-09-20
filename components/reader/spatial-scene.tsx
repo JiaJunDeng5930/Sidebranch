@@ -19,13 +19,16 @@ import type { AnchorInput } from "../../lib/domain/model";
 import type { SpaceView } from "../../lib/reader/space-view";
 import {
   fitCameraToPaper,
+  fitCameraToPapers,
+  focusCamera,
   paperToWorld,
   screenPoint,
   toThreeQuaternion,
   toThreeWorld,
   type CameraViewport,
+  type CameraPose,
 } from "../../lib/reader/camera";
-import { PAPER_GEOMETRY } from "../../lib/reader/paper-geometry";
+import { paperGeometryForViewport } from "../../lib/reader/paper-geometry";
 import {
   SceneGeometry,
   resolvePassageMouth,
@@ -77,6 +80,10 @@ export function SpatialScene(props: SpatialSceneProps) {
     [proxies, setProxies] = useState(
       new Map<SurfaceInstanceId, PaperProxy[]>(),
     );
+  const paperGeometry = useMemo(
+    () => paperGeometryForViewport(viewport),
+    [viewport],
+  );
   useLayoutEffect(() => {
     propsRef.current = props;
     viewportValue.current = viewport;
@@ -85,7 +92,12 @@ export function SpatialScene(props: SpatialSceneProps) {
   useLayoutEffect(() => {
     const next = desiredFullText(props.surfaces, live.current, viewport, {
       resident: resident.current,
-      pinned: pinned.current,
+      pinned: new Set([
+        ...pinned.current,
+        ...(props.presentation.kind === "align-ranges"
+          ? props.presentation.surfaces
+          : []),
+      ]),
     });
     setDesired((previous) =>
       previous.length === next.length &&
@@ -93,7 +105,7 @@ export function SpatialScene(props: SpatialSceneProps) {
         ? previous
         : next,
     );
-  }, [props.surfaces, props.view, viewport, measureEpoch]);
+  }, [props.surfaces, props.view, props.presentation, viewport, measureEpoch]);
   const desiredIds = useMemo(() => new Set(desired), [desired]);
   useLayoutEffect(() => {
     resident.current = desiredIds;
@@ -205,7 +217,7 @@ export function SpatialScene(props: SpatialSceneProps) {
     [],
   );
   const focus = useCallback((id: SurfaceInstanceId) => {
-    if (!interaction.current.consumeClick())
+    if (!interaction.current.consumeClick() && live.current.focus !== id)
       propsRef.current.onFocusSurface(id);
   }, []);
 
@@ -235,12 +247,13 @@ export function SpatialScene(props: SpatialSceneProps) {
       pose: poseFor,
       grabPoint: (id, point) => {
         const local = scene.hitPaper(id, point);
+        const shape = paperGeometryForViewport(viewportValue.current);
         return local
           ? paperToWorld(
               local,
               poseFor(live.current, id),
-              PAPER_GEOMETRY.width,
-              PAPER_GEOMETRY.height,
+              shape.width,
+              shape.height,
             )
           : null;
       },
@@ -287,38 +300,60 @@ export function SpatialScene(props: SpatialSceneProps) {
   useLayoutEffect(() => {
     interaction.current.synchronize(props.view);
   }, [props.view, props.presentation.id, poseFor]);
-  const fitted = useRef<string | null>(null);
+  const fitted = useRef<{ key: string; camera: CameraPose } | null>(null);
   useLayoutEffect(() => {
     const key = `${props.presentation.id}:${props.view.focus}`;
     if (
       !props.view.focus ||
-      fitted.current === key ||
+      (fitted.current?.key === key &&
+        fitted.current.camera !== live.current.camera) ||
       props.presentation.kind === "restore"
     )
       return;
-    fitted.current = key;
+    const requested =
+      props.presentation.kind === "align-ranges"
+        ? props.presentation.surfaces
+        : [props.view.focus];
+    const papers = [...new Set(requested)]
+      .filter((id) => live.current.placements.has(id))
+      .map((id) => ({ pose: poseFor(live.current, id), ...paperGeometry }));
+    const camera = focusCamera(
+      live.current.camera,
+      poseFor(live.current, props.view.focus),
+    );
     const view = {
       ...live.current,
-      camera: fitCameraToPaper(
-        live.current.camera,
-        PAPER_GEOMETRY.width,
-        PAPER_GEOMETRY.height,
-        viewportValue.current,
-      ),
+      camera:
+        papers.length > 1
+          ? fitCameraToPapers(camera, papers, viewport)
+          : fitCameraToPaper(
+              camera,
+              paperGeometry.width,
+              paperGeometry.height,
+              viewport,
+            ),
     };
+    fitted.current = { key, camera: view.camera };
     paint(view);
     propsRef.current.onViewCheckpoint({
       generation: props.presentation.id,
       view,
     });
-  }, [props.presentation.id, props.presentation.kind, props.view.focus, paint]);
+  }, [
+    props.presentation,
+    props.view.focus,
+    viewport,
+    paperGeometry,
+    paint,
+    poseFor,
+  ]);
   useLayoutEffect(() => {
     const scene = runtime.current;
     if (!scene) return;
     const changed = scene.setPapers(
       props.surfaces.map((surface) => ({
         surfaceId: surface.surfaceId,
-        geometry: PAPER_GEOMETRY,
+        geometry: paperGeometry,
         pose: poseFor(live.current, surface.surfaceId),
       })),
     );
@@ -327,7 +362,7 @@ export function SpatialScene(props: SpatialSceneProps) {
       setPortalElements(new Map(scene.paperElements));
       invalidate();
     }
-  }, [props.surfaces, poseFor, invalidate]);
+  }, [props.surfaces, paperGeometry, poseFor, invalidate]);
   useEffect(() => {
     const fonts = document.fonts,
       changed = () => invalidate();
@@ -521,6 +556,13 @@ export function SpatialScene(props: SpatialSceneProps) {
             from: mouths[0],
             to: mouths[1],
             color: relationStyle(connection.relation)["--relation-signal"],
+            opacity: props.selectedConnectionId
+              ? connection.id === props.selectedConnectionId
+                ? 0.42
+                : 0.045
+              : mouths.every((mouth) => mouth?.precision === "exact")
+                ? 0.24
+                : 0.09,
           });
       }
     } finally {
@@ -534,6 +576,7 @@ export function SpatialScene(props: SpatialSceneProps) {
     desiredIds,
     props.surfaces,
     props.connections,
+    props.selectedConnectionId,
     props.bindings,
     props.presentation,
     measureEpoch,
@@ -552,12 +595,38 @@ export function SpatialScene(props: SpatialSceneProps) {
     y: number;
     moved: boolean;
   } | null>(null);
+  const framePapers = (all: boolean) => {
+    interaction.current.finish();
+    const value = live.current;
+    const ids =
+      all || !value.focus
+        ? props.surfaces.map((surface) => surface.surfaceId)
+        : [value.focus];
+    if (!ids.length) return;
+    const camera = focusCamera(
+      value.camera,
+      poseFor(value, value.focus ?? ids[0]),
+    );
+    const view = {
+      ...value,
+      camera: fitCameraToPapers(
+        camera,
+        ids.map((id) => ({ pose: poseFor(value, id), ...paperGeometry })),
+        viewport,
+      ),
+    };
+    paint(view);
+    props.onViewCheckpoint({ generation: props.presentation.id, view });
+    setMeasureEpoch((epoch) => epoch + 1);
+  };
   return (
     <div
       ref={viewportRef}
       className="spatial-scene"
       data-hit-role="stage"
       aria-label="三维文档空间"
+      role="region"
+      tabIndex={0}
       onPointerDownCapture={(event) => {
         interaction.current.beginPointer();
         pointerStart.current = {
@@ -565,6 +634,21 @@ export function SpatialScene(props: SpatialSceneProps) {
           y: event.clientY,
           moved: false,
         };
+        const target = event.target as Element;
+        if (
+          target !== backgroundRef.current &&
+          !target.closest(
+            "button,a,input,textarea,select,summary,[contenteditable]",
+          ) &&
+          (event.button === 2 ||
+            (event.button === 0 &&
+              event.shiftKey &&
+              !target.closest("[data-paper-grip]")))
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          runtime.current?.beginCameraPointer(event.nativeEvent);
+        }
       }}
       onPointerMoveCapture={(event) => {
         const start = pointerStart.current;
@@ -630,6 +714,11 @@ export function SpatialScene(props: SpatialSceneProps) {
       }}
       onKeyDown={(event) => {
         if (interaction.current.keyDown(event)) return;
+        if (event.key === "Home" && event.target === event.currentTarget) {
+          event.preventDefault();
+          framePapers(false);
+          return;
+        }
         if (event.key === "Escape" && live.current.focus) {
           const view = { ...live.current, focus: null };
           paint(view);
@@ -664,10 +753,53 @@ export function SpatialScene(props: SpatialSceneProps) {
           />
         ) : null;
       })}
-      <p className="spatial-gesture-hint">
-        拖动空白平移 · Shift 或右键拖动环顾 · 空白滚动平移 · 捏合或 Alt 滚轮缩放
-        · 拖动纸边移动，Shift 调整远近
-      </p>
+      <nav className="spatial-navigation" aria-label="空间导航">
+        <button type="button" onClick={() => framePapers(false)}>
+          定位文档
+        </button>
+        <button type="button" onClick={() => framePapers(true)}>
+          查看全部
+        </button>
+      </nav>
+      <details className="spatial-help">
+        <summary>操作说明</summary>
+        <p>
+          拖动空白处平移；Shift 或右键拖动环顾；捏合或 Alt
+          滚轮缩放。正文内滚动阅读、拖动选择文字；拖动标题或纸边移动文档，按住
+          Shift 调整远近。按 Escape
+          取消当前操作。触屏可单指平移空白处，双指缩放。
+        </p>
+      </details>
+      {props.relationNavigation.total > 0 && (
+        <nav className="spatial-relations" aria-label="关联导航">
+          <button
+            type="button"
+            aria-label="上一个关联"
+            disabled={
+              !props.relationNavigation.canPrevious ||
+              props.relationNavigation.loading
+            }
+            onClick={() => props.onStepConnection(-1)}
+          >
+            ←
+          </button>
+          <span aria-live="polite">
+            关联 {props.relationNavigation.ordinal ?? "—"} /{" "}
+            {props.relationNavigation.total}
+          </span>
+          <button
+            type="button"
+            aria-label="下一个关联"
+            disabled={
+              !props.relationNavigation.canNext ||
+              props.relationNavigation.loading
+            }
+            onClick={() => props.onStepConnection(1)}
+          >
+            →
+          </button>
+        </nav>
+      )}
     </div>
   );
 }

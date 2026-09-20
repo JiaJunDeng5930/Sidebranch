@@ -124,7 +124,10 @@ export function synchronizePerspectiveCamera(
   );
   camera.aspect = Math.max(1, viewport.width) / Math.max(1, viewport.height);
   camera.near = pose.near;
-  camera.far = 100000;
+  camera.far = Math.max(
+    100000,
+    toThreeWorld(pose.position).distanceTo(toThreeWorld(pose.target)) * 4,
+  );
   camera.position.copy(toThreeWorld(pose.position));
   camera.quaternion.copy(toThreeQuaternion(pose.orientation));
   camera.updateProjectionMatrix();
@@ -278,8 +281,9 @@ export function fitCameraToPaper(
   const distance =
     camera.perspective *
     Math.max(
-      width / Math.max(1, viewport.width - 80),
-      height / Math.max(1, viewport.height - 96),
+      width / Math.max(1, viewport.width - Math.min(80, viewport.width * 0.08)),
+      height /
+        Math.max(1, viewport.height - Math.min(96, viewport.height * 0.3)),
     );
   return {
     ...camera,
@@ -289,4 +293,90 @@ export function fitCameraToPaper(
         .add(toThreeWorld(camera.target)),
     ),
   };
+}
+
+/** Fit every requested paper in the camera's basis, including their different depths. */
+export function fitCameraToPapers(
+  camera: CameraPose,
+  papers: readonly { pose: PaperPose; width: number; height: number }[],
+  viewport: CameraViewport,
+): CameraPose {
+  if (!papers.length) return camera;
+  const rotation = toThreeQuaternion(camera.orientation);
+  const inverse = rotation.clone().invert();
+  const points = papers.flatMap(({ pose, width, height }) =>
+    [
+      [0, 0],
+      [width, 0],
+      [width, height],
+      [0, height],
+    ].map(([x, y]) =>
+      toThreeWorld(
+        paperToWorld(paperPoint(x, y), pose, width, height),
+      ).applyQuaternion(inverse),
+    ),
+  );
+  const center = new Vector3();
+  for (const axis of ["x", "y", "z"] as const)
+    center[axis] =
+      (Math.min(...points.map((p) => p[axis])) +
+        Math.max(...points.map((p) => p[axis]))) /
+      2;
+  const halfWidth =
+    Math.max(1, viewport.width - Math.min(80, viewport.width * 0.08)) / 2;
+  const halfHeight =
+    Math.max(1, viewport.height - Math.min(96, viewport.height * 0.3)) / 2;
+  const distance = Math.max(
+    CAMERA_MIN_DISTANCE,
+    ...points.map(
+      (point) =>
+        point.z -
+        center.z +
+        Math.max(
+          camera.near + 1,
+          (Math.abs(point.x - center.x) * camera.perspective) / halfWidth,
+          (Math.abs(point.y - center.y) * camera.perspective) / halfHeight,
+        ),
+    ),
+  );
+  return {
+    ...camera,
+    target: fromThreeWorld(center.clone().applyQuaternion(rotation)),
+    position: fromThreeWorld(
+      center
+        .clone()
+        .add(new Vector3(0, 0, distance))
+        .applyQuaternion(rotation),
+    ),
+  };
+}
+
+/** CSS3D has no near-plane clipping. Cull the whole paper in both renderers. */
+export function isPaperVisible(
+  camera: PerspectiveCamera,
+  pose: PaperPose,
+  width: number,
+  height: number,
+): boolean {
+  const transform = modelMatrix(pose);
+  const center = new Vector3().setFromMatrixPosition(transform);
+  const normal = new Vector3(0, 0, 1).transformDirection(transform);
+  if (normal.dot(camera.position.clone().sub(center)) <= 0) return false;
+  const points = [
+    [-width / 2, -height / 2],
+    [width / 2, -height / 2],
+    [width / 2, height / 2],
+    [-width / 2, height / 2],
+  ].map(([x, y]) =>
+    new Vector3(x, y, 0)
+      .applyMatrix4(transform)
+      .applyMatrix4(camera.matrixWorldInverse),
+  );
+  if (points.some((p) => p.z > -camera.near || p.z < -camera.far)) return false;
+  const projected = points.map((p) => p.applyMatrix4(camera.projectionMatrix));
+  return !(["x", "y"] as const).some(
+    (axis) =>
+      projected.every((p) => p[axis] < -1) ||
+      projected.every((p) => p[axis] > 1),
+  );
 }

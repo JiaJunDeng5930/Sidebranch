@@ -70,8 +70,7 @@ type QaViewport = (typeof qaViewportOptions)[number]["value"];
 const fixedQaFrameHeight = 800;
 
 function qaFrameStyle(viewport: QaViewport): React.CSSProperties {
-  if (viewport === "auto")
-    return { width: "100%", height: "100%", border: 0 };
+  if (viewport === "auto") return { width: "100%", height: "100%", border: 0 };
   const width = `${viewport}px`;
   return {
     width,
@@ -216,11 +215,19 @@ function Harness() {
   }
 
   return (
-    <>
+    <div
+      style={{
+        height: "100dvh",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
       <style>{".qa-reader-container > .reader-shell { height: 100%; }"}</style>
       <div
         style={{
           minHeight: 40,
+          flexShrink: 0,
           padding: "6px 18px",
           display: "flex",
           flexWrap: "wrap",
@@ -239,9 +246,7 @@ function Harness() {
           <select
             aria-label="Viewport"
             value={viewport}
-            onChange={(event) =>
-              setViewport(event.target.value as QaViewport)
-            }
+            onChange={(event) => setViewport(event.target.value as QaViewport)}
           >
             {qaViewportOptions.map((option) => (
               <option key={option.value} value={option.value}>
@@ -265,7 +270,9 @@ function Harness() {
             aria-pressed={showFramePerformance}
             onClick={() => setShowFramePerformance((shown) => !shown)}
           >
-            {showFramePerformance ? "Hide frame performance" : "Show frame performance"}
+            {showFramePerformance
+              ? "Hide frame performance"
+              : "Show frame performance"}
           </button>
         )}
         <button
@@ -333,7 +340,8 @@ function Harness() {
         style={{
           width: "100%",
           margin: "0 auto",
-          height: "calc(100vh - 40px)",
+          flex: 1,
+          minHeight: 0,
           overflow: "auto",
         }}
       >
@@ -376,7 +384,7 @@ function Harness() {
           <pre style={{ whiteSpace: "pre-wrap" }}>{message}</pre>
         </details>
       )}
-    </>
+    </div>
   );
 }
 const root = document.getElementById("root");

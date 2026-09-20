@@ -121,7 +121,7 @@ test("background camera mechanics use OrbitControls pan, explicit orbit, and nat
   const h = setup();
   assert.equal(h.controls.mouseButtons.LEFT, MOUSE.PAN);
   assert.equal(h.controls.mouseButtons.RIGHT, MOUSE.ROTATE);
-  assert.equal(h.controls.touches.ONE, TOUCH.ROTATE);
+  assert.equal(h.controls.touches.ONE, TOUCH.PAN);
   assert.equal(h.controls.touches.TWO, TOUCH.DOLLY_PAN);
   h.owner.pointerDown(h.event(h.paper, 500, 400));
   h.owner.pointerMove(h.event(h.paper, 560, 440));

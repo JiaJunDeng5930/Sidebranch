@@ -58,10 +58,13 @@ export class SceneGeometry {
   ): () => void {
     const worldTransform = world?.style.transform ?? "";
     const transforms = [...surfaces.values()].map(
-      (node) => [node, node.style.transform] as const,
+      (node) => [node, node.style.transform, node.style.display] as const,
     );
     if (world) world.style.transform = "none";
-    for (const node of surfaces.values()) node.style.transform = "none";
+    for (const node of surfaces.values()) {
+      node.style.transform = "none";
+      node.style.display = "block";
+    }
     for (const [id, node] of surfaces) {
       const scroll = node.querySelector<HTMLElement>("[data-document-scroll]");
       const rect = node.getBoundingClientRect();
@@ -83,8 +86,10 @@ export class SceneGeometry {
     }
     return () => {
       if (world) world.style.transform = worldTransform;
-      for (const [node, transform] of transforms)
+      for (const [node, transform, display] of transforms) {
         node.style.transform = transform;
+        node.style.display = display;
+      }
     };
   }
 

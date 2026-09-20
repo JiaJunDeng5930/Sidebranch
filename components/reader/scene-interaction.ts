@@ -163,9 +163,9 @@ export class SceneInteraction {
     const id = edge.dataset.paperGrip as SurfaceInstanceId;
     const pose = this.adapter.pose(view, id),
       origin = this.point(event);
-    const grab =
-      this.adapter.grabPoint?.(id, origin) ??
-      screenToPlane(origin, view.camera, viewport, pose.position);
+    const grab = this.adapter.grabPoint
+      ? this.adapter.grabPoint(id, origin)
+      : screenToPlane(origin, view.camera, viewport, pose.position);
     if (!grab) return;
     this.gesture = {
       ...this.startDraft(),
