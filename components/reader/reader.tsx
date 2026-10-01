@@ -2237,6 +2237,19 @@ export function Reader({
               onDemandSurfaces={demandSurfaces}
               onRetrySurface={retrySurface}
               view={session.attention.view}
+              reading={session.attention.reading}
+              readingTrail={[
+                ...new Set(
+                  session.attention.history
+                    .slice(0, session.attention.historyIndex + 1)
+                    .reverse()
+                    .flatMap((snapshot) =>
+                      snapshot.reading.primary
+                        ? [snapshot.reading.primary]
+                        : [],
+                    ),
+                ),
+              ].slice(0, 3)}
               documents={session.documents}
               catalogue={session.catalogue}
               neighborhood={session.neighborhood}

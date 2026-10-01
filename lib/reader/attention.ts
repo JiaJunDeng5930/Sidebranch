@@ -26,7 +26,9 @@ import {
   type CameraPose,
   type PaperPose,
 } from "./camera";
+import type { ReadingIntent } from "./reading-presentation";
 export type { CameraPose } from "./camera";
+export type { ReadingIntent } from "./reading-presentation";
 export type { PaperPlacement, SpaceView } from "./space-view";
 
 export interface ReadingPosition {
@@ -49,6 +51,7 @@ export interface ConnectionBinding {
   readonly to: SurfaceInstanceId;
 }
 export interface AttentionSnapshot {
+  readonly reading: ReadingIntent;
   readonly focus: SurfaceInstanceId | null;
   readonly camera: CameraPose;
   readonly positions: ReadonlyMap<SurfaceInstanceId, ReadingPosition>;
@@ -58,6 +61,7 @@ export interface AttentionState {
   readonly space: DocumentSpace;
   /** Sole owner of camera, occurrence poses, and attention. */
   readonly view: SpaceView;
+  readonly reading: ReadingIntent;
   readonly bindings: ReadonlyMap<ConnectionId, ConnectionBinding>;
   readonly selectedConnectionId: ConnectionId | null;
   readonly history: readonly AttentionSnapshot[];
@@ -175,6 +179,7 @@ export function emptyAttention(): AttentionState {
   return {
     space: { surfaces: new Map(), primary: new Map() },
     view: createSpaceView(),
+    reading: { primary: null, companion: null, connectionId: null },
     bindings: new Map(),
     selectedConnectionId: null,
     history: [],
@@ -286,6 +291,7 @@ function admit(
 }
 function snapshot(state: AttentionState): AttentionSnapshot {
   return {
+    reading: { ...state.reading },
     focus: state.view.focus,
     camera: state.view.camera,
     positions: new Map(
@@ -306,14 +312,19 @@ function checkpoint(state: AttentionState, append = false): AttentionState {
 function approach(
   state: AttentionState,
   surfaceId: SurfaceInstanceId,
-  selectedConnectionId: ConnectionId | null = null,
+  reading: ReadingIntent = {
+    primary: surfaceId,
+    companion: null,
+    connectionId: null,
+  },
 ): AttentionState {
   if (!state.space.surfaces.has(surfaceId)) return state;
   const pose = state.view.placements.get(surfaceId)!;
   return checkpoint(
     {
       ...state,
-      selectedConnectionId,
+      reading,
+      selectedConnectionId: reading.connectionId,
       view: {
         ...state.view,
         focus: surfaceId,
@@ -321,8 +332,18 @@ function approach(
       },
     },
     state.view.focus !== surfaceId ||
-      state.selectedConnectionId !== selectedConnectionId,
+      state.selectedConnectionId !== reading.connectionId ||
+      state.reading.companion !== reading.companion,
   );
+}
+function intentForFocus(
+  reading: ReadingIntent,
+  surfaceId: SurfaceInstanceId | null,
+): ReadingIntent {
+  if (surfaceId === reading.primary) return reading;
+  if (surfaceId && surfaceId === reading.companion)
+    return { ...reading, primary: surfaceId, companion: reading.primary };
+  return { primary: surfaceId, companion: null, connectionId: null };
 }
 export function returnHistoryIndex(state: AttentionState): number | null {
   for (let i = state.historyIndex - 1; i >= 0; i--)
@@ -373,7 +394,11 @@ export function attentionReducer(
     case "navigate":
       return approach(admit(state, action.position), action.position.surfaceId);
     case "focus-surface":
-      return approach(state, action.surfaceId);
+      return approach(
+        state,
+        action.surfaceId,
+        intentForFocus(state.reading, action.surfaceId),
+      );
     case "bind-connections": {
       let next = state;
       const bindings = new Map(state.bindings);
@@ -420,7 +445,11 @@ export function attentionReducer(
           : { from: companion.surfaceId, to: current.surfaceId },
       );
       next = { ...next, bindings };
-      return approach(next, companion.surfaceId, connectionId);
+      return approach(next, companion.surfaceId, {
+        primary: companion.surfaceId,
+        companion: current.surfaceId,
+        connectionId,
+      });
     }
     case "history": {
       if (
@@ -440,6 +469,7 @@ export function attentionReducer(
         ...state,
         space: { ...state.space, surfaces },
         view: { ...state.view, focus: saved.focus, camera: saved.camera },
+        reading: saved.reading,
         selectedConnectionId: saved.selectedConnectionId,
         historyIndex: action.index,
       };
@@ -470,9 +500,15 @@ export function attentionReducer(
       for (const [id, pose] of action.view.placements)
         if (state.space.surfaces.has(id)) placements.set(id, pose);
       const view = normalizeSpaceView({ ...action.view, placements });
+      const reading = intentForFocus(state.reading, view.focus);
       return sameSpaceView(view, state.view)
         ? state
-        : checkpoint({ ...state, view });
+        : checkpoint({
+            ...state,
+            view,
+            reading,
+            selectedConnectionId: reading.connectionId,
+          });
     }
   }
 }

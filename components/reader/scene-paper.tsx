@@ -9,6 +9,7 @@ import type {
   SpaceSurface,
   SurfaceInstanceId,
 } from "../../lib/reader/spatial-contract";
+import type { ReadingRole } from "../../lib/reader/reading-presentation";
 import type { SpatialSceneProps } from "./spatial-scene";
 
 export type PaperProxy = { key: string; mouth: PassageMouth; color: string };
@@ -22,6 +23,10 @@ const proxyLabels = {
 export function ScenePaper({
   surface,
   resident,
+  readingRole,
+  readingActive,
+  intrinsicHeight,
+  contextLabel,
   element,
   proxies,
   onRetry,
@@ -36,6 +41,10 @@ export function ScenePaper({
 }: {
   surface: SpaceSurface;
   resident: boolean;
+  readingRole: ReadingRole;
+  readingActive: boolean;
+  intrinsicHeight: number;
+  contextLabel: string;
   element: HTMLElement;
   proxies: readonly PaperProxy[];
   onRetry(id: SurfaceInstanceId): void;
@@ -81,6 +90,20 @@ export function ScenePaper({
     element.setAttribute("data-document-id", surface.position.documentId);
     element.setAttribute("data-revision-id", surface.position.revisionId);
     element.setAttribute("data-residency", resident ? "resident" : "metadata");
+    element.setAttribute("data-reading-role", readingRole);
+    element.setAttribute("data-reading-active", String(readingActive));
+    element.setAttribute(
+      "data-context-density",
+      intrinsicHeight < 50 ? "compact" : "full",
+    );
+    element.setAttribute(
+      "data-compact",
+      intrinsicHeight < 100
+        ? "minimal"
+        : intrinsicHeight < 220
+          ? "short"
+          : "normal",
+    );
     element.setAttribute("aria-label", title);
     element.setAttribute("tabindex", "-1");
   }, [
@@ -88,6 +111,9 @@ export function ScenePaper({
     surface.position.documentId,
     surface.position.revisionId,
     resident,
+    readingRole,
+    readingActive,
+    intrinsicHeight,
     title,
   ]);
   const down = useRef<{ x: number; y: number } | null>(null);
@@ -116,39 +142,63 @@ export function ScenePaper({
         onFocus(surface.surfaceId);
       }}
     >
-      <header
-        className="spatial-paper-header"
-        data-paper-grip={surface.surfaceId}
-        title="拖动标题或纸边移动；Shift 拖动调整远近"
-      >
-        <div>
-          <h2>{title}</h2>
-          <span>{document ? `v${document.sequence}` : "文档"}</span>
-        </div>
-        {reading && renderDocumentMenu?.(reading)}
-      </header>
-      <div
-        className="spatial-paper-scroll"
-        data-document-scroll
-        onScroll={(event) => {
-          if (resident && reading)
-            onScroll(surface.surfaceId, event.currentTarget.scrollTop);
-        }}
-      >
-        {resident && reading ? (
-          renderDocument(reading, context)
-        ) : (
-          <div className="spatial-paper-placeholder">
-            <p role="status">
-              {surface.error ??
-                (resident ? "正在读取正文…" : "靠近或点击纸页读取正文")}
-            </p>
-            {surface.payload === "error" && (
-              <button onClick={() => onRetry(surface.surfaceId)}>重试</button>
+      {readingActive && readingRole === "context" ? (
+        <button
+          className="spatial-context-focus"
+          type="button"
+          aria-label={`继续阅读：${title}`}
+          title={`${document?.path ?? surface.position.documentId} · ${document ? `v${document.sequence}` : "文档"} · ${contextLabel}`}
+          onClick={() => onFocus(surface.surfaceId)}
+        >
+          <strong>{title}</strong>
+          <span className="spatial-context-identity">
+            {document?.path ?? surface.position.documentId} ·{" "}
+            {document ? `v${document.sequence}` : "文档"}
+          </span>
+          <span className="spatial-context-provenance">{contextLabel}</span>
+        </button>
+      ) : (
+        <>
+          <header
+            className="spatial-paper-header"
+            data-paper-grip={surface.surfaceId}
+            title="拖动标题或纸边移动；Shift 拖动调整远近"
+          >
+            <div>
+              <h2>{title}</h2>
+              <span>
+                {readingRole === "primary" ? "正在阅读" : "关联原文"} ·{" "}
+                {document ? `v${document.sequence}` : "文档"}
+              </span>
+            </div>
+            {reading && renderDocumentMenu?.(reading)}
+          </header>
+          <div
+            className="spatial-paper-scroll"
+            data-document-scroll
+            onScroll={(event) => {
+              if (resident && reading)
+                onScroll(surface.surfaceId, event.currentTarget.scrollTop);
+            }}
+          >
+            {resident && reading ? (
+              renderDocument(reading, context)
+            ) : (
+              <div className="spatial-paper-placeholder">
+                <p role="status">
+                  {surface.error ??
+                    (resident ? "正在读取正文…" : "靠近或点击纸页读取正文")}
+                </p>
+                {surface.payload === "error" && (
+                  <button onClick={() => onRetry(surface.surfaceId)}>
+                    重试
+                  </button>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
+        </>
+      )}
       {(["top", "right", "bottom", "left"] as const).map((side, index) => (
         <div
           key={side}

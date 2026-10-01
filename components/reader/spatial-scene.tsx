@@ -18,7 +18,6 @@ import type {
 import type { AnchorInput } from "../../lib/domain/model";
 import type { SpaceView } from "../../lib/reader/space-view";
 import {
-  fitCameraToPaper,
   fitCameraToPapers,
   focusCamera,
   paperToWorld,
@@ -28,7 +27,12 @@ import {
   type CameraViewport,
   type CameraPose,
 } from "../../lib/reader/camera";
-import { paperGeometryForViewport } from "../../lib/reader/paper-geometry";
+import {
+  paperGeometryForViewport,
+  type PaperGeometry,
+} from "../../lib/reader/paper-geometry";
+import { arrangeReading } from "../../lib/reader/reading-presentation";
+import { interpolateReadingFrame } from "./reading-transition";
 import {
   SceneGeometry,
   resolvePassageMouth,
@@ -80,9 +84,58 @@ export function SpatialScene(props: SpatialSceneProps) {
     [proxies, setProxies] = useState(
       new Map<SurfaceInstanceId, PaperProxy[]>(),
     );
-  const paperGeometry = useMemo(
-    () => paperGeometryForViewport(viewport),
-    [viewport],
+  // Placement memory is intentionally excluded: checkpoint echoes never restart reading.
+  const arrangementKey = `${props.presentation.id}:${props.reading.primary}:${props.reading.companion}:${props.reading.connectionId}:${viewport.width}:${viewport.height}`;
+  const arrangement = useMemo(
+    () =>
+      arrangeReading({
+        intent: props.reading,
+        view: props.view,
+        viewport,
+        surfaceIds: props.surfaces.map((surface) => surface.surfaceId),
+        trail: props.readingTrail,
+        bodyFontSize: viewport.width <= 620 ? 28 : 24,
+      }),
+    // One arrangement per explicit reading action or viewport change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [arrangementKey],
+  );
+  const displayedGeometry = useRef<
+    ReadonlyMap<SurfaceInstanceId, PaperGeometry>
+  >(arrangement.geometry);
+  const transition = useRef<number | null>(null);
+  const stopPresentation = useCallback(() => {
+    if (transition.current !== null) {
+      cancelAnimationFrame(transition.current);
+      transition.current = null;
+      geometry.current.invalidate();
+      setMeasureEpoch((epoch) => epoch + 1);
+    }
+  }, []);
+  const shapeFor = useCallback(
+    (id: SurfaceInstanceId) =>
+      displayedGeometry.current.get(id) ??
+      (propsRef.current.reading.primary
+        ? { width: 600, height: 100 }
+        : paperGeometryForViewport(viewportValue.current)),
+    [],
+  );
+  const checkpoint = useCallback(
+    (
+      value: { generation: number; view: SpaceView },
+      movedSurfaceId?: SurfaceInstanceId,
+    ) => {
+      const saved = new Map(propsRef.current.view.placements);
+      if (movedSurfaceId) {
+        const pose = value.view.placements.get(movedSurfaceId);
+        if (pose) saved.set(movedSurfaceId, pose);
+      }
+      propsRef.current.onViewCheckpoint({
+        generation: value.generation,
+        view: { ...value.view, placements: saved },
+      });
+    },
+    [],
   );
   useLayoutEffect(() => {
     propsRef.current = props;
@@ -90,22 +143,23 @@ export function SpatialScene(props: SpatialSceneProps) {
   }, [props, viewport]);
   const [desired, setDesired] = useState<SurfaceInstanceId[]>([]);
   useLayoutEffect(() => {
-    const next = desiredFullText(props.surfaces, live.current, viewport, {
-      resident: resident.current,
-      pinned: new Set([
-        ...pinned.current,
-        ...(props.presentation.kind === "align-ranges"
-          ? props.presentation.surfaces
-          : []),
-      ]),
-    });
+    const next = props.reading.primary
+      ? [
+          ...new Set([...arrangement.readableSurfaceIds, ...pinned.current]),
+        ].filter((id) =>
+          props.surfaces.some((surface) => surface.surfaceId === id),
+        )
+      : desiredFullText(props.surfaces, live.current, viewport, {
+          resident: resident.current,
+          pinned: pinned.current,
+        });
     setDesired((previous) =>
       previous.length === next.length &&
       previous.every((id, index) => id === next[index])
         ? previous
         : next,
     );
-  }, [props.surfaces, props.view, props.presentation, viewport, measureEpoch]);
+  }, [props.surfaces, arrangement, viewport, measureEpoch]);
   const desiredIds = useMemo(() => new Set(desired), [desired]);
   useLayoutEffect(() => {
     resident.current = desiredIds;
@@ -247,7 +301,7 @@ export function SpatialScene(props: SpatialSceneProps) {
       pose: poseFor,
       grabPoint: (id, point) => {
         const local = scene.hitPaper(id, point);
-        const shape = paperGeometryForViewport(viewportValue.current);
+        const shape = shapeFor(id);
         return local
           ? paperToWorld(
               local,
@@ -258,9 +312,9 @@ export function SpatialScene(props: SpatialSceneProps) {
           : null;
       },
       paint,
-      checkpoint: (value) => propsRef.current.onViewCheckpoint(value),
+      checkpoint,
       settled: () => setMeasureEpoch((epoch) => epoch + 1),
-      stopPresentation: () => {},
+      stopPresentation,
       stopCameraInput: () => scene.cancelCameraInput(),
       cameraSnapshot: () => scene.cameraSnapshot(),
       setCameraEnabled: (enabled) => scene.setControlsEnabled(enabled),
@@ -296,56 +350,76 @@ export function SpatialScene(props: SpatialSceneProps) {
       scene.dispose();
       runtime.current = null;
     };
-  }, [paint, poseFor, invalidate]);
+  }, [paint, poseFor, invalidate, shapeFor, checkpoint, stopPresentation]);
   useLayoutEffect(() => {
-    interaction.current.synchronize(props.view);
-  }, [props.view, props.presentation.id, poseFor]);
-  const fitted = useRef<{ key: string; camera: CameraPose } | null>(null);
-  useLayoutEffect(() => {
-    const key = `${props.presentation.id}:${props.view.focus}`;
-    if (
-      !props.view.focus ||
-      (fitted.current?.key === key &&
-        fitted.current.camera !== live.current.camera) ||
-      props.presentation.kind === "restore"
-    )
-      return;
-    const requested =
-      props.presentation.kind === "align-ranges"
-        ? props.presentation.surfaces
-        : [props.view.focus];
-    const papers = [...new Set(requested)]
-      .filter((id) => live.current.placements.has(id))
-      .map((id) => ({ pose: poseFor(live.current, id), ...paperGeometry }));
-    const camera = focusCamera(
-      live.current.camera,
-      poseFor(live.current, props.view.focus),
-    );
-    const view = {
+    stopPresentation();
+    interaction.current.synchronize({
       ...live.current,
-      camera:
-        papers.length > 1
-          ? fitCameraToPapers(camera, papers, viewport)
-          : fitCameraToPaper(
-              camera,
-              paperGeometry.width,
-              paperGeometry.height,
-              viewport,
-            ),
-    };
-    fitted.current = { key, camera: view.camera };
-    paint(view);
-    propsRef.current.onViewCheckpoint({
-      generation: props.presentation.id,
-      view,
+      focus: props.reading.primary,
     });
+    const scene = runtime.current;
+    if (!scene) return;
+    const from = live.current;
+    const fromGeometry = displayedGeometry.current;
+    const target =
+      props.presentation.kind === "restore"
+        ? { ...arrangement.view, camera: props.view.camera }
+        : arrangement.view;
+    const apply = (
+      view: SpaceView,
+      shapes: ReadonlyMap<SurfaceInstanceId, PaperGeometry>,
+    ) => {
+      displayedGeometry.current = shapes;
+      const changed = scene.setPapers(
+        propsRef.current.surfaces.map((surface) => ({
+          surfaceId: surface.surfaceId,
+          geometry: shapeFor(surface.surfaceId),
+          pose: poseFor(view, surface.surfaceId),
+        })),
+      );
+      nodes.current = scene.paperElements;
+      if (changed) setPortalElements(new Map(scene.paperElements));
+      paint(view);
+    };
+    const finish = () => {
+      transition.current = null;
+      apply(target, arrangement.geometry);
+      invalidate();
+      checkpoint({ generation: props.presentation.id, view: target });
+    };
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      finish();
+      return;
+    }
+    const start = performance.now();
+    const frame = (now: number) => {
+      const progress = Math.min(1, (now - start) / 280);
+      if (progress === 1) {
+        finish();
+        return;
+      }
+      const current = interpolateReadingFrame(
+        from,
+        target,
+        fromGeometry,
+        arrangement.geometry,
+        progress,
+      );
+      apply(current.view, current.geometry);
+      transition.current = requestAnimationFrame(frame);
+    };
+    transition.current = requestAnimationFrame(frame);
+    return stopPresentation;
+    // Saved camera and placements are read only when this presentation starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    props.presentation,
-    props.view.focus,
-    viewport,
-    paperGeometry,
+    arrangement,
     paint,
     poseFor,
+    shapeFor,
+    invalidate,
+    checkpoint,
+    stopPresentation,
   ]);
   useLayoutEffect(() => {
     const scene = runtime.current;
@@ -353,7 +427,7 @@ export function SpatialScene(props: SpatialSceneProps) {
     const changed = scene.setPapers(
       props.surfaces.map((surface) => ({
         surfaceId: surface.surfaceId,
-        geometry: paperGeometry,
+        geometry: shapeFor(surface.surfaceId),
         pose: poseFor(live.current, surface.surfaceId),
       })),
     );
@@ -362,7 +436,7 @@ export function SpatialScene(props: SpatialSceneProps) {
       setPortalElements(new Map(scene.paperElements));
       invalidate();
     }
-  }, [props.surfaces, paperGeometry, poseFor, invalidate]);
+  }, [props.surfaces, shapeFor, poseFor, invalidate]);
   useEffect(() => {
     const fonts = document.fonts,
       changed = () => invalidate();
@@ -402,7 +476,7 @@ export function SpatialScene(props: SpatialSceneProps) {
   useLayoutEffect(() => {
     const scene = runtime.current,
       owner = geometry.current;
-    if (!scene || !portalElements.size) return;
+    if (!scene || !portalElements.size || transition.current !== null) return;
     for (const surface of props.surfaces)
       owner.setSurfaceContext(
         surface.surfaceId,
@@ -439,7 +513,7 @@ export function SpatialScene(props: SpatialSceneProps) {
           .get(surface.surfaceId)
           ?.querySelector<HTMLElement>("[data-document-scroll]");
         if (!scroll) continue;
-        const key = `${surface.document.revisionId}:${props.presentation.id}`;
+        const key = `${surface.document.revisionId}:${arrangementKey}`;
         if (restored.current.get(surface.surfaceId) !== key) {
           scroll.scrollTop = surface.position.scrollTop;
           const anchor = surface.position.focus;
@@ -585,6 +659,7 @@ export function SpatialScene(props: SpatialSceneProps) {
   ]);
   const scroll = useCallback(
     (id: SurfaceInstanceId, top: number) => {
+      if (transition.current !== null) return;
       propsRef.current.onScroll(id, top, propsRef.current.presentation.id);
       setMeasureEpoch((epoch) => epoch + 1);
     },
@@ -597,6 +672,7 @@ export function SpatialScene(props: SpatialSceneProps) {
   } | null>(null);
   const framePapers = (all: boolean) => {
     interaction.current.finish();
+    stopPresentation();
     const value = live.current;
     const ids =
       all || !value.focus
@@ -611,12 +687,12 @@ export function SpatialScene(props: SpatialSceneProps) {
       ...value,
       camera: fitCameraToPapers(
         camera,
-        ids.map((id) => ({ pose: poseFor(value, id), ...paperGeometry })),
+        ids.map((id) => ({ pose: poseFor(value, id), ...shapeFor(id) })),
         viewport,
       ),
     };
     paint(view);
-    props.onViewCheckpoint({ generation: props.presentation.id, view });
+    checkpoint({ generation: props.presentation.id, view });
     setMeasureEpoch((epoch) => epoch + 1);
   };
   return (
@@ -624,10 +700,17 @@ export function SpatialScene(props: SpatialSceneProps) {
       ref={viewportRef}
       className="spatial-scene"
       data-hit-role="stage"
+      data-reading-layout={arrangement.paired}
+      style={
+        {
+          "--reading-body-font-size": `${viewport.width <= 620 ? 28 : 24}px`,
+        } as React.CSSProperties
+      }
       aria-label="三维文档空间"
       role="region"
       tabIndex={0}
       onPointerDownCapture={(event) => {
+        stopPresentation();
         interaction.current.beginPointer();
         pointerStart.current = {
           x: event.clientX,
@@ -733,6 +816,19 @@ export function SpatialScene(props: SpatialSceneProps) {
           <ScenePaper
             key={surface.surfaceId}
             surface={surface}
+            readingRole={arrangement.roles.get(surface.surfaceId) ?? "context"}
+            readingActive={!!props.reading.primary}
+            intrinsicHeight={
+              arrangement.geometry.get(surface.surfaceId)?.height ??
+              shapeFor(surface.surfaceId).height
+            }
+            contextLabel={
+              surface.surfaceId === props.reading.companion
+                ? "关联原文 · 点击继续阅读"
+                : props.readingTrail.includes(surface.surfaceId)
+                  ? "阅读来处 · 点击返回"
+                  : "空间中的文档 · 点击阅读"
+            }
             resident={desiredIds.has(surface.surfaceId)}
             element={element}
             proxies={proxies.get(surface.surfaceId) ?? []}

@@ -2,7 +2,8 @@
 
 Date: 2026-09-19
 
-Status: accepted
+Status: accepted; ADR 0010 specifies the reading priority and viewport fallbacks
+for the spatial renderer.
 
 ## Context
 

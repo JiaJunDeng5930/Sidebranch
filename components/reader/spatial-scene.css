@@ -213,19 +213,13 @@
   outline: 2px solid #496d8e;
   outline-offset: -2px;
 }
-/* Papers fit the opening viewport through camera distance, so use a readable
-   intrinsic text size instead of shrinking the paper's geometry. */
+/* Text scale follows the actual scene viewport, including embedded frames. */
 .spatial-paper .document-content {
-  font-size: 24px;
+  font-size: var(--reading-body-font-size, 24px);
   padding: 0;
 }
 .spatial-paper-header h2 {
   font-size: 24px;
-}
-@media (max-width: 620px) {
-  .spatial-paper .document-content {
-    font-size: 28px;
-  }
 }
 @media (max-height: 520px) {
   .spatial-paper-header {
@@ -235,4 +229,127 @@
   .spatial-paper-scroll {
     padding: 12px 24px 20px;
   }
+}
+/* Reading geometry belongs to the scene; these styles only express its roles. */
+.spatial-paper[data-reading-role="primary"] {
+  background: #fffef9;
+  border-color: #80725b;
+  box-shadow:
+    0 16px 46px #373b3130,
+    inset 3px 0 #aa8352;
+}
+.spatial-paper[data-reading-role="companion"] {
+  background: #f7f3e8;
+  border-color: #b8aa8b;
+  box-shadow:
+    0 8px 28px #373b3120,
+    inset 3px 0 #8e9b8b;
+}
+.spatial-paper[data-reading-active="true"][data-reading-role="context"] {
+  background: #e9e6dc;
+  border-color: #bab5a6;
+  box-shadow: 0 3px 12px #373b3115;
+}
+.spatial-context-focus {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+  padding: 2px 12px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.spatial-context-focus strong,
+.spatial-context-focus span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.spatial-context-focus strong {
+  font:
+    600 18px/1.2 system-ui,
+    sans-serif;
+}
+.spatial-context-identity {
+  font:
+    11px/1.2 system-ui,
+    sans-serif;
+  color: #7e786a;
+}
+.spatial-context-provenance {
+  font:
+    11px/1.2 system-ui,
+    sans-serif;
+  color: #69634f;
+}
+.spatial-context-focus:focus-visible {
+  outline: 2px solid #496d8e;
+  outline-offset: -4px;
+}
+.spatial-paper[data-compact="short"] .spatial-paper-header {
+  height: 40px;
+  padding: 5px 12px;
+}
+.spatial-paper[data-compact="short"] .spatial-paper-header h2 {
+  font-size: 16px;
+  max-height: 1.3em;
+  margin: 0;
+}
+.spatial-paper[data-compact="short"] .spatial-paper-header span {
+  font-size: 10px;
+}
+.spatial-paper[data-compact="short"] .spatial-paper-scroll {
+  padding: 8px;
+}
+.spatial-paper[data-compact="minimal"] .spatial-paper-header {
+  display: none;
+}
+.spatial-paper[data-compact="minimal"] .spatial-paper-scroll {
+  padding: 4px;
+}
+.spatial-paper[data-context-density="compact"] .spatial-context-focus {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 4px 14px;
+}
+.spatial-paper[data-context-density="compact"] .spatial-context-focus strong {
+  font-size: 15px;
+  flex-shrink: 1;
+}
+.spatial-paper[data-context-density="compact"] .spatial-context-identity {
+  display: none;
+}
+.spatial-paper[data-context-density="compact"] .spatial-context-provenance {
+  flex-shrink: 0;
+}
+.spatial-scene[data-reading-layout="stacked"] .spatial-navigation,
+.spatial-scene[data-reading-layout="beside"] .spatial-navigation,
+.spatial-scene[data-reading-layout="single"] .spatial-navigation {
+  top: auto;
+  bottom: 8px;
+}
+.spatial-scene .spatial-help {
+  top: 6px;
+  right: 8px;
+  background: #fffdf7c9;
+}
+.spatial-scene .spatial-help summary {
+  padding: 3px 8px;
+}
+.spatial-scene .spatial-relations {
+  bottom: 8px;
+}
+
+.spatial-paper[data-reading-role="context"] .spatial-range-proxy {
+  visibility: hidden;
+  pointer-events: none;
 }

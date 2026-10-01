@@ -291,6 +291,17 @@ function SpaceDesignHarness() {
             surfaces={surfaces}
             bindings={bindings}
             view={state.view}
+            reading={state.reading}
+            readingTrail={[
+              ...new Set(
+                state.history
+                  .slice(0, state.historyIndex + 1)
+                  .reverse()
+                  .flatMap((snapshot) =>
+                    snapshot.reading.primary ? [snapshot.reading.primary] : [],
+                  ),
+              ),
+            ].slice(0, 3)}
             documents={documents}
             catalogue={{
               activeComplete: true,

@@ -3,7 +3,9 @@
 Date: 2026-09-20
 
 Status: accepted; supersedes ADR 0007's fixed paper height and background-only
-orbit input.
+orbit input. ADR 0010 supersedes the stable reading pose and complete comparison
+framing decisions below; viewport-aware geometry and interaction consistency
+remain accepted.
 
 ## Context
 
@@ -15,11 +17,12 @@ the intention to inspect both endpoints of a connection.
 
 ## Decisions and reasons
 
-Paper height follows the viewport while its width and spatial pose remain
-stable. Camera movement and payload residency do not resize the paper. Native
-scrolling absorbs the change in available reading height. DOM layout, depth
-masks, picking, and residency use the same dimensions so shortening a paper
-does not detach its interaction geometry.
+Superseded in part by [ADR 0010](0010-reading-intent-and-temporary-presentation.md):
+reading geometry and temporary poses now follow the readable content required
+by the current intent. Saved user placement remains stable. Payload residency
+must not resize or move a paper. Native scrolling absorbs the available reading
+height. DOM layout, depth masks, picking, and residency still use the same
+dimensions so shortening a paper does not detach its interaction geometry.
 
 The minimum reading height must accommodate the space left by host controls.
 Keeping a larger minimum for an already short embedded viewport would force
@@ -41,10 +44,11 @@ actions removes the origin needed for relation navigation. Escape therefore
 cancels an active scene gesture or reaches the reader's foreground dismissal
 handler while retaining the current document and camera.
 
-Fit requested comparison papers together without changing their saved poses,
-and retain both requested bodies during the comparison. De-emphasize unrelated
-bands to keep the selected relation distinguishable. Framing distant papers can
-reduce text size; it does not rearrange documents into a separate reading mode.
+Superseded by ADR 0010: the original comparison policy fit complete papers at
+their saved poses and accepted smaller text for distant endpoints. Related
+ranges now take priority over complete frames, using temporary presentation in
+the same space. Retain bodies required for reading and de-emphasize unrelated
+bands so the selected relation remains distinguishable.
 
 ## Verification
 
@@ -55,3 +59,5 @@ selection with Escape then exposed the separate focus-clearing defect.
 The [browser regression](../spatial-navigation-verification.md) verifies
 dismissal and completed relation navigation before measuring paper bounds. It
 covers the website and embedded App, including narrow and short viewports.
+The original complete-paper bounds check does not establish readable relation
+text; ADR 0010 and the rebuild acceptance scenarios define the replacement gate.

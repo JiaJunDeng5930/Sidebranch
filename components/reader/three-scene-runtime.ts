@@ -336,7 +336,8 @@ export class ThreeSceneRuntime {
     const paper = this.papers.get(mouth.surfaceId);
     if (!paper) return null;
     const { pose, geometry } = paper.instance;
-    const offset = new Vector3(0, 0, 0.7).applyQuaternion(
+    // Paper depth masks hide the band wherever it crosses native text.
+    const offset = new Vector3(0, 0, -0.7).applyQuaternion(
       toThreeQuaternion(pose.orientation),
     );
     const convert = (point: PaperPoint) => {

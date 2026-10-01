@@ -3,7 +3,9 @@
 Date: 2026-09-20
 
 Status: accepted; supersedes the CSS triangle renderer, per-line band mouths,
-and distance-dependent folded geometry in ADR 0006.
+and distance-dependent folded geometry in ADR 0006. ADR 0010 supersedes the
+fixed geometry and camera-fit opening policy below; identity, cache-independent
+geometry and shared rendering/picking remain accepted.
 
 ## Context
 
@@ -28,11 +30,13 @@ and depth writes on; bands retain that depth buffer. Masks and native papers hav
 the same square, opaque 600 × 780 geometry and front-face behavior. Raycasting
 uses those same masks and meshes so an intervening paper also wins hit testing.
 
-Each occurrence keeps this fixed geometry at every distance and payload state.
-Cache admission changes only the interior. Separate admission and eviction
-thresholds retain readable text near boundaries; focus and native selection pin
-content. Opening a paper fits the camera to it. Larger intrinsic body type keeps
-that opening projection readable without shrinking the paper itself.
+Superseded in part by [ADR 0010](0010-reading-intent-and-temporary-presentation.md):
+the original policy kept each occurrence at fixed geometry and opened it by
+fitting the camera. Reading presentation now permits temporary poses and cropped
+geometry chosen for readable ranges. Cache admission still changes only the
+interior: payload residency must never choose paper dimensions or placement.
+Separate admission and eviction thresholds retain text near boundaries; focus
+and native selection pin content. Document and revision identity remain stable.
 
 One source anchor owns one continuous passage mouth, including line spacing.
 Separate anchors are never merged by visual proximity. Partial, unavailable and

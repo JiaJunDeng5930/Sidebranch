@@ -50,3 +50,6 @@ next-env.d.ts
 .dev.vars
 .qa-build/
 *.tsbuildinfo
+
+# Local screenshots of the reading presentation.
+/artifacts/reading-presentation/

@@ -37,7 +37,10 @@ export interface SceneInteractionAdapter {
   pose(view: SpaceView, id: SurfaceInstanceId): PaperPose;
   grabPoint?(id: SurfaceInstanceId, point: ScreenPoint): WorldPoint3 | null;
   paint(view: SpaceView): void;
-  checkpoint(checkpoint: ViewCheckpoint): void;
+  checkpoint(
+    checkpoint: ViewCheckpoint,
+    movedSurfaceId?: SurfaceInstanceId,
+  ): void;
   settled(): void;
   stopPresentation(): void;
   stopCameraInput?(): void;
@@ -50,7 +53,12 @@ export interface SceneInteractionAdapter {
     point: ScreenPoint,
   ): CameraPose;
 }
-type Draft = { before: SpaceView; draft: SpaceView; generation: number };
+type Draft = {
+  before: SpaceView;
+  draft: SpaceView;
+  generation: number;
+  surfaceId?: SurfaceInstanceId;
+};
 type PaperGesture = Draft & {
   origin: ScreenPoint;
   id: number;
@@ -260,10 +268,13 @@ export class SceneInteraction {
   }
   private commit(draft: Draft): void {
     if (!sameSpaceView(draft.before, draft.draft))
-      this.adapter.checkpoint({
-        generation: draft.generation,
-        view: draft.draft,
-      });
+      this.adapter.checkpoint(
+        {
+          generation: draft.generation,
+          view: draft.draft,
+        },
+        draft.surfaceId,
+      );
     this.adapter.settled();
   }
   cancel(): boolean {
@@ -368,6 +379,7 @@ export class SceneInteraction {
       } as Record<string, number[]>
     )[event.key];
     if (!delta) return false;
+    this.adapter.stopPresentation();
     const context = this.adapter.context(),
       id = edge.dataset.paperGrip as SurfaceInstanceId,
       pose = this.adapter.pose(context.view, id);
@@ -387,7 +399,7 @@ export class SceneInteraction {
       }),
     };
     this.adapter.paint(view);
-    this.adapter.checkpoint({ generation: context.generation, view });
+    this.adapter.checkpoint({ generation: context.generation, view }, id);
     this.adapter.settled();
     event.preventDefault();
     return true;

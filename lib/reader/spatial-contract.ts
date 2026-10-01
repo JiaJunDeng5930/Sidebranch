@@ -11,6 +11,7 @@ import type { SpaceView } from "./space-view";
 import type { NeighborhoodKnowledge } from "./space-index";
 import { relationNames } from "./relations";
 import type { ReadingPosition } from "./attention";
+import type { ReadingIntent } from "./reading-presentation";
 
 /** A front-end occurrence of a revision in the document space.
  *
@@ -209,6 +210,9 @@ export interface SpatialSceneProps<RenderedDocument = unknown> {
   readonly onDemandSurfaces: (ids: readonly SurfaceInstanceId[]) => void;
   readonly onRetrySurface: (id: SurfaceInstanceId) => void;
   readonly view: SpaceView;
+  readonly reading: ReadingIntent;
+  /** Latest prior primary occurrences first, excluding the current pair. */
+  readonly readingTrail: readonly SurfaceInstanceId[];
   readonly documents: readonly DocumentSummary[];
   readonly catalogue: SpatialCatalogueState;
   readonly neighborhood: NeighborhoodKnowledge;
