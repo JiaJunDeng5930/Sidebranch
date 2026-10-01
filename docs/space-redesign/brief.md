@@ -39,7 +39,7 @@
 
 当前 `lib/reader/scene.ts` 的 open/close view、read/overview、手动累计 views 应视为待替换设计，不是约束。`lib/reader/session.ts` 保存目录、草稿、关系投影、版本缓存。`components/reader/reader.tsx` 组合目录、场景、弹层和服务命令。`spatial-scene.tsx` 用 CSS 3D 纸页 + SVG 精确范围连接。`Passage` 和 `DocumentBody` 已实现 Markdown 源码偏移映射、原生选择、长正文虚拟化，可复用其可靠机制。
 
-目录可分页加载所有元数据；`open_document` 当前只返回所定位文档的连接/问题页，不含全空间关系索引。后端文档、版本、锚点、连接、问题、回答关联已有独立实体和命令；新增只读空间索引应说明必要性与有界策略。现有 OAuth/单所有者鉴权不在本轮重设计范围内。
+目录可分页加载所有元数据；`open_document` 当前只返回所定位文档的连接/问题页，不含全空间关系索引。后端文档、版本、锚点、连接、问题、回答关联已有独立实体和命令；新增只读空间索引应说明必要性与有界策略。现有单所有者鉴权不在空间重设计范围内；MCP 平台认证迁移见 ADR 0011。
 
 已有参考资料在 `docs/xanadu-interaction.md`，其中窗口式方案已被用户这次纠正，不可当成新需求。原始出处包括 https://www.xanadu.net/XanaduSpace/btf.htm 与 https://xanadu.com/xUniverse-D6 。深入引用外部事实应核对原始来源。
 

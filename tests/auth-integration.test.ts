@@ -2,13 +2,10 @@ import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { handleMcp } from "../lib/server/mcp-server";
+import { handleMcp, APP_RESOURCE_URI } from "../lib/server/mcp-server";
 import { DocumentStore } from "../lib/server/document-store";
-import {
-  authorizeBearer,
-  authorizeIdentity,
-  sha256,
-} from "../lib/server/owner-auth";
+import { authorizeIdentity, READ_SCOPE } from "../lib/server/owner-auth";
+import { commandSchemas } from "../lib/domain/commands";
 import type { RuntimeEnv } from "../lib/server/env";
 import {
   DEFAULT_FILE_DOWNLOAD_ORIGIN,
@@ -37,6 +34,8 @@ type JsonSchema = {
 type ToolDescriptor = {
   name?: string;
   outputSchema?: JsonSchema;
+  inputSchema?: JsonSchema;
+  annotations?: Record<string, unknown>;
   _meta?: Record<string, unknown>;
 };
 type StructuredContent = {
@@ -120,11 +119,11 @@ async function callMcp(
   env: RuntimeEnv,
   method: string,
   params: Record<string, unknown>,
+  getStore: () => Promise<DocumentStore> = async () => store,
 ): Promise<McpResponse> {
   const body = { jsonrpc: "2.0", id: 1, method, params };
   const response = await handleMcp(
-    store,
-    new Request(env.SITE_ORIGIN + "/api/mcp", {
+    new Request(env.SITE_ORIGIN + "/mcp", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -132,8 +131,9 @@ async function callMcp(
       },
       body: JSON.stringify(body),
     }),
-    body,
+    env,
     "<!doctype html><p>auth integration test resource</p>",
+    getStore,
   );
   assert.equal(response.status, 200);
   return (await response.json()) as McpResponse;
@@ -142,7 +142,10 @@ async function callMcp(
 test("MCP tools expose output schemas and the exact empty/ready union", async () => {
   const list = await callMcp(fixture.store, fixture.env, "tools/list", {});
   const tools = list.result?.tools ?? [];
-  assert.equal(tools.length, 16);
+  assert.deepEqual(
+    tools.map((tool) => tool.name).sort(),
+    [...Object.keys(commandSchemas), "open_reader"].sort(),
+  );
   for (const tool of tools) {
     assert.equal(tool.outputSchema?.type, "object", tool.name);
   }
@@ -185,27 +188,8 @@ test("MCP tools expose output schemas and the exact empty/ready union", async ()
   );
 });
 
-test("a read-only access token cannot invoke a write MCP tool", async () => {
-  const token = "read-only-test-token";
-  await fixture.env.DB.prepare(
-    "INSERT INTO oauth_tokens(hash,user_id,client_id,resource,scope,kind,family,expires_at) VALUES(?,?,?,?,?,'access',?,?)",
-  )
-    .bind(
-      await sha256(token),
-      fixture.owner.userId,
-      "auth-boundary-test",
-      fixture.env.SITE_ORIGIN + "/api/mcp",
-      "documents:read",
-      "auth-boundary-family",
-      Date.now() + 60_000,
-    )
-    .run();
-  const readOnlyOwner = await authorizeBearer(
-    fixture.env,
-    new Request(fixture.env.SITE_ORIGIN + "/api/mcp", {
-      headers: { Authorization: `Bearer ${token}` },
-    }),
-  );
+test("a read-only Owner cannot invoke a write MCP tool", async () => {
+  const readOnlyOwner = { ...fixture.owner, scopes: [READ_SCOPE] };
   const readOnlyStore = new DocumentStore(fixture.env, readOnlyOwner);
   const denied = await callMcp(readOnlyStore, fixture.env, "tools/call", {
     name: "write",
@@ -218,10 +202,7 @@ test("a read-only access token cannot invoke a write MCP tool", async () => {
   });
   assert.equal(denied.result?.isError, true);
   assert.match(String(denied.result?.content?.[0]?.text), /INSUFFICIENT_SCOPE/);
-  assert.equal(
-    denied.result?._meta?.["mcp/www_authenticate"],
-    'Bearer error="insufficient_scope", scope="documents:write"',
-  );
+  assert.equal(denied.result?._meta?.["mcp/www_authenticate"], undefined);
   const read = await callMcp(readOnlyStore, fixture.env, "tools/call", {
     name: "ls",
     arguments: {},
@@ -387,4 +368,188 @@ test("file reference rejects unapproved URLs, unsafe redirects and oversized res
     (error: unknown) =>
       error instanceof DomainError && error.code === "FILE_TOO_LARGE",
   );
+});
+
+test("public MCP discovery and UI resources never resolve document access", async () => {
+  let resolutions = 0;
+  const unavailable = async (): Promise<DocumentStore> => {
+    resolutions++;
+    throw new DomainError("AUTH_REQUIRED", "Missing platform identity", 401);
+  };
+  const privateDocument = await fixture.store.execute("write", {
+    path: "/auth/private.md",
+    title: "Private owner title",
+    content: "private-owner-content",
+  });
+  for (const [method, params] of [
+    [
+      "initialize",
+      {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "discovery", version: "1" },
+      },
+    ],
+    ["tools/list", {}],
+    ["resources/list", {}],
+    ["resources/read", { uri: APP_RESOURCE_URI }],
+  ] as const) {
+    const response = await callMcp(
+      fixture.store,
+      fixture.env,
+      method,
+      params,
+      unavailable,
+    );
+    assert.ok(response.result, method);
+    const serialized = JSON.stringify(response);
+    assert.equal(
+      serialized.includes(privateDocument.document.id),
+      false,
+      method,
+    );
+    assert.equal(serialized.includes("private-owner-content"), false, method);
+    assert.equal(serialized.includes("Private owner title"), false, method);
+    if (method === "resources/read") {
+      const contents = response.result.contents as Array<{
+        text: string;
+        _meta: Record<string, unknown>;
+      }>;
+      assert.match(contents[0].text, /auth integration test resource/);
+      assert.deepEqual(contents[0]._meta["openai/ui"], {
+        preferredDisplayMode: "fullscreen",
+        availableDisplayModes: ["inline", "fullscreen"],
+      });
+    }
+  }
+  assert.equal(resolutions, 0);
+});
+
+test("open_reader exposes both ChatGPT entrypoints and authorizes its empty input", async () => {
+  const tools =
+    (await callMcp(fixture.store, fixture.env, "tools/list", {})).result
+      ?.tools ?? [];
+  const reader = tools.find((tool) => tool.name === "open_reader");
+  assert.ok(reader);
+  assert.equal(reader.inputSchema?.type, "object");
+  assert.deepEqual(reader.inputSchema?.properties, {});
+  assert.deepEqual(reader._meta?.["openai/ui"], {
+    entrypoints: [{ type: "global" }, { type: "thread" }],
+  });
+  assert.equal(
+    (reader._meta?.ui as { resourceUri?: string })?.resourceUri,
+    APP_RESOURCE_URI,
+  );
+  assert.equal(reader.annotations?.readOnlyHint, true);
+  assert.equal(reader.annotations?.destructiveHint, false);
+  assert.equal(reader._meta?.securitySchemes, undefined);
+  let resolutions = 0;
+  const opened = await callMcp(
+    fixture.store,
+    fixture.env,
+    "tools/call",
+    { name: "open_reader", arguments: {} },
+    async () => {
+      resolutions++;
+      return fixture.store;
+    },
+  );
+  assert.equal(resolutions, 1);
+  assert.equal(opened.result?.isError, undefined);
+  assert.deepEqual(opened.result?.structuredContent, { entrypoint: "reader" });
+});
+
+test("all data entrypoints fail closed without an authorized platform Owner", async () => {
+  for (const identity of [
+    null,
+    { userId: "other-user", email: "owner@example.test" },
+  ]) {
+    for (const name of ["open_reader", "ls", "write"]) {
+      const arguments_ =
+        name === "write"
+          ? {
+              path: "/auth/forbidden.md",
+              title: "Forbidden",
+              content: "must not exist",
+            }
+          : {};
+      const response = await callMcp(
+        fixture.store,
+        fixture.env,
+        "tools/call",
+        { name, arguments: arguments_ },
+        async () =>
+          new DocumentStore(
+            fixture.env,
+            await authorizeIdentity(fixture.env, identity),
+          ),
+      );
+      assert.equal(response.result?.isError, true, name);
+      assert.match(
+        String(response.result?.content?.[0]?.text),
+        identity ? /OWNER_ONLY/ : /AUTH_REQUIRED/,
+      );
+      assert.equal(response.result?._meta?.["mcp/www_authenticate"], undefined);
+    }
+  }
+  assert.equal((await fixture.store.execute("ls", {})).documents.length, 0);
+  const write = await callMcp(
+    fixture.store,
+    fixture.env,
+    "tools/call",
+    {
+      name: "write",
+      arguments: {
+        path: "/auth/allowed.md",
+        title: "Allowed",
+        content: "owner document",
+      },
+    },
+    async () =>
+      new DocumentStore(
+        fixture.env,
+        await authorizeIdentity(fixture.env, {
+          userId: "owner-id",
+          email: "changed@example.test",
+        }),
+      ),
+  );
+  assert.equal(write.result?.isError, undefined);
+  const read = await callMcp(fixture.store, fixture.env, "tools/call", {
+    name: "ls",
+    arguments: {},
+  });
+  assert.equal(read.result?.structuredContent?.documents?.length, 1);
+});
+
+test("first-owner bootstrap atomically pins one platform identity", async () => {
+  await fixture.env.DB.prepare("DELETE FROM owner").run();
+  const attempts = await Promise.allSettled([
+    authorizeIdentity(fixture.env, {
+      userId: "bootstrap-a",
+      email: "owner@example.test",
+    }),
+    authorizeIdentity(fixture.env, {
+      userId: "bootstrap-b",
+      email: "owner@example.test",
+    }),
+  ]);
+  assert.equal(
+    attempts.filter((result) => result.status === "fulfilled").length,
+    1,
+  );
+  const bound = await fixture.env.DB.prepare(
+    "SELECT user_id FROM owner WHERE singleton=1",
+  ).first<{ user_id: string }>();
+  assert.ok(bound);
+  const winner = attempts.find((result) => result.status === "fulfilled");
+  assert.equal(
+    winner?.status === "fulfilled" ? winner.value.userId : null,
+    bound.user_id,
+  );
+  const loser = attempts.find((result) => result.status === "rejected");
+  assert.ok(
+    loser?.status === "rejected" && loser.reason instanceof DomainError,
+  );
+  assert.equal(loser.reason.code, "OWNER_ONLY");
 });

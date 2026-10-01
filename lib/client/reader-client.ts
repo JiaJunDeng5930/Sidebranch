@@ -9,6 +9,7 @@ import type {
   Question,
   ReadingView,
 } from "../domain/model";
+import type { ReaderContext } from "./reader-context";
 
 export class CommandTransportError extends Error {
   constructor(
@@ -58,6 +59,7 @@ export interface ReaderClient {
   ): Promise<CommandResults[K]>;
   sendQuestion?: (question: Question) => Promise<void>;
   fullscreen?: () => Promise<void>;
+  updateReadingContext?: (context: ReaderContext) => Promise<void>;
 }
 
 function record(value: unknown): Record<string, unknown> | null {

@@ -5,17 +5,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { handleMcp, APP_RESOURCE_URI } from "../lib/server/mcp-server";
 import { DocumentStore } from "../lib/server/document-store";
-import {
-  authorizeIdentity,
-  authorizeBearer,
-  sha256,
-} from "../lib/server/owner-auth";
-import {
-  registerClient,
-  authorizationRequest,
-  consent,
-  exchangeToken,
-} from "../lib/server/oauth";
+import { authorizeIdentity } from "../lib/server/owner-auth";
 import {
   RevisionId,
   Path,
@@ -67,10 +57,6 @@ test("authorization fails closed, bootstrap pins the site-specific identity", as
     () =>
       authorizeIdentity(env, { userId: "other", email: "owner@example.test" }),
     /所有者/,
-  );
-  await assert.rejects(
-    () => authorizeBearer(env, new Request("https://sidebranch.test/api/mcp")),
-    /authorization required/,
   );
   assert.equal(
     (
@@ -259,105 +245,6 @@ test("PDF extraction imports real PDF bytes into the same document model", async
   assert.match(doc.content, /Xanadu PDF text/);
   assert.ok(doc.assetId);
 });
-test("OAuth PKCE, resource binding and one-time code consumption", async () => {
-  const owner = store.owner;
-  const client = await registerClient(env, {
-    redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"],
-    client_name: "ChatGPT",
-  });
-  const verifier = "v".repeat(64),
-    resource = env.SITE_ORIGIN + "/api/mcp";
-  const request = await authorizationRequest(env, owner, {
-    client_id: client.client_id,
-    redirect_uri: client.redirect_uris[0],
-    response_type: "code",
-    code_challenge: await sha256(verifier),
-    code_challenge_method: "S256",
-    state: "test-state",
-    resource,
-  });
-  const redirect = new URL(await consent(env, owner, request.id, true));
-  assert.equal(redirect.searchParams.get("state"), "test-state");
-  assert.equal(redirect.searchParams.get("iss"), env.SITE_ORIGIN);
-  await assert.rejects(() => consent(env, owner, request.id, true), /过期/);
-  const params = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: client.client_id,
-    redirect_uri: client.redirect_uris[0],
-    code: redirect.searchParams.get("code")!,
-    code_verifier: verifier,
-    resource,
-  });
-  const wrong = new URLSearchParams(params);
-  wrong.set("resource", "https://other.test/mcp");
-  await assert.rejects(() => exchangeToken(env, wrong), /resource/);
-  wrong.set("resource", resource);
-  wrong.set("code_verifier", "x".repeat(64));
-  await assert.rejects(() => exchangeToken(env, wrong), /PKCE/);
-  const tokens = await exchangeToken(env, params);
-  await assert.rejects(() => exchangeToken(env, params), /invalid/);
-  const auth = () =>
-    authorizeBearer(
-      env,
-      new Request(resource, {
-        headers: { authorization: "Bearer " + tokens.access_token },
-      }),
-    );
-  assert.equal((await auth()).userId, "owner-id");
-  const refresh = new URLSearchParams({
-    grant_type: "refresh_token",
-    client_id: client.client_id,
-    resource,
-    refresh_token: tokens.refresh_token,
-  });
-  const rotated = await exchangeToken(env, refresh);
-  await assert.rejects(auth, /invalid/);
-  assert.equal(
-    (
-      await authorizeBearer(
-        env,
-        new Request(resource, {
-          headers: { authorization: "Bearer " + rotated.access_token },
-        }),
-      )
-    ).userId,
-    "owner-id",
-  );
-  await assert.rejects(() => exchangeToken(env, refresh), /reuse/);
-  await assert.rejects(
-    () =>
-      authorizeBearer(
-        env,
-        new Request(resource, {
-          headers: { authorization: "Bearer " + rotated.access_token },
-        }),
-      ),
-    /invalid/,
-  );
-});
-test("OAuth rejects arbitrary redirects and unsupported scopes", async () => {
-  await assert.rejects(
-    () =>
-      registerClient(env, {
-        redirect_uris: ["https://attacker.test/callback"],
-      }),
-    /official ChatGPT/,
-  );
-  await assert.rejects(
-    () =>
-      authorizationRequest(env, store.owner, {
-        client_id: "invalid",
-        redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
-        response_type: "code",
-        code_challenge: "x".repeat(43),
-        code_challenge_method: "S256",
-        state: "state",
-        resource: env.SITE_ORIGIN + "/api/mcp",
-        scope: "admin",
-      }),
-    /scope/,
-  );
-});
 test("path traversal and SQL wildcard search do not broaden access", async () => {
   assert.throws(() => Path.parse("/a/../b"));
   assert.throws(() => Path.parse("//a"));
@@ -375,8 +262,7 @@ test("MCP Streamable HTTP exposes tools, renders an App resource and executes do
   async function call(method: string, params: object) {
     const body = { jsonrpc: "2.0", id: 1, method, params };
     const response = await handleMcp(
-      store,
-      new Request(env.SITE_ORIGIN + "/api/mcp", {
+      new Request(env.SITE_ORIGIN + "/mcp", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -384,8 +270,9 @@ test("MCP Streamable HTTP exposes tools, renders an App resource and executes do
         },
         body: JSON.stringify(body),
       }),
-      body,
+      env,
       "<!doctype html><p>App test resource</p>",
+      async () => store,
     );
     assert.equal(response.status, 200);
     return (await response.json()) as {
@@ -406,7 +293,7 @@ test("MCP Streamable HTTP exposes tools, renders an App resource and executes do
     name: string;
     _meta: Record<string, unknown>;
   }[];
-  assert.equal(tools.length, 16);
+  assert.equal(tools.length, 17);
   assert.ok(tools.find((t) => t.name === "open_document")?._meta.ui);
   const read = await call("tools/call", { name: "ls", arguments: {} });
   assert.ok(

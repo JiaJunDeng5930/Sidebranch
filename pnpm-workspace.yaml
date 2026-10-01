@@ -1,5 +1,7 @@
 # Copied Sites are standalone projects and cannot inherit the monorepo policy.
 minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - '@openai/mcp-extensions@0.1.0'
 minimumReleaseAgeIgnoreMissingTime: false
 trustLockfile: false
 strictDepBuilds: true

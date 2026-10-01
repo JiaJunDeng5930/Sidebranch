@@ -1,6 +1,9 @@
 import React, { useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "@modelcontextprotocol/ext-apps";
+import { OpenAIExtensions } from "@openai/mcp-extensions/app";
+import { createReaderContextBridge } from "./model-context";
+import type { ReaderContext } from "../lib/client/reader-context";
 import { Reader } from "../components/reader/reader";
 import {
   commandError,
@@ -22,12 +25,15 @@ const app = new App(
   {},
   { autoResize: true },
 );
+const extensions = new OpenAIExtensions(app);
 
 interface HostSnapshot {
   readonly result: OpenDocumentResult | null;
   readonly error: string;
+  readonly ready: boolean;
+  readonly restoredContext?: ReaderContext | null;
 }
-let hostSnapshot: HostSnapshot = { result: null, error: "" };
+let hostSnapshot: HostSnapshot = { result: null, error: "", ready: false };
 const hostListeners = new Set<() => void>();
 const subscribeHost = (listener: () => void) => {
   hostListeners.add(listener);
@@ -40,7 +46,6 @@ function updateHostSnapshot(next: HostSnapshot) {
   hostSnapshot = next;
   hostListeners.forEach((listener) => listener());
 }
-let awaitingInitialOpen = true;
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
@@ -75,15 +80,11 @@ function isOpenDocumentResult(structuredContent: unknown): boolean {
   // Data-only host tool results must not reset or error the reading App.  The
   // initial and subsequent open_document calls carry the discriminant; when
   // the host exposes toolInfo, it also lets us reject a malformed open result.
-  return (
-    value?.status !== undefined ||
-    hostToolName() === "open_document" ||
-    awaitingInitialOpen
-  );
+  return value?.status !== undefined || hostToolName() === "open_document";
 }
 
 function deliverResult(result: OpenDocumentResult): void {
-  updateHostSnapshot({ result, error: "" });
+  updateHostSnapshot({ ...hostSnapshot, result, error: "", ready: true });
 }
 
 function reportHostError(error: unknown): void {
@@ -99,18 +100,30 @@ function reportHostError(error: unknown): void {
   updateHostSnapshot({ ...hostSnapshot, error: message });
 }
 
+const contextBridge = createReaderContextBridge({
+  getModelContext: () => extensions.modelContext,
+  supportsStructuredContent: () =>
+    app.getHostCapabilities()?.updateModelContext?.structuredContent !==
+    undefined,
+  onRestore: (restoredContext) =>
+    updateHostSnapshot({ ...hostSnapshot, restoredContext }),
+});
+app.addEventListener("hostcontextchanged", () => contextBridge.syncFromHost());
+
 app.ontoolresult = ({ structuredContent, isError, content }) => {
   if (isError) {
     const name = hostToolName();
-    if (name && name !== "open_document") return;
-    awaitingInitialOpen = false;
+    if (name && name !== "open_document" && name !== "open_reader") return;
     reportHostError(new Error(contentText({ content })));
+    return;
+  }
+  if (record(structuredContent)?.entrypoint === "reader") {
+    updateHostSnapshot({ ...hostSnapshot, error: "", ready: true });
     return;
   }
   if (!isOpenDocumentResult(structuredContent)) return;
   try {
     const result = parseCommandResult("open_document", structuredContent);
-    awaitingInitialOpen = false;
     deliverResult(result);
   } catch (error) {
     reportHostError(error);
@@ -199,10 +212,11 @@ const client: ReaderClient = {
     if (typeof app.requestDisplayMode !== "function") return;
     await app.requestDisplayMode({ mode: "fullscreen" });
   },
+  updateReadingContext: (context) => contextBridge.publish(context),
 };
 
 function AppReader() {
-  const { result, error } = useSyncExternalStore(
+  const { result, error, ready, restoredContext } = useSyncExternalStore(
     subscribeHost,
     readHostSnapshot,
   );
@@ -235,8 +249,12 @@ function AppReader() {
           </button>
         </aside>
       )}
-      {result ? (
-        <Reader client={client} initialView={result} />
+      {ready ? (
+        <Reader
+          client={client}
+          initialView={result ?? undefined}
+          restoredContext={restoredContext}
+        />
       ) : (
         <main className="empty-space" aria-busy="true">
           <p>正在等待文档…</p>
@@ -254,7 +272,10 @@ root.render(
 );
 app
   .connect()
-  .then(() => root.render(<AppReader />))
+  .then(() => {
+    contextBridge.syncFromHost();
+    root.render(<AppReader />);
+  })
   .catch((error: unknown) => {
     console.error("Xanadu App handshake failed", error);
     root.render(

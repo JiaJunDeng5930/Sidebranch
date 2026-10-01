@@ -54,9 +54,14 @@ import {
 } from "../../lib/client/reader-client";
 import type { CommandInput } from "../../lib/domain/commands";
 import {
+  readerContextKey,
+  type ReaderContext,
+} from "../../lib/client/reader-context";
+import {
   AnchorInput,
   Path,
   RevisionId,
+  validateAnchorInput,
   type Connection,
   type DocumentId,
   type DocumentRevision,
@@ -115,10 +120,12 @@ const WAITING_FOR_ANSWER_STATUS = "问题已发送，等待回答。";
 export function Reader({
   client,
   initialView,
+  restoredContext,
   onReady,
 }: {
   client: ReaderClient;
   initialView?: OpenDocumentResult | null;
+  restoredContext?: ReaderContext | null;
   onReady?: (accept: (value: OpenDocumentResult) => void) => void;
 }) {
   const [session, dispatchSession] = useReducer(
@@ -139,6 +146,15 @@ export function Reader({
 
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const contextRestoreRef = useRef<{
+    epoch: number;
+    key: string | null;
+    restoring: boolean;
+  } | null>(null);
+  const restoredContextRef = useRef<ReaderContext | null | undefined>(
+    undefined,
+  );
+  const publishedContextRef = useRef<string | null>(null);
   const presentationRef = useRef(presentation);
   presentationRef.current = presentation;
   const composingRef = useRef(false);
@@ -932,7 +948,13 @@ export function Reader({
   }, [dismissComposer, dispatch]);
 
   useEffect(() => {
-    if (initialView !== undefined || initialOpenRef.current) return;
+    if (
+      initialView !== undefined ||
+      restoredContext?.document ||
+      restoredContext?.selection ||
+      initialOpenRef.current
+    )
+      return;
     if (
       !session.catalogue.activeComplete ||
       session.attention.view.focus !== null
@@ -944,6 +966,7 @@ export function Reader({
     });
   }, [
     initialView,
+    restoredContext,
     openLatest,
     session.attention.view.focus,
     session.catalogue.activeComplete,
@@ -1882,6 +1905,175 @@ export function Reader({
   const editorOpen = session.editor.kind !== "closed";
   const activitiesOpen = session.dialog.kind === "activities";
   const currentAttention = focusedPosition(session.attention);
+  const readingContext = useMemo<ReaderContext | undefined>(() => {
+    const position = focusedPosition(session.attention);
+    const metadata = position
+      ? (session.revisionCache.get(position.revisionId)?.document ??
+        position.metadata)
+      : null;
+    if (position && !metadata) return undefined;
+    const selection = session.selection;
+    return {
+      document:
+        position && metadata
+          ? {
+              documentId: position.documentId,
+              revisionId: position.revisionId,
+              title: metadata.title,
+              path: metadata.path,
+            }
+          : null,
+      selection:
+        selection.kind === "selected"
+          ? {
+              documentId: selection.document.id,
+              revisionId: selection.anchor.revisionId,
+              start: selection.anchor.start,
+              end: selection.anchor.end,
+              quote: selection.anchor.quote,
+            }
+          : null,
+    };
+  }, [session.attention, session.revisionCache, session.selection]);
+
+  useEffect(() => {
+    if (
+      restoredContext === undefined ||
+      restoredContextRef.current === restoredContext
+    )
+      return;
+    restoredContextRef.current = restoredContext;
+    publishedContextRef.current = null;
+    cancelLocalNavigation();
+    const restore = {
+      epoch: attentionEpochRef.current as number,
+      key: null as string | null,
+      restoring: true,
+    };
+    contextRestoreRef.current = restore;
+    const isCurrent = () =>
+      contextRestoreRef.current === restore &&
+      attentionEpochRef.current === restore.epoch;
+    if (restoredContext === null) {
+      restore.key = readingContext
+        ? readerContextKey({ ...readingContext, selection: null })
+        : null;
+      restore.restoring = false;
+      dispatch({ type: "selection/clear" });
+      return;
+    }
+    void (async () => {
+      try {
+        const context = restoredContext;
+        const view = context.document
+          ? await readOpenResult({
+              documentId: context.document.documentId,
+              revisionId: context.document.revisionId,
+            })
+          : null;
+        if (!isCurrent()) return;
+        if (context.document && !view)
+          throw new Error("会话中的文档版本当前不可用。");
+        const selected = context.selection
+          ? await fetchRevision({
+              id: context.selection.documentId,
+              revisionId: context.selection.revisionId,
+            })
+          : null;
+        if (!isCurrent()) return;
+        const anchor =
+          selected && context.selection
+            ? validateAnchorInput(selected.content, {
+                revisionId: context.selection.revisionId,
+                start: context.selection.start,
+                end: context.selection.end,
+                quote: context.selection.quote,
+              })
+            : null;
+        if (hasInteractionProtection())
+          throw new Error("请先完成当前阅读操作，再恢复会话中的阅读位置。");
+        if (view) commitView(view);
+        let selectedSurface: SurfaceInstanceId | undefined;
+        if (selected && anchor) {
+          selectedSurface =
+            findOccurrence(
+              sessionRef.current.attention,
+              selected.id,
+              selected.revisionId,
+            )?.surfaceId ?? primarySurfaceId(selected.id, selected.revisionId);
+          dispatchAttention({
+            type: "admit",
+            position: readingPosition(selected, selectedSurface, anchor),
+            metadata: selected,
+          });
+          dispatch({
+            type: "selection/set",
+            selection: {
+              kind: "selected",
+              surfaceId: selectedSurface,
+              document: selected,
+              anchor,
+              preview: anchor.quote,
+              rect: { left: 0, top: 0, width: 0, height: 0 },
+            },
+          });
+        } else dispatch({ type: "selection/clear" });
+        restore.epoch = attentionEpochRef.current as number;
+        restore.key = readerContextKey({
+          document: view
+            ? {
+                documentId: view.document.id,
+                revisionId: view.document.revisionId,
+                title: view.document.title,
+                path: view.document.path,
+              }
+            : (readingContext?.document ?? null),
+          selection: context.selection,
+        });
+      } catch (error) {
+        if (isCurrent())
+          dispatch({
+            type: "status",
+            message: `未能恢复会话阅读位置：${errorMessage(error)}`,
+          });
+      } finally {
+        restore.restoring = false;
+      }
+    })();
+  }, [
+    restoredContext,
+    readingContext,
+    cancelLocalNavigation,
+    commitView,
+    dispatch,
+    dispatchAttention,
+    fetchRevision,
+    hasInteractionProtection,
+    readOpenResult,
+  ]);
+
+  useEffect(() => {
+    if (!client.updateReadingContext || !readingContext) return;
+    const key = readerContextKey(readingContext);
+    const restore = contextRestoreRef.current;
+    // Host attachment changes are input, and must not immediately be echoed back.
+    if (
+      restore &&
+      restore.epoch === attentionEpochRef.current &&
+      (restore.restoring || restore.key === null || restore.key === key)
+    )
+      return;
+    if (publishedContextRef.current === key) return;
+    contextRestoreRef.current = null;
+    publishedContextRef.current = key;
+    void client.updateReadingContext(readingContext).catch((error: unknown) => {
+      if (publishedContextRef.current !== key) return;
+      dispatch({
+        type: "status",
+        message: `未能同步会话阅读上下文：${errorMessage(error)}`,
+      });
+    });
+  }, [client, dispatch, readingContext]);
   const selectedConnectionId = session.attention.selectedConnectionId;
 
   const relationNavigation = useMemo<RelationNavigationState>(() => {

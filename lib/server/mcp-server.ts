@@ -1,9 +1,9 @@
 import { z, ZodError } from "zod";
+import type { RuntimeEnv } from "./env";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
   registerAppResource,
-  registerAppTool,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 import {
@@ -28,10 +28,6 @@ import { READ_SCOPE, WRITE_SCOPE, requireScope } from "./owner-auth";
 import { friendlyErrorMessage } from "./http";
 
 export const APP_RESOURCE_URI = "ui://xanadu-sidebranch/reader-v1.html";
-function securitySchemes(scope: string) {
-  return [{ type: "oauth2", scopes: [scope] }] as const;
-}
-
 /**
  * The SDK's raw-shape registration form only accepts an object shape.  The
  * service decoder remains the authoritative discriminated union; this shape
@@ -55,10 +51,7 @@ function outputSchema(name: CommandName): z.AnyZodObject {
   return commandResultSchemas[name] as z.AnyZodObject;
 }
 
-function toolError(
-  error: unknown,
-  requiredScope?: string,
-): {
+function toolError(error: unknown): {
   isError: true;
   content: [{ type: "text"; text: string }];
   _meta?: Record<string, unknown>;
@@ -90,22 +83,15 @@ function toolError(
     content: [{ type: "text", text: code + ": " + message }],
     _meta: { "x-request-id": requestId },
   };
-  if (
-    error instanceof DomainError &&
-    error.code === "INSUFFICIENT_SCOPE" &&
-    requiredScope
-  )
-    result._meta!["mcp/www_authenticate"] =
-      'Bearer error="insufficient_scope", scope="' + requiredScope + '"';
   return result;
 }
 
 export async function handleMcp(
-  store: DocumentStore,
   request: Request,
-  parsedBody: unknown,
+  env: RuntimeEnv,
   html: string,
-) {
+  getStore: () => Promise<DocumentStore>,
+): Promise<Response> {
   const server = new McpServer(
     { name: "Xanadu Sidebranch", version: "1.0.0" },
     {
@@ -125,9 +111,13 @@ export async function handleMcp(
           mimeType: RESOURCE_MIME_TYPE,
           text: html,
           _meta: {
+            "openai/ui": {
+              preferredDisplayMode: "fullscreen",
+              availableDisplayModes: ["inline", "fullscreen"],
+            },
             ui: {
               prefersBorder: false,
-              domain: store.env.SITE_ORIGIN,
+              domain: env.SITE_ORIGIN,
               csp: { connectDomains: [], resourceDomains: [] },
             },
             "openai/widgetDescription":
@@ -137,11 +127,36 @@ export async function handleMcp(
       ],
     }),
   );
+  server.registerTool(
+    "open_reader",
+    {
+      title: "Reading space",
+      description: "Open the persistent document reading space.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ entrypoint: z.literal("reader") }).strict(),
+      annotations: { readOnlyHint: true, destructiveHint: false },
+      _meta: {
+        ui: { resourceUri: APP_RESOURCE_URI },
+        "openai/ui": { entrypoints: [{ type: "global" }, { type: "thread" }] },
+      },
+    },
+    async () => {
+      try {
+        const store = await getStore();
+        requireScope(store.owner, READ_SCOPE);
+        return {
+          content: [{ type: "text", text: "Reading space opened." }],
+          structuredContent: { entrypoint: "reader" },
+        };
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
   for (const name of Object.keys(commandSchemas) as CommandName[]) {
     const readOnly = readOnlyCommands.has(name);
     const requiredScope = readOnly ? READ_SCOPE : WRITE_SCOPE;
-    registerAppTool(
-      server,
+    server.registerTool(
       name,
       {
         title: name === "open_document" ? "Open Xanadu Sidebranch" : name,
@@ -169,7 +184,6 @@ export async function handleMcp(
               : {}),
             visibility: ["model", "app"],
           },
-          securitySchemes: securitySchemes(requiredScope),
           ...(name === "import_file"
             ? { "openai/fileParams": FILE_PARAMS_META }
             : {}),
@@ -177,6 +191,7 @@ export async function handleMcp(
       },
       async (args: unknown) => {
         try {
+          const store = await getStore();
           requireScope(store.owner, requiredScope);
           const input =
             name === "import_file"
@@ -200,7 +215,7 @@ export async function handleMcp(
             structuredContent,
           };
         } catch (error) {
-          return toolError(error, requiredScope);
+          return toolError(error);
         }
       },
     );
@@ -211,7 +226,7 @@ export async function handleMcp(
   });
   await server.connect(transport);
   try {
-    return await transport.handleRequest(request, { parsedBody });
+    return await transport.handleRequest(request);
   } finally {
     await server.close();
   }

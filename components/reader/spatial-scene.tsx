@@ -820,7 +820,9 @@ export function SpatialScene(props: SpatialSceneProps) {
             readingActive={!!props.reading.primary}
             intrinsicHeight={
               arrangement.geometry.get(surface.surfaceId)?.height ??
-              shapeFor(surface.surfaceId).height
+              (props.reading.primary
+                ? 100
+                : paperGeometryForViewport(viewport).height)
             }
             contextLabel={
               surface.surfaceId === props.reading.companion

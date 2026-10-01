@@ -20,7 +20,7 @@ These are release requirements, not a list of completed checks. Record outcomes 
 ## ChatGPT integration and access
 
 10. The official App bridge receives a native selection question. An independent answer document and explicit connection subsequently delivered with verified `answerFor` appear as an identifiable arrival without changing current reading intent, camera, presentation, scroll, selection or draft. Explicitly choosing to read the answer then organizes it within the same document space. Ordinary AI navigation changes current only when no draft/selection/edit is protected, otherwise it offers an explicit acceptance action. Empty-space results use a typed union and render a usable import/create state.
-11. Browser and MCP access reject anonymous/other-user requests server-side. Owner login works through Sites. OAuth registration, authorization, code exchange and refresh match the documented ChatGPT protocol. Service errors must not masquerade as wrong-account errors.
+11. Browser document access and MCP tool calls reject anonymous/other-user requests server-side. Owner login and native MCP authentication work through Sites. MCP discovery exposes no document data; the global and conversation reading entrypoints resolve owner access before opening. Service errors must not masquerade as wrong-account errors.
 12. Public HTML and the App resource contain no private document contents, tokens or owner secrets. Development fixtures and telemetry are absent from production routes.
 
 ## Performance gates

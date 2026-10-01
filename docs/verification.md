@@ -72,7 +72,7 @@ are not acceptance evidence for this version.
 
 Strict types and meaningful service/session/renderer tests cover immutable
 revisions, exact UTF-16 anchors, concurrent edits, independent questions/answers/
-connections, file retention and PDF extraction, authorization and OAuth scopes,
+connections, file retention and PDF extraction, platform owner authorization and document permissions,
 MCP schemas, metadata and revision-neighborhood pagination, attention history,
 and bounded source mapping. The final gate result is recorded with the commit.
 These checks do not replace the browser observations above.

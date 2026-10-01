@@ -15,9 +15,9 @@ Drag empty space to pan; Shift/Ctrl/Meta-drag or right-drag to orbit. Scroll ove
 
 Site: https://xanadu-sidebranch.atticusdeng.chatgpt.site
 
-MCP endpoint: `https://xanadu-sidebranch.atticusdeng.chatgpt.site/api/mcp`
+MCP endpoint: `https://xanadu-sidebranch.atticusdeng.chatgpt.site/mcp`
 
-Add the endpoint as a custom MCP connection in ChatGPT with OAuth. Sign in with the Site owner's ChatGPT account and approve the document permissions. Ask ChatGPT to open Xanadu Sidebranch. `open_document` returns the interactive reading App. Creating the connection is a ChatGPT account action; deploying this repository does not automatically add it to the user's account.
+Sites provisions the native private plugin when an MCP-capable version is published. Use its platform-authenticated connection with the Site owner's ChatGPT account. The `Reading space` entrypoint opens the reader from ChatGPT's global sidebar or the current conversation; `open_document` still opens a specific document. Plugin provisioning and the user's account installation are separate steps.
 
 ## MCP operations
 
@@ -55,11 +55,11 @@ Use `/space` for the normal local reading experience. First initialize the local
 
 Runtime configuration:
 
-- `SITE_ORIGIN`: exact HTTPS Site origin, used for OAuth resource binding and browser Origin checks.
+- `SITE_ORIGIN`: exact HTTPS Site origin, used for reader resource metadata and browser Origin checks.
 - `OWNER_USER_ID`: the Site-specific trusted ChatGPT user ID, preferred after the first authenticated owner visit.
 - `OWNER_BOOTSTRAP_EMAIL`: initially the email from the Sites owner's record. Only a trusted Sites dispatch identity with this email can bind the single owner row. Once pinned, subsequent authorization uses the ID. This value is configured as a secret, never committed.
 
-Sites dispatch supplies verified user headers. A standalone deployment must provide an equivalent trusted identity boundary and strip client-supplied identity headers. Browser cookies are not accepted as MCP bearer tokens. All document commands, downloads and authorization consent check the owner server-side. OAuth uses DCR, authorization code + PKCE S256, one-hour opaque access tokens and rotating refresh tokens. Read/write scopes are persisted and enforced. Only official ChatGPT callbacks are accepted. `MCP_FILE_DOWNLOAD_ORIGINS` optionally supplies comma-separated exact HTTPS origins for host attachment downloads; redirects and private network addresses remain restricted. Actual ChatGPT attachment URL compatibility must be checked with the host.
+Sites dispatch supplies verified user headers. A standalone deployment must provide an equivalent trusted identity boundary and strip client-supplied identity headers. The MCP endpoint uses the same trusted platform identity and pinned-owner check as the browser. Self-issued bearer tokens and service bypass credentials do not establish a user identity. Discovery and the App HTML expose no private data; every tool invocation, document command and download checks owner access server-side. Document read/write permissions remain enforced for each tool. Historical OAuth database tables are retained without accepting their tokens. `MCP_FILE_DOWNLOAD_ORIGINS` optionally supplies comma-separated exact HTTPS origins for host attachment downloads; redirects and private network addresses remain restricted. Actual ChatGPT attachment URL compatibility must be checked with the host.
 
 `pnpm build:qa` builds a local browser harness for the real reader and MCP Apps host bridge. The Vite-only `/__qa` route creates an isolated, ephemeral Miniflare D1/R2 with sample reading material; it does not exist in production. Production configuration is managed through Sites separately. The harness offers Auto, 390, 768, 1024 and 1440-pixel viewports and an official `AppBridge` host, and can seed an isolated stress fixture of 260 documents, three 1,000-section documents, 80 passage connections and 100 additional distinct neighboring documents. This validates the bridge contract, not installation in the actual ChatGPT account. Keep this debug interface separate from the normal product preview. `node --import tsx scripts/build-qa.mjs space` builds `/__space`, a standalone 120-document interaction specimen; the `renderer` argument builds `/__renderer` for long-text selection and scrolling measurements.
 

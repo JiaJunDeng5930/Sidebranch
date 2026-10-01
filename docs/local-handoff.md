@@ -35,7 +35,7 @@ pnpm build:qa renderer
 pnpm dev
 ```
 
-普通本地环境默认端口 5173。打开 `/__qa` 使用真实 Reader、临时 D1/R2 和官方 AppBridge 测试宿主；Viewport 可选择 Auto、390、768、1024、1440，固定宽度通过独立 iframe 提供真实内部视口。`/__space` 是 120 文档/101 近邻的交互样机；`/__renderer` 用于长文滚动与精确选区。QA 数据是合成的，服务停止后不作为生产数据保留。真实 ChatGPT 登录、MCP OAuth 和生产数据不由这些样机模拟证明。不要把包含调试控制和压力数据的 QA 入口作为产品预览交付。
+普通本地环境默认端口 5173。打开 `/__qa` 使用真实 Reader、临时 D1/R2 和官方 AppBridge 测试宿主；Viewport 可选择 Auto、390、768、1024、1440，固定宽度通过独立 iframe 提供真实内部视口。`/__space` 是 120 文档/101 近邻的交互样机；`/__renderer` 用于长文滚动与精确选区。QA 数据是合成的，服务停止后不作为生产数据保留。真实 ChatGPT 登录、Sites 原生 MCP 认证 和生产数据不由这些样机模拟证明。不要把包含调试控制和压力数据的 QA 入口作为产品预览交付。
 
 改动 Reader 后先重建 `build:app`，再重建 `build:qa`，最后刷新浏览器。QA HTML 嵌入构建后的代码，单纯刷新不会包含尚未重新构建的改动。空间和正文样机分别重建其对应命令。
 
@@ -70,6 +70,6 @@ pnpm build
 
 ## 仍未验证的环境
 
-真实触摸设备、冷启动预算、不同硬件和实际 ChatGPT iframe 内的性能尚未验证。真实 ChatGPT 登录、MCP OAuth、生产 owner-login 与宿主附件下载仍需部署阶段的端到端检查；本轮没有推进部署。工具层 CDP 调用曾长时间阻塞，未从这些调用取得有效性能样本；本地有效样本来自普通页面操作与可见 QA 面板。
+真实触摸设备、冷启动预算、不同硬件和实际 ChatGPT iframe 内的性能尚未验证。真实 ChatGPT 登录、Sites 原生 MCP 认证、生产 owner-login 与宿主附件下载仍需部署阶段的端到端检查；本轮没有推进部署。工具层 CDP 调用曾长时间阻塞，未从这些调用取得有效性能样本；本地有效样本来自普通页面操作与可见 QA 面板。
 
 权威交互设计见 `space-redesign/implementation.md`，其余专项设计解释取舍；最终要求见 `rebuild-acceptance.md`。不要恢复文档列表、打开/关闭成员或 overview 来绕过纸场问题。
