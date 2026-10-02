@@ -15,6 +15,7 @@ import type {
   SurfaceInstanceId,
   DocumentRenderContext,
 } from "../../lib/reader/spatial-contract";
+import { anchorKey } from "../../lib/reader/spatial-contract";
 import type { AnchorInput } from "../../lib/domain/model";
 import type { SpaceView } from "../../lib/reader/space-view";
 import {
@@ -571,9 +572,7 @@ export function SpatialScene(props: SpatialSceneProps) {
             !other ||
             anchor.revisionId !== surface.position.revisionId ||
             declared.documentId !== surface.position.documentId ||
-            anchor.revisionId !== declared.revisionId ||
-            anchor.start !== declared.start ||
-            anchor.end !== declared.end
+            anchorKey(anchor) !== anchorKey(declared)
           )
             return null;
           const id = surface.surfaceId,

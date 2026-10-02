@@ -206,10 +206,10 @@ export const commandDescriptions: Record<CommandName, string> = {
     "Archive or restore a document. History and connections remain readable. No permanent deletion.",
   history:
     "List immutable revision metadata. Use cat or open_document with a revisionId to read historical content.",
-  link: "Create an independent bidirectional passage connection. Supply exact revision IDs, UTF-16 ranges and quotes for both ends. Choose meaningful passages; do not infer links merely from creating a document.",
+  link: "Create an independent bidirectional passage connection. Supply exact revision IDs and canonical source-envelope UTF-16 ranges and quotes for both ends. An optional reader selector records precise model fragments and selected display text; without it, the range identifies the exact source passage. Choose meaningful passages; do not infer links merely from creating a document.",
   unlink:
     "Remove a connection without changing either document or its revision history.",
-  ask: "Save a question about an exact passage. The App UI sends the saved question to the current ChatGPT conversation. This tool does not call a model or create an answer.",
+  ask: "Save a question about a passage using its canonical source-envelope range and quote, optionally with a precise reader selector and selected display text. The App UI sends the saved question to the current ChatGPT conversation. This tool does not call a model or create an answer.",
   questions:
     "List saved questions and their answer-document IDs with continuation pagination.",
   answer:

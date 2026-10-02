@@ -75,12 +75,32 @@ export const OptionalOpenLocator = z.union([
 export type OptionalOpenLocator = z.infer<typeof OptionalOpenLocator>;
 export type OptionalLocator = z.infer<typeof OptionalOpenLocator>;
 
+export const ReaderFragmentSchema = z
+  .object({
+    nodeId: z.string().regex(/^c[0-9]+:n[0-9]+$/),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+  })
+  .strict()
+  .refine((fragment) => fragment.start < fragment.end, "Reader fragment must be nonempty");
+export type ReaderFragment = z.infer<typeof ReaderFragmentSchema>;
+
+export const ReaderSelectorSchema = z
+  .object({
+    version: z.literal("reader-v1"),
+    fragments: z.array(ReaderFragmentSchema).min(1),
+    preview: z.string(),
+  })
+  .strict();
+export type ReaderSelector = z.infer<typeof ReaderSelectorSchema>;
+
 export const AnchorInput = z
   .object({
     revisionId: RevisionId,
     start: z.number().int().nonnegative(),
     end: z.number().int().positive(),
-    quote: z.string().min(1).max(100_000),
+    quote: z.string().min(1),
+    reader: ReaderSelectorSchema.optional(),
   })
   .strict();
 export type AnchorInput = z.infer<typeof AnchorInput>;

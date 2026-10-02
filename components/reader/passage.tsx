@@ -24,15 +24,27 @@ import type {
   ResolvedAnchor,
   SurfaceInstanceId,
 } from "../../lib/reader/spatial-contract";
+import { AnchorInput as AnchorInputSchema } from "../../lib/domain/model";
+import {
+  createReaderDocumentModel,
+  validateReaderSelector,
+  sourceEnvelopeForReaderSelector,
+} from "../../lib/reader/document-model";
 import { checkedEndpointMaps } from "../../lib/domain/text-offsets";
 import {
   assertRendererAnchor,
-  createRenderPlan,
   RendererMappingError,
   type RenderPlan,
 } from "../../lib/reader/render-markdown";
 import { DocumentBody } from "./document-virtualizer";
-import { sourceRanges } from "../../lib/reader/render-dom";
+import {
+  sourceRanges,
+  readerRanges,
+  readerModelForRoot,
+  bindReaderModel,
+  unbindReaderModel,
+  checkedReaderElement,
+} from "../../lib/reader/render-dom";
 import { passageHighlightRuns } from "../../lib/reader/passage-highlights";
 import {
   readerPalette,
@@ -59,196 +71,81 @@ export interface PassageProps {
   onGeometryChange?: () => void;
 }
 
-interface SpanPoint {
-  span: HTMLElement;
-  source: number;
-  renderedIndex: number;
-  renderedLength: number;
-  nodeStart: number;
-  nodeEnd: number;
-}
-
-function elementForNode(node: Node): HTMLElement | null {
-  if (node.nodeType === Node.ELEMENT_NODE) return node as HTMLElement;
-  return node.parentElement;
-}
-
-function closestSourceSpan(node: Node): HTMLElement | null {
-  return (
-    elementForNode(node)?.closest<HTMLElement>(
-      "span[data-source-start][data-source-end]",
-    ) ?? null
-  );
-}
-
-function firstSourceSpan(node: Node, fromEnd: boolean): HTMLElement | null {
-  if (node.nodeType === Node.ELEMENT_NODE) {
-    const spans = (node as Element).querySelectorAll<HTMLElement>(
-      "span[data-source-start][data-source-end]",
-    );
-    return spans.length ? spans[fromEnd ? spans.length - 1 : 0] : null;
-  }
-  return closestSourceSpan(node);
-}
-
-function parseIntegerAttribute(span: HTMLElement, name: string): number {
-  const value = Number(span.dataset[name]);
-  if (!Number.isInteger(value) || value < 0)
-    throw new RendererMappingError(`Missing integer ${name} on source span`);
-  return value;
-}
-
-function sourceOffsetAt(span: HTMLElement, renderedLength: number, renderedIndex: number, end: boolean): number {
-  if (span.dataset.sourceMapState === "unmapped") throw new RendererMappingError("This rendered Markdown text has no checked source mapping");
-  const start = parseIntegerAttribute(span, "sourceStart");
-  const sourceLength = parseIntegerAttribute(span, "sourceEnd") - start;
-  if (!span.dataset.sourceStartMap && !span.dataset.sourceEndMap) {
-    if (sourceLength !== renderedLength) throw new RendererMappingError("Invalid identity source mapping");
-    return start + renderedIndex;
-  }
-  const maps = checkedEndpointMaps(span.dataset.sourceStartMap, span.dataset.sourceEndMap, renderedLength, sourceLength);
-  if (!maps) throw new RendererMappingError("Invalid rendered-to-source endpoint maps");
-  const relative = (end ? maps.ends : maps.starts)[renderedIndex];
-  if (!Number.isInteger(relative)) throw new RendererMappingError("Rendered endpoint has no source boundary");
-  return start + relative;
-}
-
-function pointInSpan(span: HTMLElement, node: Node, offset: number, end: boolean): SpanPoint {
-  const sourceStart = parseIntegerAttribute(span, "sourceStart");
-  const sourceEnd = parseIntegerAttribute(span, "sourceEnd");
-  const renderedLength = Number(span.dataset.sourceRenderedLength);
-  if (!Number.isInteger(renderedLength) || renderedLength < 0)
-    throw new RendererMappingError(
-      "Missing rendered text length on source span",
-    );
-  const prefix = document.createRange();
-  prefix.selectNodeContents(span);
-  try {
-    prefix.setEnd(node, Math.max(0, offset));
-  } catch {
-    throw new RendererMappingError(
-      "Selection endpoint is outside its source span",
-    );
-  }
-  const renderedIndex = prefix.toString().length;
-  if (renderedIndex > renderedLength)
-    throw new RendererMappingError("Rendered endpoint exceeds source span");
-  const source = sourceOffsetAt(span, renderedLength, renderedIndex, end);
-  if (source < sourceStart || source > sourceEnd)
-    throw new RendererMappingError("Source endpoint exceeds source span");
-  return {
-    span,
-    source,
-    renderedIndex,
-    renderedLength,
-    nodeStart: Number.isInteger(Number(span.dataset.sourceNodeStart))
-      ? Number(span.dataset.sourceNodeStart)
-      : sourceStart,
-    nodeEnd: Number.isInteger(Number(span.dataset.sourceNodeEnd))
-      ? Number(span.dataset.sourceNodeEnd)
-      : sourceEnd,
-  };
-}
-
-function selectionPoint(
-  node: Node,
-  offset: number,
-  end: boolean,
-): SpanPoint | null {
-  const direct = closestSourceSpan(node);
-  if (direct) return pointInSpan(direct, node, offset, end);
-  const element = elementForNode(node);
-  if (!element) return null;
-  const children = Array.from(element.childNodes);
-  const child =
-    children[
-      end
-        ? Math.max(0, Math.min(children.length - 1, offset - 1))
-        : Math.max(0, Math.min(children.length - 1, offset))
-    ];
-  const span = child
-    ? firstSourceSpan(child, end)
-    : firstSourceSpan(element, end);
-  if (!span) return null;
-  const boundary = end ? span.childNodes.length : 0;
-  return pointInSpan(span, span, boundary, end);
-}
-
-function sourceSpanBoundary(point: SpanPoint): number {
-  // A visible selection maps to the exact text token.  Any Markdown syntax
-  // between two tokens remains in the source quote when the range crosses
-  // those tokens; a single token must not silently absorb a heading marker or
-  // a link destination.
-  return point.source;
-}
-
-/**
- * Return the exact source anchor represented by the browser's native range.
- * Markdown punctuation is taken from `doc.content`, while the browser's
- * rendered string remains available through `selectionPreview`.
- */
+/** Capture exact model fragments from the mounted native selection. */
 export function selectionAnchor(
   root: HTMLElement,
   doc: DocumentRevision,
+  model = createReaderDocumentModel(doc.content, doc.format),
 ): AnchorInput | null {
-  const revision = root.dataset.revisionId;
-  if (revision !== doc.revisionId)
+  if (root.dataset.revisionId !== doc.revisionId)
     throw new RendererMappingError(
-      "Selection root does not contain this revision", "revision",
+      "Selection root does not contain this revision",
+      "revision",
     );
-  const selection = window.getSelection();
+  const selection = root.ownerDocument.defaultView?.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  const range = selection.getRangeAt(0);
+  const native = selection.getRangeAt(0);
+  const body = root.querySelector<HTMLElement>("[data-reader-body]") ?? root;
+  const clipped = native.cloneRange();
+  const bounds = root.ownerDocument.createRange();
+  bounds.selectNodeContents(body);
   if (
-    !root.contains(range.startContainer) ||
-    !root.contains(range.endContainer)
+    native.compareBoundaryPoints(3, bounds) >= 0 ||
+    native.compareBoundaryPoints(1, bounds) <= 0
   )
     return null;
-  const startPoint = selectionPoint(
-    range.startContainer,
-    range.startOffset,
-    false,
-  );
-  const endPoint = selectionPoint(range.endContainer, range.endOffset, true);
-  if (!startPoint || !endPoint)
-    throw new RendererMappingError("Selection endpoint is outside mapped text");
-  let start = sourceSpanBoundary(startPoint);
-  let end = sourceSpanBoundary(endPoint);
-  if (start > end) [start, end] = [end, start];
-  if (start < 0 || start >= end || end > doc.content.length)
-    throw new RendererMappingError(
-      "Selection source range is outside revision",
-    );
-  // A native range can cross a virtual spacer (for example with Select All).
-  // Its endpoints are valid individually, but the unseen middle was not
-  // actually selected. Never turn that discontinuous range into a quotation.
-  for (const gap of root.querySelectorAll<HTMLElement>(
-    "[data-source-gap-start]",
+  if (clipped.compareBoundaryPoints(0, bounds) < 0)
+    clipped.setStart(bounds.startContainer, bounds.startOffset);
+  if (clipped.compareBoundaryPoints(2, bounds) > 0)
+    clipped.setEnd(bounds.endContainer, bounds.endOffset);
+  const fragments: { nodeId: string; start: number; end: number }[] = [];
+  for (const element of body.querySelectorAll<HTMLElement>(
+    "[data-reader-node-id]",
   )) {
+    const node = model.getNode(element.dataset.readerNodeId!);
+    checkedReaderElement(element, node);
+    const full = root.ownerDocument.createRange();
+    if (node.kind === "atom") full.selectNode(element);
+    else full.selectNodeContents(element);
     if (
-      Number(gap.dataset.sourceGapStart) < end &&
-      Number(gap.dataset.sourceGapEnd) > start
+      clipped.compareBoundaryPoints(3, full) >= 0 ||
+      clipped.compareBoundaryPoints(1, full) <= 0
     )
-      throw new RendererMappingError(
-        "Selection crosses text that is not displayed", "gap",
-      );
+      continue;
+    if (node.kind === "atom") {
+      fragments.push({ nodeId: node.id, start: 0, end: 1 });
+      continue;
+    }
+    const overlap = full.cloneRange();
+    if (clipped.compareBoundaryPoints(0, full) > 0)
+      overlap.setStart(clipped.startContainer, clipped.startOffset);
+    if (clipped.compareBoundaryPoints(2, full) < 0)
+      overlap.setEnd(clipped.endContainer, clipped.endOffset);
+    const prefix = full.cloneRange();
+    prefix.setEnd(overlap.startContainer, overlap.startOffset);
+    const start = prefix.toString().length,
+      end = start + overlap.toString().length;
+    if (end > start) fragments.push({ nodeId: node.id, start, end });
   }
-  const anchor: AnchorInput = {
+  if (!fragments.length) return null;
+  const reader = validateReaderSelector(model, {
+    version: "reader-v1",
+    fragments,
+    preview: clipped.toString(),
+  });
+  return AnchorInputSchema.parse({
     revisionId: doc.revisionId,
-    start,
-    end,
-    quote: doc.content.slice(start, end),
-  };
-  assertRendererAnchor(doc.content, anchor, doc.revisionId);
-  return anchor;
+    ...sourceEnvelopeForReaderSelector(model, reader),
+    reader,
+  });
 }
 
-/** Rendered quotation for UI preview; never use this as the saved anchor quote. */
 export function selectionPreview(root: HTMLElement): string {
-  const selection = window.getSelection();
+  const selection = root.ownerDocument.defaultView?.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return "";
+  const body = root.querySelector<HTMLElement>("[data-reader-body]") ?? root;
   const range = selection.getRangeAt(0);
-  return root.contains(range.commonAncestorContainer) ? range.toString() : "";
+  return body.contains(range.commonAncestorContainer) ? range.toString() : "";
 }
 
 function validateMarks(
@@ -303,8 +200,14 @@ function hasCheckedSourceMapping(span: HTMLElement): boolean {
   if (!Number.isInteger(start) || !Number.isInteger(end) || end < start)
     return false;
   const renderedLength = span.textContent?.length ?? 0;
-  if (!span.dataset.sourceStartMap && !span.dataset.sourceEndMap) return end - start === renderedLength;
-  return !!checkedEndpointMaps(span.dataset.sourceStartMap, span.dataset.sourceEndMap, renderedLength, end - start);
+  if (!span.dataset.sourceStartMap && !span.dataset.sourceEndMap)
+    return end - start === renderedLength;
+  return !!checkedEndpointMaps(
+    span.dataset.sourceStartMap,
+    span.dataset.sourceEndMap,
+    renderedLength,
+    end - start,
+  );
 }
 
 /** Resolve DOM ranges and coverage from the same source projection as marks. */
@@ -316,11 +219,32 @@ function resolveAnchorAtRoot(
 ): ResolvedAnchor {
   if (anchor.revisionId !== revisionId)
     return { ranges: [], coverage: "unmapped", missing: [] };
-  const ranges = sourceRanges(root, {
-    revisionId,
-    start: anchor.start,
-    end: anchor.end,
-  });
+  if (anchor.reader) {
+    const model = readerModelForRoot(root);
+    const reader = validateReaderSelector(model, anchor.reader);
+    const ranges = readerRanges(root, reader, model);
+    const mounted = new Set(
+      Array.from(
+        root.querySelectorAll<HTMLElement>("[data-reader-node-id]"),
+      ).map((element) => element.dataset.readerNodeId),
+    );
+    const absent = reader.fragments.filter(
+      (fragment) => !mounted.has(fragment.nodeId),
+    );
+    const missing = absent.map(
+      (fragment) => model.getNode(fragment.nodeId).origin,
+    );
+    return {
+      ranges,
+      coverage: absent.length
+        ? ranges.length
+          ? "partial"
+          : "unmounted"
+        : "complete",
+      missing: mergeMissingSpans(missing),
+    };
+  }
+  const ranges = sourceRanges(root, anchor);
   const missing: { start: number; end: number }[] = [];
   let unmapped = false;
   for (const gap of root.querySelectorAll<HTMLElement>(
@@ -338,7 +262,7 @@ function resolveAnchorAtRoot(
     const end = Number(span.dataset.sourceEnd);
     const intersection = sourceIntersection(start, end, anchor);
     if (!intersection) continue;
-    if (!hasCheckedSourceMapping(span)) {
+    if (!span.dataset.readerNodeId && !hasCheckedSourceMapping(span)) {
       missing.push(intersection);
       unmapped = true;
     }
@@ -377,12 +301,7 @@ export function firstVisibleSourceOffset(
     const end = Number(span.dataset.sourceEnd);
     if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
     const ranges = sourceRanges(root, { revisionId, start, end });
-    let firstMapped = start;
-    try {
-      firstMapped = sourceOffsetAt(span, span.textContent?.length ?? 0, 0, false);
-    } catch {
-      continue;
-    }
+    const firstMapped = start;
     if (
       ranges.some((range) =>
         Array.from(range.getClientRects()).some(
@@ -406,7 +325,8 @@ function sameAnchor(
       (a.revisionId === b.revisionId &&
         a.start === b.start &&
         a.end === b.end &&
-        a.quote === b.quote))
+        a.quote === b.quote &&
+        JSON.stringify(a.reader) === JSON.stringify(b.reader)))
   );
 }
 
@@ -439,7 +359,6 @@ function PassageImpl({
   onGeometryChange,
 }: PassageProps) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const [selectionError, setSelectionError] = useState<string | null>(null);
   const [choices, setChoices] = useState<readonly PassageMark[]>([]);
   const [choiceQuery, setChoiceQuery] = useState("");
   const [choicePage, setChoicePage] = useState(0);
@@ -470,11 +389,6 @@ function PassageImpl({
       document.removeEventListener("keydown", escape, true);
     };
   }, [choices]);
-  useEffect(() => {
-    if (!selectionError) return;
-    const timeout = window.setTimeout(() => setSelectionError(null), 6000);
-    return () => window.clearTimeout(timeout);
-  }, [selectionError]);
   const onSelectRef = useRef(onSelect);
   const onActivateMarkRef = useRef(onActivateMark);
   useLayoutEffect(() => {
@@ -482,10 +396,17 @@ function PassageImpl({
     onActivateMarkRef.current = onActivateMark;
   }, [onActivateMark, onSelect]);
   const currentFocus = focus?.revisionId === doc.revisionId ? focus : null;
-  const plan = useMemo(
-    () => createRenderPlan(doc.content, doc.format),
+  const model = useMemo(
+    () => createReaderDocumentModel(doc.content, doc.format),
     [doc.content, doc.format],
   );
+  const plan = model.plan;
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    bindReaderModel(root, model);
+    return () => unbindReaderModel(root);
+  }, [model]);
   const checkedMarks = useMemo(
     () => validateMarks(doc.content, doc.revisionId, marks),
     [doc.content, doc.revisionId, marks],
@@ -493,11 +414,13 @@ function PassageImpl({
   const highlightRuns = useMemo(
     () =>
       passageHighlightRuns(
-        checkedMarks.map((mark) => ({
-          start: mark.anchor.start,
-          end: mark.anchor.end,
-          relation: mark.relation,
-        })),
+        checkedMarks
+          .filter((mark) => !mark.anchor.reader)
+          .map((mark) => ({
+            start: mark.anchor.start,
+            end: mark.anchor.end,
+            relation: mark.relation,
+          })),
       ),
     [checkedMarks],
   );
@@ -544,8 +467,12 @@ function PassageImpl({
       clear();
       const rules: string[] = [];
       const mapped = new Map<string, Range[]>();
-      const rangesFor = (source: { start: number; end: number }) => {
-        const key = `${source.start}:${source.end}`;
+      const rangesFor = (source: {
+        start: number;
+        end: number;
+        reader?: AnchorInput["reader"];
+      }) => {
+        const key = `${source.start}:${source.end}:${JSON.stringify(source.reader)}`;
         let ranges = mapped.get(key);
         if (!ranges) {
           ranges = sourceRanges(root, {
@@ -585,6 +512,17 @@ function PassageImpl({
         const ranges = rangesFor(mark.anchor);
         return { id: mark.id, endpoint: mark.endpoint, ranges };
       });
+      checkedMarks
+        .filter((mark) => mark.anchor.reader)
+        .forEach((mark, index) => {
+          const appearance = relationAppearance(mark.relation);
+          register(
+            `reader-mark${index}`,
+            rangesFor(mark.anchor),
+            `color-mix(in srgb, ${appearance.signal} ${readerPalette.state.signal.range * 100}%, transparent)`,
+            appearance.ink,
+          );
+        });
       highlightRuns.forEach((run, index) => {
         const ranges = rangesFor(run);
         const appearance =
@@ -620,37 +558,29 @@ function PassageImpl({
       });
     };
     const observer = new MutationObserver(scheduleAnnotation);
-    observer.observe(root, { childList: true });
+    observer.observe(root, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
       if (annotationFrame) cancelAnimationFrame(annotationFrame);
       clear();
       style.remove();
     };
-  }, [checkedMarks, highlightRuns, currentFocus, doc.revisionId, highlightId]);
+  }, [
+    checkedMarks,
+    highlightRuns,
+    currentFocus,
+    doc.revisionId,
+    highlightId,
+    model,
+  ]);
 
   function captureSelection(): void {
     const root = rootRef.current;
     if (!root) return;
-    try {
-      const anchor = selectionAnchor(root, doc);
-      if (!anchor) return;
-      const selection = window.getSelection();
-      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-      if (range) {
-        setSelectionError(null);
-        onSelectRef.current(anchor, range.getBoundingClientRect());
-      }
-    } catch (error) {
-      // A malformed or virtualized endpoint is rejected instead of being
-      // converted to an approximate saved anchor.
-      if (!(error instanceof RendererMappingError)) throw error;
-      setSelectionError(
-        root.dataset.selectionLimit === "true"
-          ? "长选区已到本次上限，可分段选择。"
-          : error.reason === "gap" ? "选区跨过了尚未显示的正文，请分段选择。" : error.reason === "revision" ? "文档版本已变化，请重新选择。" : "未能定位选中文字，无法创建引用。",
-      );
-    }
+    const anchor = selectionAnchor(root, doc, model);
+    if (!anchor) return;
+    const range = window.getSelection()?.getRangeAt(0);
+    if (range) onSelectRef.current(anchor, range.getBoundingClientRect());
   }
 
   function activateMark(event: React.MouseEvent<HTMLDivElement>): void {
@@ -709,7 +639,7 @@ function PassageImpl({
   }
 
   const matchingChoices = choices.filter((mark) =>
-    (mark.label ?? mark.anchor.quote)
+    (mark.label ?? mark.anchor.reader?.preview ?? mark.anchor.quote)
       .toLocaleLowerCase()
       .includes(choiceQuery.toLocaleLowerCase()),
   );
@@ -739,21 +669,11 @@ function PassageImpl({
       <DocumentBody
         doc={doc}
         plan={plan}
+        model={model}
         rootRef={rootRef}
         focus={currentFocus}
         onGeometryChange={geometryChanged}
       />
-      {selectionError &&
-        createPortal(
-          <p
-            className="reader-palette passage-selection-note"
-            style={readerPaletteStyle}
-            role="status"
-          >
-            {selectionError}
-          </p>,
-          document.body,
-        )}
       {choices.length > 0 &&
         createPortal(
           <div
@@ -790,7 +710,9 @@ function PassageImpl({
                       onActivateMarkRef.current?.(mark.id, mark.endpoint);
                     }}
                   >
-                    {mark.label ?? mark.anchor.quote}
+                    {mark.label ??
+                      mark.anchor.reader?.preview ??
+                      mark.anchor.quote}
                   </button>
                 ))}
               {!matchingChoices.length && <p>没有匹配的连接。</p>}

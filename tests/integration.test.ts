@@ -316,3 +316,29 @@ test("Markdown rendered offsets account for entities, escapes and inline code", 
   assert.deepEqual(renderedTextOffsets("a\\*b", "a*b"), [0, 1, 3, 4]);
   assert.equal(renderedTextOffsets("mismatch", "different"), null);
 });
+
+test("reader selections persist distinct display positions sharing source provenance", async () => {
+  const { createReaderDocumentModel, sourceEnvelopeForReaderSelector } = await import("../lib/reader/document-model");
+  const content = "![cat](cat.png)";
+  const doc = (await store.execute("write", { path: "/tests/model-image.md", title: "Model image", content })).document;
+  const model = createReaderDocumentModel(content, "markdown");
+  const node = model.getChunk(0).nodes.find((item) => item.value === "[图片：cat]"); assert.ok(node);
+  const prefix = { version: "reader-v1" as const, fragments: [{ nodeId: node.id, start: 0, end: 4 }], preview: "[图片：" };
+  const alt = { version: "reader-v1" as const, fragments: [{ nodeId: node.id, start: 4, end: 7 }], preview: "cat" };
+  const anchor = (reader: typeof prefix) => ({ revisionId: doc.revisionId, ...sourceEnvelopeForReaderSelector(model, reader), reader });
+  const from = anchor(prefix), to = anchor(alt);
+  assert.equal(from.quote, content); assert.deepEqual([from.start, from.end], [to.start, to.end]);
+  const first = (await store.execute("ask", { anchor: from, body: "Prefix?" })).question;
+  const second = (await store.execute("ask", { anchor: to, body: "Alt?" })).question;
+  assert.deepEqual((await store.question(first.id)).anchor.reader, prefix);
+  assert.deepEqual((await store.question(second.id)).anchor.reader, alt);
+  const connection = (await store.execute("link", { from, to, relation: "reference" })).connection;
+  const loaded = (await store.connections(doc.id)).find((item) => item.id === connection.id)!;
+  assert.deepEqual(loaded.from.reader, prefix); assert.deepEqual(loaded.to.reader, alt);
+  for (const bad of [
+    { ...from, reader: { ...prefix, fragments: [{ nodeId: "c0:n999", start: 0, end: 1 }] } },
+    { ...from, reader: { ...prefix, fragments: [{ nodeId: node.id, start: 0, end: 100 }] } },
+    { ...from, reader: { ...prefix, fragments: [{ nodeId: node.id, start: 0, end: 4 }, { nodeId: node.id, start: 3, end: 5 }] } },
+    { ...from, start: 1, quote: content.slice(1) },
+  ]) await assert.rejects(() => store.execute("ask", { anchor: bad, body: "Invalid?" }));
+});

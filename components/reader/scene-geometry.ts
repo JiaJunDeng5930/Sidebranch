@@ -12,6 +12,7 @@ import type {
   PassageHandle,
   SurfaceInstanceId,
 } from "../../lib/reader/spatial-contract";
+import { anchorKey } from "../../lib/reader/spatial-contract";
 import type { SurfaceLayout } from "./scene-presentation";
 
 export type CachedAnchorGeometry = {
@@ -44,11 +45,7 @@ export class SceneGeometry {
   }
 
   hasAnchor(id: SurfaceInstanceId, anchor: AnchorInput): boolean {
-    return this.ranges.get(id)?.has(this.anchorKey(anchor)) ?? false;
-  }
-
-  private anchorKey(anchor: AnchorInput): string {
-    return [anchor.revisionId, anchor.start, anchor.end].join(":");
+    return this.ranges.get(id)?.has(anchorKey(anchor)) ?? false;
   }
 
   /** The caller must restore transforms after resolving all needed anchors. */
@@ -100,7 +97,7 @@ export class SceneGeometry {
     scroll: HTMLElement | null | undefined,
     layoutPass: boolean,
   ): CachedAnchorGeometry | undefined {
-    const key = this.anchorKey(anchor);
+    const key = anchorKey(anchor);
     let cached = this.ranges.get(surfaceId)?.get(key);
     // Only a neutral layout pass may read browser ranges. Hidden occurrences
     // retain their previous measurable coordinates until their layout changes.

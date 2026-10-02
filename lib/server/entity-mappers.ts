@@ -13,6 +13,7 @@ import {
   PositiveInt,
   QuestionId,
   RevisionId,
+  ReaderSelectorSchema,
   type Anchor,
   type Connection,
   type DocumentRevision,
@@ -62,6 +63,7 @@ const AnchorRow = z.object({
   start: z.number().int().nonnegative(),
   end: z.number().int().positive(),
   quote: z.string().min(1),
+  reader_selector: z.string().nullable(),
 });
 
 const ConnectionRow = z.object({
@@ -72,12 +74,14 @@ const ConnectionRow = z.object({
   from_start: z.number().int().nonnegative(),
   from_end: z.number().int().positive(),
   from_quote: z.string().min(1),
+  from_reader_selector: z.string().nullable(),
   to_id: z.string(),
   to_revision_id: z.string(),
   to_document_id: z.string(),
   to_start: z.number().int().nonnegative(),
   to_end: z.number().int().positive(),
   to_quote: z.string().min(1),
+  to_reader_selector: z.string().nullable(),
   relation: z.enum([
     "reference",
     "explanation",
@@ -99,6 +103,7 @@ const QuestionJoinRow = z.object({
   anchor_start: z.number().int().nonnegative(),
   anchor_end: z.number().int().positive(),
   anchor_quote: z.string().min(1),
+  anchor_reader_selector: z.string().nullable(),
   answer_document_id: z.string().nullable(),
   question_page_count: z.number().int().nonnegative(),
 });
@@ -275,6 +280,7 @@ export function anchorEntityFromFields(fields: {
   start: number;
   end: number;
   quote: string;
+  reader_selector: string | null;
 }): AnchorEntity {
   try {
     return {
@@ -284,6 +290,13 @@ export function anchorEntityFromFields(fields: {
       start: fields.start,
       end: fields.end,
       quote: fields.quote,
+      ...(fields.reader_selector !== null
+        ? {
+            reader: ReaderSelectorSchema.parse(
+              JSON.parse(fields.reader_selector),
+            ),
+          }
+        : {}),
     };
   } catch {
     throw new DomainError(
@@ -314,6 +327,7 @@ export function connectionEntityFromRow(value: unknown): ConnectionEntity {
         start: row.from_start,
         end: row.from_end,
         quote: row.from_quote,
+        reader_selector: row.from_reader_selector,
       }),
       to: anchorEntityFromFields({
         id: row.to_id,
@@ -322,6 +336,7 @@ export function connectionEntityFromRow(value: unknown): ConnectionEntity {
         start: row.to_start,
         end: row.to_end,
         quote: row.to_quote,
+        reader_selector: row.to_reader_selector,
       }),
       relation: row.relation,
       label: row.label,
@@ -364,6 +379,7 @@ export function questionEntitiesFromRows(
           start: row.anchor_start,
           end: row.anchor_end,
           quote: row.anchor_quote,
+          reader_selector: row.anchor_reader_selector,
         }),
         body: row.q_body,
         createdAt: Instant.parse(row.q_created_at),

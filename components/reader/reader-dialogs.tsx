@@ -410,10 +410,15 @@ export function ReaderDialogs({
           </ReaderDialogDescription>
           <div className="activities-scroll">
             {session.answers.length > 0 && (
-              <section className="activity-section" aria-labelledby="answer-activity-title">
+              <section
+                className="activity-section"
+                aria-labelledby="answer-activity-title"
+              >
                 <div className="activity-section-heading">
                   <h3 id="answer-activity-title">回答</h3>
-                  {session.answers.some((answer) => answer.status === "unseen") && (
+                  {session.answers.some(
+                    (answer) => answer.status === "unseen",
+                  ) && (
                     <button
                       type="button"
                       className="quiet-button activity-later-button"
@@ -458,7 +463,10 @@ export function ReaderDialogs({
             )}
 
             {session.connections.length > 0 && (
-              <section className="activity-section" aria-labelledby="connection-activity-title">
+              <section
+                className="activity-section"
+                aria-labelledby="connection-activity-title"
+              >
                 <h3 id="connection-activity-title">连接</h3>
                 <div className="activity-list">
                   {session.connections.map((connection) => (
@@ -472,7 +480,12 @@ export function ReaderDialogs({
                       }}
                     >
                       <strong>{connection.label || "文字连接"}</strong>
-                      <small>{connection.from.quote.slice(0, 100)}</small>
+                      <small>
+                        {(
+                          connection.from.reader?.preview ??
+                          connection.from.quote
+                        ).slice(0, 100)}
+                      </small>
                     </button>
                   ))}
                 </div>
@@ -480,7 +493,10 @@ export function ReaderDialogs({
             )}
 
             {session.questions.length > 0 && (
-              <section className="activity-section" aria-labelledby="question-activity-title">
+              <section
+                className="activity-section"
+                aria-labelledby="question-activity-title"
+              >
                 <h3 id="question-activity-title">问题</h3>
                 <div className="activity-list">
                   {session.questions.map((question) => (
@@ -500,9 +516,15 @@ export function ReaderDialogs({
                       }}
                     >
                       <strong>
-                        {question.answers.length ? "已答" : "待答"} · {question.body}
+                        {question.answers.length ? "已答" : "待答"} ·{" "}
+                        {question.body}
                       </strong>
-                      <small>{question.anchor.quote.slice(0, 100)}</small>
+                      <small>
+                        {(
+                          question.anchor.reader?.preview ??
+                          question.anchor.quote
+                        ).slice(0, 100)}
+                      </small>
                     </button>
                   ))}
                 </div>

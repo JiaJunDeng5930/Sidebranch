@@ -67,6 +67,7 @@ export const anchors = sqliteTable(
     start: integer("start").notNull(),
     end: integer("end").notNull(),
     quote: text("quote").notNull(),
+    readerSelector: text("reader_selector"),
   },
   (t) => [index("anchors_revision").on(t.revisionId)],
 );

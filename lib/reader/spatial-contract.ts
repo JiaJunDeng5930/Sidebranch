@@ -152,7 +152,56 @@ export function formatConnectionLabel(
   endpoint: ConnectionEndpoint,
 ): string {
   const counterpart = endpoint === "from" ? connection.to : connection.from;
-  return `${relationNames[connection.relation]} · ${connection.label || counterpart.quote}`;
+  return `${relationNames[connection.relation]} · ${connection.label || (counterpart.reader?.preview ?? counterpart.quote)}`;
+}
+
+/** Reader coordinates distinguish selections sharing a transformed source envelope. */
+export function anchorKey(anchor: AnchorInput): string {
+  if (!anchor.reader)
+    return [anchor.revisionId, anchor.start, anchor.end].join(":");
+  return JSON.stringify([
+    anchor.revisionId,
+    anchor.reader.version,
+    anchor.reader.fragments.map(({ nodeId, start, end }) => [
+      nodeId,
+      start,
+      end,
+    ]),
+  ]);
+}
+
+function compareReaderFragments(left: AnchorInput, right: AnchorInput): number {
+  const a = left.reader,
+    b = right.reader;
+  if (!a || !b) return a ? 1 : b ? -1 : 0;
+  const version = a.version.localeCompare(b.version);
+  if (version) return version;
+  for (
+    let index = 0;
+    index < Math.min(a.fragments.length, b.fragments.length);
+    index++
+  ) {
+    const x = a.fragments[index],
+      y = b.fragments[index];
+    const xOrdinals = x.nodeId.slice(1).split(":n").map(Number);
+    const yOrdinals = y.nodeId.slice(1).split(":n").map(Number);
+    const order =
+      xOrdinals[0] - yOrdinals[0] ||
+      xOrdinals[1] - yOrdinals[1] ||
+      x.start - y.start ||
+      x.end - y.end;
+    if (order) return order;
+  }
+  return a.fragments.length - b.fragments.length;
+}
+
+function compareAnchors(left: AnchorInput, right: AnchorInput): number {
+  if (left.reader && right.reader) return compareReaderFragments(left, right);
+  return (
+    left.start - right.start ||
+    left.end - right.end ||
+    compareReaderFragments(left, right)
+  );
 }
 
 /** Stable sequence shared by paper controls and Passage context menus. */
@@ -176,8 +225,7 @@ export function relationNavigationItems(
   }
   return items.sort(
     (left, right) =>
-      left.anchor.start - right.anchor.start ||
-      left.anchor.end - right.anchor.end ||
+      compareAnchors(left.anchor, right.anchor) ||
       (String(left.connectionId) < String(right.connectionId)
         ? -1
         : String(left.connectionId) > String(right.connectionId)

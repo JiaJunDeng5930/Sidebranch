@@ -47,6 +47,11 @@ import {
 import { SpatialScene } from "./spatial-scene";
 import { DocumentPassage } from "./document-passage";
 import { firstVisibleSourceOffset } from "./passage";
+import {
+  createReaderDocumentModel,
+  sourceEnvelopeForReaderSelector,
+  validateReaderSelector,
+} from "../../lib/reader/document-model";
 import { registerReadingTools } from "../../lib/client/webmcp";
 import {
   questionPrompt,
@@ -1177,9 +1182,10 @@ export function Reader({
           anchor,
           document,
           preview:
-            typeof window === "undefined"
+            anchor.reader?.preview ??
+            (typeof window === "undefined"
               ? anchor.quote
-              : window.getSelection()?.toString() || anchor.quote,
+              : (window.getSelection()?.toString() ?? anchor.quote)),
           rect: {
             left: rect.left,
             top: rect.top,
@@ -1927,10 +1933,7 @@ export function Reader({
         selection.kind === "selected"
           ? {
               documentId: selection.document.id,
-              revisionId: selection.anchor.revisionId,
-              start: selection.anchor.start,
-              end: selection.anchor.end,
-              quote: selection.anchor.quote,
+              ...selection.anchor,
             }
           : null,
     };
@@ -1988,8 +1991,28 @@ export function Reader({
                 start: context.selection.start,
                 end: context.selection.end,
                 quote: context.selection.quote,
+                ...(context.selection.reader
+                  ? { reader: context.selection.reader }
+                  : {}),
               })
             : null;
+        if (selected && anchor?.reader) {
+          const model = createReaderDocumentModel(
+            selected.content,
+            selected.format,
+          );
+          validateReaderSelector(model, anchor.reader);
+          const envelope = sourceEnvelopeForReaderSelector(
+            model,
+            anchor.reader,
+          );
+          if (
+            anchor.start !== envelope.start ||
+            anchor.end !== envelope.end ||
+            anchor.quote !== envelope.quote
+          )
+            throw new Error("会话选区的来源包络与文档模型不一致。");
+        }
         if (hasInteractionProtection())
           throw new Error("请先完成当前阅读操作，再恢复会话中的阅读位置。");
         if (view) commitView(view);
@@ -2013,7 +2036,7 @@ export function Reader({
               surfaceId: selectedSurface,
               document: selected,
               anchor,
-              preview: anchor.quote,
+              preview: anchor.reader?.preview ?? anchor.quote,
               rect: { left: 0, top: 0, width: 0, height: 0 },
             },
           });

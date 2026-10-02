@@ -13,6 +13,10 @@ import {
   type RenderChunk,
   type RenderPlan,
 } from "../../lib/reader/render-markdown";
+import {
+  readerChunkIndex,
+  type ReaderDocumentModel,
+} from "../../lib/reader/document-model";
 import { layoutTop } from "../../lib/reader/render-dom";
 import { DocumentMarkdownChunk, DocumentTextChunk } from "./document-markdown";
 
@@ -124,6 +128,7 @@ export function selectionCorridor(
 export interface DocumentBodyProps {
   doc: DocumentRevision;
   plan: RenderPlan;
+  model: ReaderDocumentModel;
   rootRef: React.RefObject<HTMLDivElement | null>;
   focus: AnchorInput | null;
   onGeometryChange?: () => void;
@@ -133,6 +138,7 @@ export interface DocumentBodyProps {
 export const DocumentBody = memo(function DocumentBody({
   doc,
   plan,
+  model,
   rootRef,
   focus,
   onGeometryChange,
@@ -175,11 +181,18 @@ export const DocumentBody = memo(function DocumentBody({
   )
     indexes.add(index);
   if (focus && virtual) {
-    const focused = focusChunkIndexes(plan.chunks, focus);
-    // A small focus range owns a complete contiguous render corridor so its
-    // DOM Range, native selection, and Scene geometry agree. Large ranges are
-    // bounded by the existing budget and expose explicit gaps as partial.
-    if (focused.length <= MAX_VIEWPORT_CHUNKS) {
+    const focused = focus.reader
+      ? [
+          ...new Set(
+            focus.reader.fragments.map((fragment) =>
+              readerChunkIndex(fragment.nodeId),
+            ),
+          ),
+        ]
+      : focusChunkIndexes(plan.chunks, focus);
+    // Precise reader fragments mount every referenced chunk. Legacy source
+    // ranges retain the viewport budget for coarse navigation.
+    if (focus.reader || focused.length <= MAX_VIEWPORT_CHUNKS) {
       for (const index of focused) indexes.add(index);
     } else {
       if (focused[0] !== undefined) indexes.add(focused[0]);
@@ -234,7 +247,7 @@ export const DocumentBody = memo(function DocumentBody({
       resize.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [rootRef, doc.revisionId]);
+  }, [rootRef, doc.revisionId, plan.chunks.length]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -287,17 +300,14 @@ export const DocumentBody = memo(function DocumentBody({
         selection && !selection.isCollapsed
           ? chunkAt(selection.focusNode)
           : null;
-      // Keep a continuous corridor while the native Range grows. Pinning only
-      // the two endpoints would silently omit copied text between them. When
-      // the browser tries to cross the cap, keep the last precise corridor and
-      // let selectionAnchor reject the missing spacer instead of inventing an
-      // anchor for text that is not mounted.
+      // The native range owns the entire corridor while it grows; the viewport
+      // budget applies only when there is no active selection or exact focus.
       const corridor = selectionCorridor(
         from ?? (dragging ? origin : null),
         to ?? (dragging ? origin : null),
+        plan.chunks.length,
       );
       const next = corridor.indexes;
-      root.dataset.selectionLimit = corridor.exceeded ? "true" : "false";
       setSelectionPins((old) =>
         old.join(",") === next.join(",") ? old : next,
       );
@@ -360,7 +370,7 @@ export const DocumentBody = memo(function DocumentBody({
       }
       if (releaseTimer) window.clearTimeout(releaseTimer);
     };
-  }, [rootRef, doc.revisionId]);
+  }, [rootRef, doc.revisionId, plan.chunks.length]);
 
   const children: React.ReactNode[] = [];
   let previous = 0;
@@ -385,6 +395,7 @@ export const DocumentBody = memo(function DocumentBody({
     children.push(
       <Chunk
         key={`${doc.revisionId}:${index}`}
+        model={model.getChunk(index)}
         source={chunk.source}
         sourceStart={chunk.range.start}
         sourceEnd={chunk.range.end}
@@ -407,7 +418,7 @@ export const DocumentBody = memo(function DocumentBody({
         }}
       />,
     );
-  return <>{children}</>;
+  return <div data-reader-body>{children}</div>;
 });
 
 export function validateFocus(

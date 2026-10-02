@@ -5,6 +5,7 @@ import {
   ConnectionId,
   Content,
   DomainError,
+  Format,
   DocumentId,
   Instant,
   PositiveInt,
@@ -22,6 +23,11 @@ import {
   type RequiredLocator,
   type DocumentPath,
 } from "../domain/model";
+import {
+  createReaderDocumentModel,
+  validateReaderSelector,
+  sourceEnvelopeForReaderSelector,
+} from "../reader/document-model";
 import type { NeighborhoodNode, NeighborhoodResult } from "../domain/space";
 import type {
   NewAnchorEntity,
@@ -969,12 +975,35 @@ export class DocumentStore {
 
   private async anchor(input: AnchorInput): Promise<NewAnchorEntity> {
     const row = await this.db
-      .prepare("SELECT document_id,content FROM revisions WHERE id=?")
+      .prepare("SELECT document_id,content,format FROM revisions WHERE id=?")
       .bind(input.revisionId)
-      .first<{ document_id: string; content: string }>();
+      .first<{ document_id: string; content: string; format: string }>();
     if (!row)
       throw new DomainError("NOT_FOUND", "Anchor revision not found.", 404);
     const valid = validateAnchorInput(row.content, input);
+    if (valid.reader) {
+      try {
+        const model = createReaderDocumentModel(
+          row.content,
+          Format.parse(row.format),
+        );
+        validateReaderSelector(model, valid.reader);
+        const envelope = sourceEnvelopeForReaderSelector(model, valid.reader);
+        if (
+          envelope.start !== valid.start ||
+          envelope.end !== valid.end ||
+          envelope.quote !== valid.quote
+        )
+          throw new Error(
+            "Reader selector source envelope does not match the anchor.",
+          );
+      } catch {
+        throw new DomainError(
+          "INVALID_ANCHOR",
+          "The reader selection does not match this revision. Read the revision again.",
+        );
+      }
+    }
     return {
       ...valid,
       id: AnchorId.parse(crypto.randomUUID()),
@@ -985,9 +1014,16 @@ export class DocumentStore {
   private insertAnchor(a: NewAnchorEntity) {
     return this.db
       .prepare(
-        "INSERT INTO anchors(id,revision_id,start,end,quote) VALUES(?,?,?,?,?)",
+        "INSERT INTO anchors(id,revision_id,start,end,quote,reader_selector) VALUES(?,?,?,?,?,?)",
       )
-      .bind(a.id, a.revisionId, a.start, a.end, a.quote);
+      .bind(
+        a.id,
+        a.revisionId,
+        a.start,
+        a.end,
+        a.quote,
+        a.reader ? JSON.stringify(a.reader) : null,
+      );
   }
 
   async link(a: ParsedInput<"link">): Promise<Connection> {
@@ -1023,7 +1059,7 @@ export class DocumentStore {
   async getAnchor(id: string): Promise<Anchor> {
     const row = await this.db
       .prepare(
-        "SELECT a.id,a.revision_id,r.document_id,a.start,a.end,a.quote " +
+        "SELECT a.id,a.revision_id,r.document_id,a.start,a.end,a.quote,a.reader_selector " +
           "FROM anchors a JOIN revisions r ON r.id=a.revision_id WHERE a.id=?",
       )
       .bind(id)
@@ -1046,17 +1082,17 @@ export class DocumentStore {
     const after = cursorAfterDescending(cursor, "x.created_at", "x.id");
     const union =
       "SELECT c.id,c.from_id,rf.id AS from_revision_id,rf.document_id AS from_document_id," +
-      "af.start AS from_start,af.end AS from_end,af.quote AS from_quote," +
+      "af.start AS from_start,af.end AS from_end,af.quote AS from_quote,af.reader_selector AS from_reader_selector," +
       "c.to_id,rt.id AS to_revision_id,rt.document_id AS to_document_id," +
-      "at.start AS to_start,at.end AS to_end,at.quote AS to_quote," +
+      "at.start AS to_start,at.end AS to_end,at.quote AS to_quote,at.reader_selector AS to_reader_selector," +
       "c.relation,c.label,c.created_at " +
       "FROM connections c " +
       "JOIN anchors af ON af.id=c.from_id JOIN revisions rf ON rf.id=af.revision_id " +
       "JOIN anchors at ON at.id=c.to_id JOIN revisions rt ON rt.id=at.revision_id " +
       "WHERE rf.document_id=? " +
       "UNION ALL " +
-      "SELECT c.id,c.from_id,rf.id,rf.document_id,af.start,af.end,af.quote," +
-      "c.to_id,rt.id,rt.document_id,at.start,at.end,at.quote," +
+      "SELECT c.id,c.from_id,rf.id,rf.document_id,af.start,af.end,af.quote,af.reader_selector," +
+      "c.to_id,rt.id,rt.document_id,at.start,at.end,at.quote,at.reader_selector," +
       "c.relation,c.label,c.created_at " +
       "FROM connections c " +
       "JOIN anchors af ON af.id=c.from_id JOIN revisions rf ON rf.id=af.revision_id " +
@@ -1147,7 +1183,7 @@ export class DocumentStore {
       ") " +
       "SELECT q.id AS q_id,q.body AS q_body,q.created_at AS q_created_at," +
       "a.id AS anchor_id,a.revision_id AS anchor_revision_id,r.document_id AS anchor_document_id," +
-      "a.start AS anchor_start,a.end AS anchor_end,a.quote AS anchor_quote," +
+      "a.start AS anchor_start,a.end AS anchor_end,a.quote AS anchor_quote,a.reader_selector AS anchor_reader_selector," +
       "ans.document_id AS answer_document_id," +
       "(SELECT COUNT(*) FROM page_questions) AS question_page_count " +
       "FROM page_questions pq JOIN questions q ON q.id=pq.id " +

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AnchorId,
+  AnchorInput,
   AssetId,
   ConnectionId,
   DocumentId,
@@ -37,14 +38,10 @@ export const DocumentRevisionSchema = DocumentSummarySchema.extend({
   isCurrent: z.boolean(),
 });
 
-export const AnchorSchema = z
-  .object({
+export const AnchorSchema = AnchorInput
+  .extend({
     id: AnchorId,
-    revisionId: RevisionId,
     documentId: DocumentId,
-    start: z.number().int().nonnegative(),
-    end: z.number().int().positive(),
-    quote: z.string().min(1),
   })
   .strict();
 

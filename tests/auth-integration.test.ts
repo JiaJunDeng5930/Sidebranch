@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
@@ -59,26 +59,11 @@ type McpResponse = { result?: McpResult; [key: string]: unknown };
 
 let fixture: Fixture;
 
-async function migrationPath(name: string): Promise<string> {
-  for (const path of [`drizzle/${name}`, `../service/drizzle/${name}`]) {
-    try {
-      await access(path);
-      return path;
-    } catch {
-      // The service migration is copied into the root checkout during merge;
-      // the sibling fallback keeps this staging test runnable before that.
-    }
-  }
-  throw new Error(`Missing migration ${name}`);
-}
-
 async function applyMigrations(DB: D1Database): Promise<void> {
-  for (const name of [
-    "0000_curvy_human_torch.sql",
-    "0001_service_query_indexes.sql",
-    "0002_oauth_scopes.sql",
-  ]) {
-    const sql = await readFile(await migrationPath(name), "utf8");
+  for (const file of (await readdir("drizzle"))
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    const sql = await readFile(`drizzle/${file}`, "utf8");
     for (const statement of sql.split("--> statement-breakpoint"))
       if (statement.trim()) await DB.prepare(statement).run();
   }

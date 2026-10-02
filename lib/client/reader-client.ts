@@ -158,7 +158,7 @@ export function questionPrompt(question: Question): string {
       "–" +
       question.anchor.end +
       "）：",
-    question.anchor.quote,
+    question.anchor.reader?.preview ?? question.anchor.quote,
     "",
     "问题：" + question.body,
     "",

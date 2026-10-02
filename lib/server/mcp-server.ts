@@ -27,7 +27,7 @@ import {
 import { READ_SCOPE, WRITE_SCOPE, requireScope } from "./owner-auth";
 import { friendlyErrorMessage } from "./http";
 
-export const APP_RESOURCE_URI = "ui://xanadu-sidebranch/reader-v1.html";
+export const APP_RESOURCE_URI = "ui://xanadu-sidebranch/reader-v2.html";
 /**
  * The SDK's raw-shape registration form only accepts an object shape.  The
  * service decoder remains the authoritative discriminated union; this shape

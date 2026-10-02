@@ -180,3 +180,28 @@ test("valid external context restores once and suppresses publication echoes", a
     "Acknowledged local publication must not restore again",
   );
 });
+
+test("model context publishes reader coordinates and display preview and restores them unchanged", async () => {
+  const value = ReaderContextSchema.parse({ ...context(), selection: {
+    ...context().selection,
+    quote: "&amp;", start: 0, end: 5,
+    reader: { version: "reader-v1", preview: "&", fragments: [{ nodeId: "c0:n0", start: 0, end: 1 }] },
+  } });
+  const updates: HostUpdate[] = [], restores: Array<ReaderContext | null> = [];
+  const bridge = createReaderContextBridge({
+    getModelContext: () => ({ getCurrent: () => undefined, update: async (payload) => { updates.push(payload); return { updateId: "local-model" }; } }),
+    supportsStructuredContent: () => true, onRestore: (payload) => restores.push(payload),
+  });
+  await bridge.publish(value);
+  assert.deepEqual(updates[0].structuredContent, value);
+  assert.ok(updates[0].content[0].text.includes("c0:n0"));
+  assert.ok(updates[0].content[0].text.includes("reader-v1"));
+  assert.ok(updates[0].content[0].text.includes("&"));
+  const current = { updateId: "external-model", structuredContent: value };
+  const receivingBridge = createReaderContextBridge({
+    getModelContext: () => ({ getCurrent: () => current, update: async () => undefined }),
+    supportsStructuredContent: () => true, onRestore: (payload) => restores.push(payload),
+  });
+  receivingBridge.syncFromHost();
+  assert.deepEqual(restores, [value]);
+});

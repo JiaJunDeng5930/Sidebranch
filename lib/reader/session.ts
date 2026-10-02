@@ -861,7 +861,7 @@ export function readerSessionReducer(
                   ),
                 document: action.document,
                 anchor: action.anchor,
-                preview: action.anchor.quote,
+                preview: action.anchor.reader?.preview ?? action.anchor.quote,
                 rect: null,
               },
         question: {

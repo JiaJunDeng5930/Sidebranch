@@ -37,9 +37,19 @@ export function readerContextText(context: ReaderContext): string {
     parts.push(
       `选区文档 ID：${context.selection.documentId}`,
       `选区版本 ID：${context.selection.revisionId}`,
-      `选区 UTF-16 范围：${context.selection.start}–${context.selection.end}`,
+      ...(context.selection.reader
+        ? [
+            `阅读模型版本：${context.selection.reader.version}`,
+            `阅读模型选区片段（有序；start/end 为节点内 UTF-16 偏移）：${JSON.stringify(context.selection.reader.fragments)}`,
+            `来源包络 UTF-16 范围：${context.selection.start}–${context.selection.end}`,
+            "来源包络原文：",
+            context.selection.quote,
+          ]
+        : [
+            `选区 UTF-16 范围：${context.selection.start}–${context.selection.end}`,
+          ]),
       "选中文字：",
-      context.selection.quote,
+      context.selection.reader?.preview ?? context.selection.quote,
     );
   return parts.join("\n");
 }
