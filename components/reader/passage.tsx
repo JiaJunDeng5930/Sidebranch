@@ -24,7 +24,7 @@ import type {
   ResolvedAnchor,
   SurfaceInstanceId,
 } from "../../lib/reader/spatial-contract";
-import { isValidRenderedTextOffsets } from "../../lib/domain/text-offsets";
+import { checkedEndpointMaps } from "../../lib/domain/text-offsets";
 import {
   assertRendererAnchor,
   createRenderPlan,
@@ -98,50 +98,22 @@ function parseIntegerAttribute(span: HTMLElement, name: string): number {
   return value;
 }
 
-const sourceMapCache = new WeakMap<HTMLElement, readonly number[]>();
-
-function sourceOffsetAt(
-  span: HTMLElement,
-  renderedLength: number,
-  renderedIndex: number,
-): number {
-  if (span.dataset.sourceMapState === "unmapped")
-    throw new RendererMappingError(
-      "This rendered Markdown text has no checked source mapping",
-    );
-  const encoded = span.dataset.sourceMap;
-  if (!encoded) {
-    const start = parseIntegerAttribute(span, "sourceStart");
+function sourceOffsetAt(span: HTMLElement, renderedLength: number, renderedIndex: number, end: boolean): number {
+  if (span.dataset.sourceMapState === "unmapped") throw new RendererMappingError("This rendered Markdown text has no checked source mapping");
+  const start = parseIntegerAttribute(span, "sourceStart");
+  const sourceLength = parseIntegerAttribute(span, "sourceEnd") - start;
+  if (!span.dataset.sourceStartMap && !span.dataset.sourceEndMap) {
+    if (sourceLength !== renderedLength) throw new RendererMappingError("Invalid identity source mapping");
     return start + renderedIndex;
   }
-  let offsets = sourceMapCache.get(span);
-  if (!offsets) {
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(encoded);
-    } catch {
-      throw new RendererMappingError("Malformed rendered-to-source map");
-    }
-    if (
-      !Array.isArray(decoded) ||
-      !isValidRenderedTextOffsets(
-        decoded,
-        renderedLength,
-        parseIntegerAttribute(span, "sourceEnd") -
-          parseIntegerAttribute(span, "sourceStart"),
-      )
-    )
-      throw new RendererMappingError("Invalid rendered-to-source map");
-    offsets = decoded;
-    sourceMapCache.set(span, offsets);
-  }
-  const relative = offsets[renderedIndex];
-  if (!Number.isInteger(relative))
-    throw new RendererMappingError("Rendered endpoint has no source boundary");
-  return parseIntegerAttribute(span, "sourceStart") + relative;
+  const maps = checkedEndpointMaps(span.dataset.sourceStartMap, span.dataset.sourceEndMap, renderedLength, sourceLength);
+  if (!maps) throw new RendererMappingError("Invalid rendered-to-source endpoint maps");
+  const relative = (end ? maps.ends : maps.starts)[renderedIndex];
+  if (!Number.isInteger(relative)) throw new RendererMappingError("Rendered endpoint has no source boundary");
+  return start + relative;
 }
 
-function pointInSpan(span: HTMLElement, node: Node, offset: number): SpanPoint {
+function pointInSpan(span: HTMLElement, node: Node, offset: number, end: boolean): SpanPoint {
   const sourceStart = parseIntegerAttribute(span, "sourceStart");
   const sourceEnd = parseIntegerAttribute(span, "sourceEnd");
   const renderedLength = Number(span.dataset.sourceRenderedLength);
@@ -161,7 +133,7 @@ function pointInSpan(span: HTMLElement, node: Node, offset: number): SpanPoint {
   const renderedIndex = prefix.toString().length;
   if (renderedIndex > renderedLength)
     throw new RendererMappingError("Rendered endpoint exceeds source span");
-  const source = sourceOffsetAt(span, renderedLength, renderedIndex);
+  const source = sourceOffsetAt(span, renderedLength, renderedIndex, end);
   if (source < sourceStart || source > sourceEnd)
     throw new RendererMappingError("Source endpoint exceeds source span");
   return {
@@ -184,7 +156,7 @@ function selectionPoint(
   end: boolean,
 ): SpanPoint | null {
   const direct = closestSourceSpan(node);
-  if (direct) return pointInSpan(direct, node, offset);
+  if (direct) return pointInSpan(direct, node, offset, end);
   const element = elementForNode(node);
   if (!element) return null;
   const children = Array.from(element.childNodes);
@@ -199,7 +171,7 @@ function selectionPoint(
     : firstSourceSpan(element, end);
   if (!span) return null;
   const boundary = end ? span.childNodes.length : 0;
-  return pointInSpan(span, span, boundary);
+  return pointInSpan(span, span, boundary, end);
 }
 
 function sourceSpanBoundary(point: SpanPoint): number {
@@ -222,7 +194,7 @@ export function selectionAnchor(
   const revision = root.dataset.revisionId;
   if (revision !== doc.revisionId)
     throw new RendererMappingError(
-      "Selection root does not contain this revision",
+      "Selection root does not contain this revision", "revision",
     );
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
@@ -258,7 +230,7 @@ export function selectionAnchor(
       Number(gap.dataset.sourceGapEnd) > start
     )
       throw new RendererMappingError(
-        "Selection crosses text that is not displayed",
+        "Selection crosses text that is not displayed", "gap",
       );
   }
   const anchor: AnchorInput = {
@@ -331,18 +303,8 @@ function hasCheckedSourceMapping(span: HTMLElement): boolean {
   if (!Number.isInteger(start) || !Number.isInteger(end) || end < start)
     return false;
   const renderedLength = span.textContent?.length ?? 0;
-  const encoded = span.dataset.sourceMap;
-  if (!encoded) return end - start === renderedLength;
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(encoded);
-  } catch {
-    return false;
-  }
-  return (
-    Array.isArray(decoded) &&
-    isValidRenderedTextOffsets(decoded, renderedLength, end - start)
-  );
+  if (!span.dataset.sourceStartMap && !span.dataset.sourceEndMap) return end - start === renderedLength;
+  return !!checkedEndpointMaps(span.dataset.sourceStartMap, span.dataset.sourceEndMap, renderedLength, end - start);
 }
 
 /** Resolve DOM ranges and coverage from the same source projection as marks. */
@@ -417,7 +379,7 @@ export function firstVisibleSourceOffset(
     const ranges = sourceRanges(root, { revisionId, start, end });
     let firstMapped = start;
     try {
-      firstMapped = sourceOffsetAt(span, span.textContent?.length ?? 0, 0);
+      firstMapped = sourceOffsetAt(span, span.textContent?.length ?? 0, 0, false);
     } catch {
       continue;
     }
@@ -686,7 +648,7 @@ function PassageImpl({
       setSelectionError(
         root.dataset.selectionLimit === "true"
           ? "长选区已到本次上限，可分段选择。"
-          : "这次选区不能精确对应原文，请在连续显示的正文中分段选择。",
+          : error.reason === "gap" ? "选区跨过了尚未显示的正文，请分段选择。" : error.reason === "revision" ? "文档版本已变化，请重新选择。" : "未能定位选中文字，无法创建引用。",
       );
     }
   }

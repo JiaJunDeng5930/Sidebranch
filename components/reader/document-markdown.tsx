@@ -3,11 +3,8 @@
 import React, { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {
-  isValidRenderedTextOffsets,
-  renderedTextOffsets,
-} from "../../lib/domain/text-offsets";
-import { RendererMappingError } from "../../lib/reader/render-markdown";
+import { renderedTextOffsets } from "../../lib/domain/text-offsets";
+import { markdownSourceMapper } from "../../lib/reader/markdown-source-map";
 
 interface Position {
   start: { offset?: number };
@@ -51,26 +48,6 @@ const BLOCK_TAGS = new Set([
   "ul",
 ]);
 
-function generatedCodeRange(
-  source: string,
-  context: SourceRange | null,
-  rendered: string,
-): { range: SourceRange; raw: string } | null {
-  if (!context) return null;
-  const block = source.slice(context.start, context.end);
-  const opening = /^ {0,3}(`{3,}|~{3,})[^\r\n]*(?:\r\n|\r|\n|$)/.exec(block);
-  if (!opening) return null;
-  const bodyStart = context.start + opening[0].length;
-  const closing = new RegExp(
-    `^ {0,3}${opening[1][0]}{${opening[1].length},}[^\\r\\n]*(?:\\r?\\n|$)`,
-    "m",
-  ).exec(block.slice(opening[0].length));
-  const bodyEnd = closing ? bodyStart + closing.index : context.end;
-  const raw = source.slice(bodyStart, bodyEnd);
-  const map = renderedTextOffsets(raw, rendered);
-  return map ? { range: { start: bodyStart, end: bodyEnd }, raw } : null;
-}
-
 function offsetRange(node: SourceNode): SourceRange | null {
   const start = node.position?.start.offset;
   const end = node.position?.end.offset;
@@ -79,18 +56,15 @@ function offsetRange(node: SourceNode): SourceRange | null {
     : null;
 }
 
-function escapedMap(map: readonly number[]): string {
-  return JSON.stringify(map);
-}
-
 /**
  * Attach source coordinates to every selectable text node in a HAST tree.
  * The plugin is intentionally independent of focus and marks; those states
  * are applied to already-mounted spans by Passage effects.
  */
-export function sourceSpansPlugin(source: string, baseOffset = 0) {
+export function sourceSpansPlugin(source: string, baseOffset = 0, parserSource = source) {
   return function sourceSpansTransformer() {
     return (tree: SourceNode) => {
+      const mapping = markdownSourceMapper(parserSource, source.length);
       function visit(
         node: SourceNode,
         context: SourceRange | null,
@@ -105,56 +79,30 @@ export function sourceSpansPlugin(source: string, baseOffset = 0) {
             : context;
         node.children = node.children.flatMap((child) => {
           if (child.type === "text") {
-            const value = child.value ?? "";
+            // HTML parsing normalizes newlines; client React text must use the same coordinates.
+            const value = (child.value ?? "").replace(/\r\n?/g, "\n");
+            child.value = value;
             const positioned =
               child.position?.start.offset !== undefined &&
               child.position?.end.offset !== undefined;
 
-            const generated =
-              !positioned && (parentTag === "code" || parentTag === "pre")
-                ? generatedCodeRange(source, context, value)
-                : null;
-            if (!positioned && !generated) return [child];
-            const localStart = positioned
-              ? child.position!.start.offset!
-              : (generated?.range.start ?? context?.start ?? 0);
-            const localEnd = positioned
-              ? child.position!.end.offset!
-              : (generated?.range.end ??
-                context?.end ??
-                localStart + value.length);
-            const raw = generated?.raw ?? source.slice(localStart, localEnd);
-            const identity = raw === value;
-            const map = identity ? null : renderedTextOffsets(raw, value);
-            const sourceStart = baseOffset + localStart;
-            const sourceEnd = baseOffset + localEnd;
-            const range = context ?? { start: localStart, end: localEnd };
+            const flow = node.tagName === "code" && !positioned;
+            const localRange = offsetRange(child) ?? nextContext;
+            if (!localRange || (!positioned && !flow)) return [child];
+            const map = mapping(value, localRange, flow ? "flow-code" : node.tagName === "code" ? "inline-code" : "text", flow);
+            const localStart = map?.start ?? localRange.start;
+            const localEnd = map?.end ?? localRange.end;
             const properties: Record<string, unknown> = {
-              "data-source-start": sourceStart,
-              "data-source-end": sourceEnd,
-              "data-source-node-start": baseOffset + range.start,
-              "data-source-node-end": baseOffset + range.end,
+              "data-source-start": baseOffset + localStart,
+              "data-source-end": baseOffset + localEnd,
+              "data-source-node-start": baseOffset + (nextContext ?? localRange).start,
+              "data-source-node-end": baseOffset + (nextContext ?? localRange).end,
               "data-source-rendered-length": value.length,
             };
-            if (identity) {
-              // Equal source and rendered text proves the affine offset map;
-              // do not allocate or serialize one integer for every character.
-            } else if (
-              map &&
-              isValidRenderedTextOffsets(map, value.length, raw.length)
-            ) {
-              if (
-                map.some((offset) => !Number.isInteger(offset)) ||
-                map[0] < 0 ||
-                map[map.length - 1] > raw.length
-              )
-                throw new RendererMappingError("Invalid Markdown text map");
-              properties["data-source-map"] = escapedMap(map);
-            } else {
-              // The span remains inspectable for geometry, but selectionAnchor
-              // rejects it instead of guessing when Markdown produced a text
-              // transformation this mapper does not know.
-              properties["data-source-map-state"] = "unmapped";
+            if (!map) properties["data-source-map-state"] = "unmapped";
+            else if (map.starts.some((offset, index) => offset !== index) || map.ends.some((offset, index) => offset !== index)) {
+              properties["data-source-start-map"] = JSON.stringify(map.starts);
+              properties["data-source-end-map"] = JSON.stringify(map.ends);
             }
             return [
               {
@@ -211,8 +159,8 @@ export const DocumentMarkdownChunk = memo(function DocumentMarkdownChunk({
     [referenceDefinitions, source],
   );
   const rehypePlugins = useMemo(
-    () => [sourceSpansPlugin(source, sourceStart)],
-    [source, sourceStart],
+    () => [sourceSpansPlugin(source, sourceStart, parserSource)],
+    [source, sourceStart, parserSource],
   );
   return (
     <div
@@ -264,7 +212,7 @@ export const DocumentTextChunk = memo(function DocumentTextChunk({
         {...(identity
           ? {}
           : map
-            ? { "data-source-map": JSON.stringify(map) }
+            ? { "data-source-start-map": JSON.stringify(map), "data-source-end-map": JSON.stringify(map) }
             : { "data-source-map-state": "unmapped" })}
         data-source-node-start={sourceStart}
         data-source-node-end={sourceEnd}

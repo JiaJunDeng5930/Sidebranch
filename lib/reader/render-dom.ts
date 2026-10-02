@@ -1,35 +1,9 @@
-import { isValidRenderedTextOffsets } from "../domain/text-offsets";
+import { checkedEndpointMaps } from "../domain/text-offsets";
 
 export interface SourceSelectionRange {
   revisionId: string;
   start: number;
   end: number;
-}
-
-const sourceMapCache = new WeakMap<HTMLElement, readonly number[]>();
-
-function checkedSourceMap(
-  span: HTMLElement,
-  renderedLength: number,
-  sourceLength: number,
-): readonly number[] | null {
-  const encoded = span.dataset.sourceMap;
-  if (!encoded) return null;
-  const cached = sourceMapCache.get(span);
-  if (cached) return cached;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(encoded);
-  } catch {
-    return null;
-  }
-  if (
-    !Array.isArray(raw) ||
-    !isValidRenderedTextOffsets(raw, renderedLength, sourceLength)
-  )
-    return null;
-  sourceMapCache.set(span, raw);
-  return raw;
 }
 
 /** The same checked projection supplies highlights, hit testing and connection geometry. */
@@ -57,23 +31,22 @@ export function sourceRanges(
     )
       continue;
     const length = span.textContent?.length ?? 0;
-    const encodedMap = span.dataset.sourceMap;
-    const map = encodedMap ? checkedSourceMap(span, length, end - start) : null;
-    if (encodedMap && !map) continue;
+    const encodedMap = span.dataset.sourceStartMap || span.dataset.sourceEndMap;
+    const maps = encodedMap ? checkedEndpointMaps(span.dataset.sourceStartMap, span.dataset.sourceEndMap, length, end - start) : null;
+    if (encodedMap && !maps) continue;
     if (!encodedMap && end - start !== length) continue;
-    const boundary = (offset: number) => {
-      if (!map) return Math.max(0, Math.min(length, offset));
-      let low = 0;
-      let high = map.length - 1;
+    const lowerBound = (map: readonly number[], offset: number, strict = false) => {
+      let low = 0, high = map.length;
       while (low < high) {
         const middle = (low + high) >>> 1;
-        if (map[middle] < offset) low = middle + 1;
+        if (map[middle] < offset || (strict && map[middle] === offset)) low = middle + 1;
         else high = middle;
       }
       return low;
     };
-    const from = boundary(Math.max(0, source.start - start));
-    const to = boundary(Math.min(end, source.end) - start);
+    let from = maps ? Math.min(length, lowerBound(maps.ends, source.start - start, true) - 1) : Math.max(0, source.start - start);
+    if (maps) while (from > 0 && maps.starts[from - 1] === maps.starts[from]) from--;
+    const to = maps ? Math.min(length, lowerBound(maps.starts, source.end - start)) : Math.min(length, source.end - start);
     if (from >= to) continue;
     const textNodes: Text[] = [];
     const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);

@@ -32,7 +32,7 @@ export interface RenderPlan {
 export class RendererMappingError extends Error {
   readonly code = "RENDERER_MAPPING_ERROR";
 
-  constructor(message: string) {
+  constructor(message: string, readonly reason: "unmapped" | "gap" | "revision" = "unmapped") {
     super(message);
     this.name = "RendererMappingError";
   }

@@ -1,4 +1,4 @@
-import { decodeNamedCharacterReference } from "decode-named-character-reference";
+import { decodeString } from "micromark-util-decode-string";
 
 /**
  * Map rendered UTF-16 boundaries back to Markdown source boundaries.
@@ -27,11 +27,7 @@ export function renderedTextOffsets(
       } else if (raw[i] === "&") {
         const match = /^&(#x[\da-f]+|#\d+|[a-z][a-z\d]+);/i.exec(raw.slice(i));
         if (match) {
-          const entity = match[1];
-          const decoded =
-            entity[0] === "#"
-              ? numericEntity(entity)
-              : decodeNamedCharacterReference(entity);
+          const decoded = decodeString(match[0]);
           if (decoded) {
             value = decoded;
             width = match[0].length;
@@ -114,11 +110,14 @@ export function isValidRenderedTextOffsets(
   return true;
 }
 
-function numericEntity(entity: string): string | null {
-  const hex = entity[1]?.toLowerCase() === "x";
-  const value = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
-  if (!Number.isFinite(value)) return null;
-  return value === 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)
-    ? "�"
-    : String.fromCodePoint(value);
+
+/** Both endpoint maps must be checked together before using either. */
+export function checkedEndpointMaps(starts: string | undefined, ends: string | undefined, renderedLength: number, sourceLength: number): { starts: number[]; ends: number[] } | null {
+  if (!starts || !ends) return null;
+  try {
+    const startMap: unknown = JSON.parse(starts);
+    const endMap: unknown = JSON.parse(ends);
+    if (!Array.isArray(startMap) || !Array.isArray(endMap) || !isValidRenderedTextOffsets(startMap, renderedLength, sourceLength) || !isValidRenderedTextOffsets(endMap, renderedLength, sourceLength)) return null;
+    return { starts: startMap, ends: endMap };
+  } catch { return null; }
 }
